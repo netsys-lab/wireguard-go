@@ -1,1 +1,4 @@
 wireguard-go
+
+*.key
+*.pub
