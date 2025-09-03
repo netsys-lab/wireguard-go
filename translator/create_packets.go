@@ -69,5 +69,8 @@ func createSCIONPacket(filename string, srcISD int, srcAS int, dstISD int, dstAS
 }
 
 func GenerateScionPackets() {
+
+	os.MkdirAll("packets/scion_packets", 0755)
+
 	createSCIONPacket("packets/scion_packets/test1.bin", 1, 1, 0xff000111, 0xff000112, "192.0.2.1", "192.0.2.2")
 }
