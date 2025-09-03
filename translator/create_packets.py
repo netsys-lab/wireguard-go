@@ -38,7 +38,7 @@ if __name__ == "__main__":
     
     #print(dir(scion)) # Display available packages
 
-    os.makedirs("packets/scion_packets", exist_ok=True)
+    os.makedirs("packets/ip_packets", exist_ok=True)
 
     create_ip_packet("test1", "192.0.2.1", "192.0.2.2")
     #create_scion_packet("test1", "1-ff00:0:111", "1-ff00:0:112", "192.0.2.1", "192.0.2.2")
