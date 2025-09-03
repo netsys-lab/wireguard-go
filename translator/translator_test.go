@@ -1,4 +1,4 @@
-package TranslationTest
+package translator
 
 import (
 	"bytes"
@@ -172,6 +172,10 @@ func loadPackets(t *testing.T) ([]gopacket.Packet, []slayers.SCION) {
 
 // Comparison Functions
 func CompareIPPackets(pkt1, pkt2 gopacket.Packet) bool {
+
+	if pkt1 == nil || pkt2 == nil {
+		return false
+	}
 
 	ip1 := pkt1.Layer(layers.LayerTypeIPv4)
 	ip2 := pkt2.Layer(layers.LayerTypeIPv4)

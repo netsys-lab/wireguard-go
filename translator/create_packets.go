@@ -1,4 +1,4 @@
-package TranslationTest
+package translator
 
 //ToDo: Add IP Packet creation so .py script becomes redudant!
 
