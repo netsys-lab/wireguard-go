@@ -1,6 +1,6 @@
-package main
+package addr_translation
 
-// TODO: change package and integrate addr translation
+// TODO: remove main func and integrate addr translation
 
 import (
 	"encoding/binary"
@@ -171,8 +171,9 @@ func IPToScion(ip net.IP, subnetBits int) (isd int, asn ASN, localPrefix uint64,
 
 func main() {
 	// Example values
-	asn, _ := ParseASN("fc00:1800::ffff:a00:1")
-	iface := net.ParseIP("10.0.0.1")
+	asn, _ := ParseASN("1")
+	iface := net.ParseIP("10.0.0.10")
+	fmt.Println("ISD:", iface)
 
 	// Encode SCION → IPv6
 	ipv6, err := ScionToIP(1, asn, 0x0, 0x0, iface, 16)
