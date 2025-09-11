@@ -61,7 +61,8 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 
 	pathBytes, nextHop, ok := pathCache.Lookup(dstIA)
 	if !ok || len(pathBytes) == 0 {
-		return nil, nil, errors.New("no path available for dst IA")
+		// return nil, nil, errors.New("no path available for dst IA")
+		fmt.Println("PathCache miss for dst IA, falling back to direct host+port")
 	}
 
 	// extract L4 layer and ensure supported protocols (UDP, TCP)

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -263,6 +264,8 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
+				device.log.Verbosef("Sent IPv4 pkt. Call to dummy translation")
+				dummy_translation(elem.packet, 4)
 
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
@@ -270,6 +273,8 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
 				peer = device.allowedips.Lookup(dst)
+				device.log.Verbosef("Sent IPv6 pkt. Call to dummy translation")
+				dummy_translation(elem.packet, 6)
 
 			default:
 				device.log.Verbosef("Received packet with unknown IP version")
@@ -319,6 +324,35 @@ func (device *Device) RoutineReadFromTUN() {
 			return
 		}
 	}
+}
+
+func dummy_translation(b []byte, ipv int) {
+	fmt.Println("Dummy translation called")
+	switch ipv {
+	case 4:
+		header, err := ipv4.ParseHeader(b)
+		if err != nil {
+			fmt.Println("Error parsing IPv4 header:", err)
+			return
+		}
+		originalFlags := header.Flags
+		fmt.Println("IPv4 original flags:", originalFlags)
+		header.Flags |= ipv4.DontFragment
+		hdrBytes, _ := header.Marshal()
+		copy(b[:len(hdrBytes)], hdrBytes)
+
+	case 6:
+		header, err := ipv6.ParseHeader(b)
+		if err != nil {
+			fmt.Println("Error parsing IPv6 header:", err)
+			return
+		}
+		originalTC := header.TrafficClass
+		fmt.Println("IPv6 original TrafficClass:", originalTC)
+		b[1] = (b[1] & 0xF0) | ((b[1] ^ 0x01) & 0x0F)
+
+	}
+
 }
 
 func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
