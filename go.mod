@@ -1,4 +1,4 @@
-module wireguard-go
+module golang.zx2c4.com/wireguard
 
 go 1.23.1
 
@@ -20,6 +20,5 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
-	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

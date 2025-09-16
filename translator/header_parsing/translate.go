@@ -11,7 +11,7 @@ import (
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
 
-	"wireguard-go/translator/addr_translation"
+	"golang.zx2c4.com/wireguard/translator/addr_translation"
 )
 
 const (

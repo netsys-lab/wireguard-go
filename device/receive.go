@@ -468,6 +468,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 
 			if len(elem.packet) == 0 {
 				device.log.Verbosef("%v - Receiving keepalive packet", peer)
+				device.log.Verbosef("%v - [TEST] Is Receiving Working?", peer)
 				continue
 			}
 			dataPacketReceived = true

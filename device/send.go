@@ -87,6 +87,7 @@ func (peer *Peer) SendKeepalive() {
 		select {
 		case peer.queue.staged <- elemsContainer:
 			peer.device.log.Verbosef("%v - Sending keepalive packet", peer)
+			peer.device.log.Verbosef("%v - [TEST] Is Sending Working?", peer)
 		default:
 			peer.device.PutMessageBuffer(elem.buffer)
 			peer.device.PutOutboundElement(elem)
