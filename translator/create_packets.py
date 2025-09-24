@@ -6,11 +6,11 @@ def create_ip_packet(filename, src, dst, sport=5555, dport=80, payload=b"Payload
     pkt = IP(src=src, dst=dst) / TCP(sport=sport, dport=dport) / payload
     
     # Save Package
-    wrpcap(f"packets/ip_packets/{filename}.pcap", [pkt])
+    #wrpcap(f"packets/ip_packets/{filename}.pcap", [pkt])
 
     # Write the bytes
-    #with open(f"packets/ip_packets/{filename}.bin", "wb") as f:
-        #f.write(bytes(pkt))
+    with open(f"packets/ip_packets/{filename}.bin", "wb") as f:
+        f.write(bytes(pkt))
 
     return pkt
 

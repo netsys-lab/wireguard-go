@@ -10,7 +10,8 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
-
+	"github.com/scionproto/scion/pkg/slayers/path"
+	"github.com/scionproto/scion/pkg/slayers/path/empty"
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
 )
 
@@ -33,8 +34,10 @@ func (d *DummyPathCache) Lookup(dstIA addr.IA) ([]byte, *net.UDPAddr, bool) {
 	return nil, nil, false
 }
 
+// Local ISD & Local ASN, local = dst
 func (d *DummyPathCache) LocalIA() (uint16, uint32) {
-	return 1, 42
+	return 1, 0xfc000110
+	//return 1, 42
 }
 
 // IPv6 -> SCION
@@ -115,8 +118,13 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 		}
 	}
 
-	localISD, localASN := pathCache.LocalIA()
-	scionBytes, err := BuildSCIONPacket(localISD, localASN, uint16(isd), asn, hostIP, dstHost, l4nextHeader, pathBytes, l4Payload)
+	//ToDo: Use actual pathCache and path once those are done
+	localISD, localASN := pathCache.LocalIA() // PathCache should return dstISD and dstASN
+	path := &empty.Path{}
+	//ToDo: Rename hostIP to src IP and dstHost to dstIP
+	//Path Docu: https://pkg.go.dev/github.com/scionproto/scion@v0.12.0/pkg/slayers/path
+	//scionBytes, err := BuildSCIONPacket(localISD, localASN, uint16(isd), asn, hostIP, dstHost, l4nextHeader, pathBytes, l4Payload)
+	scionBytes, err := BuildSCIONPacket(localISD, localASN, localISD, localASN, hostIP, dstHost, l4nextHeader, path, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 	}
@@ -286,26 +294,28 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 	return isd, asn, localPrefix, subnet, hostIP, hostIsIPv4, nil
 }
 
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, pathBytes []byte, l4Payload []byte) ([]byte, error) {
+func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path path.Path, l4Payload []byte) ([]byte, error) {
 	ia, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
+	//ToDO: dstISD and localISD should both be 1 where do you get dstISD 0? DstASN is also 0, we need to get dstASN from somewhere too.
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst IA: %w", err)
 	}
+
 	pkt := &slayers.SCION{
 		Version:      slayers.SCIONVersion, //0
 		TrafficClass: 0,
 		FlowID:       0,
 		NextHdr:      nextHeader,
-		//PathType: slayers,
-		DstAddrType: 0,
-		SrcAddrType: 0,
+		PathType:     0,
+		DstAddrType:  0,
+		SrcAddrType:  0,
 
 		//add header fields
 		SrcIA:      ia,
 		DstIA:      addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN)),
 		RawSrcAddr: srcHost,
 		RawDstAddr: dstHost,
-		//Path: pathBytes,
+		Path:       path,
 	}
 	pkt.Payload = l4Payload
 

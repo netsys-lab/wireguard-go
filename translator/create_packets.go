@@ -1,3 +1,4 @@
+// package translator
 package translator
 
 //ToDo: Add IP Packet creation so .py script becomes redudant!
@@ -8,6 +9,7 @@ import (
 	"os"
 
 	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
 
@@ -68,9 +70,76 @@ func createSCIONPacket(filename string, srcISD int, srcAS int, dstISD int, dstAS
 
 }
 
+// generateIPv6UDP builds a minimal IPv6 + UDP packet with given IPs, ports, payload.
+// It returns raw bytes ready to be written to a .bin file.
+func generateIPv6UDP(srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) ([]byte, error) {
+	ipSrc := net.ParseIP(srcIP)
+	ipDst := net.ParseIP(dstIP)
+	if ipSrc == nil || ipDst == nil || ipSrc.To16() == nil || ipDst.To16() == nil {
+		return nil, fmt.Errorf("invalid IPv6 address: src=%q dst=%q", srcIP, dstIP)
+	}
+
+	ip6 := &layers.IPv6{
+		Version:    6,
+		SrcIP:      ipSrc,
+		DstIP:      ipDst,
+		NextHeader: layers.IPProtocolUDP,
+		HopLimit:   64,
+	}
+
+	udp := &layers.UDP{
+		SrcPort: layers.UDPPort(srcPort),
+		DstPort: layers.UDPPort(dstPort),
+	}
+	// UDP checksum is mandatory in IPv6; this ensures correct computation.
+	udp.SetNetworkLayerForChecksum(ip6)
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true, // fills IPv6 payload length and UDP length
+		ComputeChecksums: true, // computes UDP checksum
+	}
+
+	if err := gopacket.SerializeLayers(buf, opts,
+		ip6,
+		udp,
+		gopacket.Payload(payload),
+	); err != nil {
+		return nil, fmt.Errorf("serialize IPv6 UDP: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+func SaveIPv6UDPPacketToBin(filename, srcIP, dstIP string, srcPort, dstPort uint16) {
+	raw, err := generateIPv6UDP(srcIP, dstIP, srcPort, dstPort, []byte("Payload"))
+	if err != nil {
+		panic(fmt.Sprintf("failed to generate IPv6 UDP packet: %v", err))
+	}
+	if err := os.WriteFile(filename, raw, 0644); err != nil {
+		panic(fmt.Sprintf("failed to write IPv6 UDP packet to %s: %v", filename, err))
+	}
+}
+
+func createIPv6UDPPacket(filename, srcIP, dstIP string, srcPort, dstPort uint16) {
+	SaveIPv6UDPPacketToBin(filename, srcIP, dstIP, srcPort, dstPort)
+}
+
 func GenerateScionPackets() {
 
 	os.MkdirAll("packets/scion_packets", 0755)
 
-	createSCIONPacket("packets/scion_packets/test1.bin", 1, 1, 0xff000111, 0xff000112, "192.0.2.1", "192.0.2.2")
+	createSCIONPacket("packets/scion_packets/test1.bin", 1, 0xfc000110, 1, 0xfc000110, "127.0.0.5", "127.0.0.4")
+}
+
+func GenerateIPv6Packets() {
+
+	os.MkdirAll("packets/ip_packets", 0755)
+
+	createIPv6UDPPacket("packets/ip_packets/test1.bin", "fc00:0:0:1::c000:201", "fc00:0:0:1::c000:202", 30042, 30042)
+}
+
+func main() {
+	GenerateScionPackets()
+	GenerateIPv6Packets()
 }
