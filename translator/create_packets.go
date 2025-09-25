@@ -1,5 +1,6 @@
-// package translator
 package translator
+
+//package main
 
 //ToDo: Add IP Packet creation so .py script becomes redudant!
 
@@ -129,14 +130,16 @@ func GenerateScionPackets() {
 
 	os.MkdirAll("packets/scion_packets", 0755)
 
-	createSCIONPacket("packets/scion_packets/test1.bin", 1, 0xfc000110, 1, 0xfc000110, "127.0.0.5", "127.0.0.4")
+	//createSCIONPacket("packets/scion_packets/test1.bin", 1, 0xfc000110, 1, 0xfc000110, "127.0.0.5", "127.0.0.4")
+	createSCIONPacket("packets/scion_packets/test1.bin", 1, 0x0000FC00, 1, 0x0000FC00, "10.128.0.1", "10.128.0.1")
 }
 
 func GenerateIPv6Packets() {
 
 	os.MkdirAll("packets/ip_packets", 0755)
 
-	createIPv6UDPPacket("packets/ip_packets/test1.bin", "fc00:0:0:1::c000:201", "fc00:0:0:1::c000:202", 30042, 30042)
+	//createIPv6UDPPacket("packets/ip_packets/test1.bin", "fc00:0:0:1::c000:201", "fc00:0:0:1::c000:202", 30042, 30042)
+	createIPv6UDPPacket("packets/ip_packets/test1.bin", "fc00:10fc::ffff:a80:1", "fc00:10fc::ffff:a80:1", 30042, 30042)
 }
 
 func main() {

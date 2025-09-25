@@ -135,12 +135,13 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 // SCION -> IPv6
 func TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
 	var scion slayers.SCION
-	var scmp slayers.SCMP
+	//var scmp slayers.SCMP
 	var udp layers.UDP
 	var tcp layers.TCP
 
 	// decode only above protocols
-	parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scion, &udp, &tcp, &scmp)
+	//parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scion, &udp, &tcp, &scmp)
+	parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scion)
 	decoded := []gopacket.LayerType{}
 
 	if err := parser.DecodeLayers(pktData, &decoded); err != nil {
@@ -166,9 +167,9 @@ func TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
 	}
 
 	// must match tunnel endpoint
-	if !dst.Equal(tunIP) {
-		return nil, errors.New("packet not for this tunnel endpoint")
-	}
+	//if !dst.Equal(tunIP) {
+	//return nil, errors.New("packet not for this tunnel endpoint")
+	//}
 
 	// ---- src ----
 	var src net.IP
@@ -190,6 +191,7 @@ func TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
 
 	// ---- L4 payload ----
 	var l4Layer gopacket.SerializableLayer
+
 	for _, layerType := range decoded {
 		switch layerType {
 		case layers.LayerTypeUDP:
@@ -205,6 +207,10 @@ func TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
 			// 	return nil, errors.New("failed to translate SCMP to ICMP")
 			// }
 			// l4Layer = icmp
+		case slayers.LayerTypeSCIONUDP:
+			l4Layer = nil
+		case slayers.LayerTypeSCION:
+			l4Layer = &scion
 		}
 	}
 
