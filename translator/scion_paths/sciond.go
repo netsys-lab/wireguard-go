@@ -54,6 +54,7 @@ func (r *SciondRetriever) RetrievePaths(ctx context.Context, srcIA, dstIA addr.I
 		if p.Expiration != nil {
 			exp = p.Expiration.AsTime().Format(time.RFC3339)
 		}
+
 		infos = append(infos, PathInfo{
 			Raw:        p.Raw,
 			Interfaces: len(p.Interfaces),

@@ -1,0 +1,28 @@
+syntax = "proto3";
+package pathsrv;
+
+option go_package = "golang.zx2c4.com/wireguard/translator/scion_paths/scionproto;pathsrv";
+
+// A single path segment
+message PathSegment {
+  bytes raw = 1;
+  uint32 mtu = 2;
+  repeated uint32 interfaces = 3;
+  string expiration = 4; // ISO string for simplicity
+}
+
+// Request for paths from source to destination IA
+message PathsRequest {
+  string src_ia = 1;
+  string dst_ia = 2;
+}
+
+// Response contains one or more path segments
+message PathsResponse {
+  repeated PathSegment paths = 1;
+}
+
+// PathService gRPC definition
+service PathService {
+  rpc Paths(PathsRequest) returns (PathsResponse);
+}
