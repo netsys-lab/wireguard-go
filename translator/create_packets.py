@@ -42,3 +42,4 @@ if __name__ == "__main__":
 
     create_ip_packet("test1", "192.0.2.1", "192.0.2.2")
     #create_scion_packet("test1", "1-ff00:0:111", "1-ff00:0:112", "192.0.2.1", "192.0.2.2")
+    
