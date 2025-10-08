@@ -141,9 +141,9 @@ func GenerateIPv6Packet(filename, srcIP, dstIP string, srcPort, dstPort uint16, 
 	}
 
 	// Ensure target directory exists
-	if err := os.MkdirAll("packets/ip_packets", 0755); err != nil {
-		return fmt.Errorf("failed to create output dir: %w", err)
-	}
+	// if err := os.MkdirAll("packets/ip_packets", 0755); err != nil {
+	// 	return fmt.Errorf("failed to create output dir: %w", err)
+	// }
 
 	// Save to file
 	if err := os.WriteFile(filename, buf.Bytes(), 0644); err != nil {
@@ -155,34 +155,56 @@ func GenerateIPv6Packet(filename, srcIP, dstIP string, srcPort, dstPort uint16, 
 }
 
 func main() {
-	// Example usage
+	//----------------------------TEST 1----------------------------
 	err := GenerateIPv6Packet(
-		"packets/ip_packets/test_tcp.bin",
-		"fc00:10fc::ffff:a80:1", "fc00:10fc::ffff:a80:1", // src and dst IPv6
-		30042, 30042,
-		[]byte("Payload"),
+		"translator/packets/ipv6/input/tcp_basic.bin",
+		"fc00:10fc::ffff:a80:1", "fc10:10fc::ffff:a80:2", // src and dst IPv6
+		1234, 5678, // src and dst ports
+		[]byte("basic tcp packet"),
 		"tcp",
 	)
 	if err != nil {
 		panic(err)
 	}
+	err = GenerateSCIONPacket(
+		"translator/packets/ipv6/exp/tcp_basic_scion.bin",
+		1, 64512, // src ISD/AS
+		257, 64512, // dst ISD/AS
+		"10.128.0.1", "10.128.0.2", // src/dst IPs
+	)
+	if err != nil {
+		panic(err)
+	}
 
+	//----------------------------TEST 2----------------------------
 	err = GenerateIPv6Packet(
-		"packets/ip_packets/test_udp.bin",
-		"fc00:10fc::ffff:a80:1", "fc00:10fc::ffff:a80:1",
-		30042, 30042,
-		[]byte("Payload"),
+		"translator/packets/ipv6/input/udp_basic.bin",
+		"fc00:10fc::ffff:a80:1", "fc10:10fc::ffff:a80:2", // src and dst IPv6
+		1234, 5678, // src and dst ports
+		[]byte("basic udp payload"),
 		"udp",
 	)
 	if err != nil {
 		panic(err)
 	}
-	//---------------SCION//---------------
 	err = GenerateSCIONPacket(
-		"packets/scion_packets/test1.bin",
-		1, 0x0000FC00, // src ISD/AS
-		1, 0x0000FC00, // dst ISD/AS
-		"10.128.0.1", "10.128.0.1", // src/dst IPs
+		"translator/packets/ipv6/exp/udp_basic_scion.bin",
+		1, 64512, // src ISD/AS
+		257, 64512, // dst ISD/AS
+		"10.128.0.1", "10.128.0.2", // src/dst IPs
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	//----------------------------TEST 3----------------------------
+
+	err = GenerateIPv6Packet(
+		"translator/packets/ipv6/input/udp_invalid_addr.bin",
+		"fc00:10fc::ffff:a80:1", "fd00:10fc::ffff:a80:1", // src and dst IPv6
+		1234, 5678, // src and dst ports
+		[]byte("not IPv6-mapped SCION address"),
+		"udp",
 	)
 	if err != nil {
 		panic(err)
