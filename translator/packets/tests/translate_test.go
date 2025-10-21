@@ -3,6 +3,7 @@ package packets
 //https://pkg.go.dev/github.com/scionproto/scion@v0.12.0/pkg/slayers#SCION.Path
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
@@ -192,10 +193,11 @@ func compareRawAddrSCION(got, want *slayers.SCION) bool {
 		return false
 	}
 
-	if !got.RawSrcAddr.Equal(want.RawSrcAddr) {
+	if !bytes.Equal(got.RawSrcAddr, want.RawSrcAddr) {
 		return false
 	}
-	if !got.RawDstAddr.Equal(want.RawDstAddr) {
+
+	if !bytes.Equal(got.RawDstAddr, want.RawDstAddr) {
 		return false
 	}
 
@@ -245,6 +247,9 @@ func Test_BasicTCP_IPv6ToSCION(t *testing.T) {
 	}
 	if !comparePayloadSCION(&expected, &translatedscion) {
 		t.Fatalf("Translated SCION payload does not match expected: %v", err)
+	}
+	if !compareRawAddrSCION(&expected, &translatedscion) {
+		t.Fatalf("Translated SCION raw addresses do not match expected: %v", err)
 	}
 
 }

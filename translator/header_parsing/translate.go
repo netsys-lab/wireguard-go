@@ -36,7 +36,7 @@ func (d *DummyPathCache) Lookup(dstIA addr.IA) ([]byte, *net.UDPAddr, bool) {
 
 // Local ISD & Local ASN, local = dst
 func (d *DummyPathCache) LocalIA() (uint16, uint32) {
-	return 1, 0xfc000110
+	return 1, 64512
 	//return 1, 42
 }
 
@@ -119,12 +119,13 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 	}
 
 	//ToDo: Use actual pathCache and path once those are done
+	// TODO: find out from where to use local ISD and local ASN
 	localISD, localASN := pathCache.LocalIA() // PathCache should return dstISD and dstASN
 	path := &empty.Path{}
-	//ToDo: Rename hostIP to src IP and dstHost to dstIP
+	//ToDo: Rename hostIP to srcIP and dstHost to dstIP
 	//Path Docu: https://pkg.go.dev/github.com/scionproto/scion@v0.12.0/pkg/slayers/path
 	//scionBytes, err := BuildSCIONPacket(localISD, localASN, uint16(isd), asn, hostIP, dstHost, l4nextHeader, pathBytes, l4Payload)
-	scionBytes, err := BuildSCIONPacket(localISD, localASN, localISD, localASN, hostIP, dstHost, l4nextHeader, path, l4Payload)
+	scionBytes, err := BuildSCIONPacket(localISD, localASN, isd, asn, hostIP, dstHost, l4nextHeader, path, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 	}
@@ -317,8 +318,8 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 		SrcAddrType:  0,
 
 		//add header fields
-		SrcIA:      ia,
-		DstIA:      addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN)),
+		SrcIA:      addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN)),
+		DstIA:      ia,
 		RawSrcAddr: srcHost,
 		RawDstAddr: dstHost,
 		Path:       path,
