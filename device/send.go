@@ -246,13 +246,17 @@ func (device *Device) RoutineReadFromTUN() {
 	for {
 		// read packets
 		count, readErr = device.tun.device.Read(bufs, sizes, offset)
+		//write byte length into sizes[i]
 		for i := 0; i < count; i++ {
 			if sizes[i] < 1 {
 				continue
 			}
 
 			elem := elems[i]
+			//create a window elem.packet over just the valid bytes
 			elem.packet = bufs[i][offset : offset+sizes[i]]
+
+			//device.log.Verbosef(string(elem.packet))
 
 			// lookup peer
 			var peer *Peer
@@ -271,8 +275,16 @@ func (device *Device) RoutineReadFromTUN() {
 				dst := elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
 				peer = device.allowedips.Lookup(dst)
 
+				//Wir schicken erstmal nur IPv6 Pakete
+				//Hier wurde die dst IPv6 aus dem Paket gelesen
+				//Peer wird gesucht.
+
+				//TODO: Lookup(translate) SCION dst adresse
+
 			default:
 				device.log.Verbosef("Received packet with unknown IP version")
+				//Müsste hier erkennen das es ein SCION Paket ist.
+				//TODO: Test if this hits if we send SCION packet.
 			}
 
 			if peer == nil {
