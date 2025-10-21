@@ -168,29 +168,3 @@ func IPToScion(ip net.IP, subnetBits int) (isd int, asn ASN, localPrefix uint64,
 
 	return
 }
-
-func main() {
-	// Example values
-	asn, _ := ParseASN("1")
-	iface := net.ParseIP("10.0.0.10")
-	fmt.Println("ISD:", iface)
-
-	// Encode SCION → IPv6
-	ipv6, err := ScionToIP(1, asn, 0x0, 0x0, iface, 16)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("SCION → IPv6:", ipv6)
-
-	// Decode IPv6 → SCION
-	isd, asn2, lp, sn, iface2, err := IPToScion(ipv6, 16)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("IPv6 → SCION")
-	fmt.Println("  ISD:", isd)
-	fmt.Println("  ASN:", asn2.Value)
-	fmt.Println("  LocalPrefix:", lp)
-	fmt.Println("  Subnet:", sn)
-	fmt.Println("  Interface IP:", iface2)
-}

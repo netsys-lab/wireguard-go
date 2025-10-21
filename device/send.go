@@ -7,17 +7,15 @@ package device
 
 import (
 	"bytes"
-	"context"
+	//"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
+
+	//"fmt"
 	"net"
 	"os"
 	"sync"
 	"time"
-
-	"github.com/scionproto/scion/pkg/addr"
-	"golang.zx2c4.com/wireguard/translator/scion_paths"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/ipv4"
@@ -214,39 +212,6 @@ func (peer *Peer) keepKeyFreshSending() {
 	}
 }
 
-// initialize Path Retriever
-var retriever scion_paths.PathRetriever
-
-func initRetriever() error {
-	// Example: Linux with sciond
-	r, err := scion_paths.NewSciondRetriever()
-	if err != nil {
-		return fmt.Errorf("failed to create sciond retriever: %w", err)
-	}
-	retriever = r
-	return nil
-}
-
-// retrieve Paths func
-
-func getPathsExample() ([]scion_paths.PathInfo, error) {
-	ctx := context.Background()
-
-	srcIA, _ := addr.ParseIA("1-ff00:0:110")
-	dstIA, _ := addr.ParseIA("1-ff00:0:111")
-
-	paths, err := retriever.RetrievePaths(ctx, srcIA, dstIA)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve paths: %w", err)
-	}
-
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no SCION paths found")
-	}
-
-	return paths, nil
-}
-
 func (device *Device) RoutineReadFromTUN() {
 	defer func() {
 		device.log.Verbosef("Routine: TUN reader - stopped")
@@ -312,14 +277,6 @@ func (device *Device) RoutineReadFromTUN() {
 			default:
 				device.log.Verbosef("Received packet with unknown IP version")
 			}
-
-			paths, err := getPathsExample()
-			if err != nil {
-				device.log.Verbosef("Error with getting Path ")
-			}
-
-			chosen := paths[0] // simple strategy: pick first path
-			fmt.Printf("Using path with %d interfaces and MTU %d\n", chosen.Interfaces, chosen.MTU)
 
 			if peer == nil {
 				continue
