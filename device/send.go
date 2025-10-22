@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/translator"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -254,9 +255,10 @@ func (device *Device) RoutineReadFromTUN() {
 
 			elem := elems[i]
 			//create a window elem.packet over just the valid bytes
-			elem.packet = bufs[i][offset : offset+sizes[i]]
+			pkt := bufs[i][offset : offset+sizes[i]]
 
-			//device.log.Verbosef(string(elem.packet))
+			//Hier schreiben wir die Valid pkt bytes in elem.packet
+			elem.packet = pkt
 
 			// lookup peer
 			var peer *Peer
@@ -267,6 +269,8 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
+				//With false if ipv4
+				//newpkt, err := translator.ReadPacket(pkt, false)
 
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
@@ -279,6 +283,22 @@ func (device *Device) RoutineReadFromTUN() {
 				//Hier wurde die dst IPv6 aus dem Paket gelesen
 				//Peer wird gesucht.
 
+				/*
+					elem.packet ist eine Slice desselben Arrays elem.buffer. Also sind änderungen an elem.packet in-place
+					Also wird nichts zurückgeschrieben.
+
+					elem.packet kann länger gemacht werden solange genug Platz hinter elem.packet ist
+				*/
+
+				newpkt, err := translator.ReadPacket(pkt, true)
+
+				if err != nil {
+					device.log.Errorf("Process error: %v", err)
+					// drop or continue
+					continue
+				}
+				elem.packet = newpkt
+				sizes[i] = len(newpkt)
 				//TODO: Lookup(translate) SCION dst adresse
 
 			default:
