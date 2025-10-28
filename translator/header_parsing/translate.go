@@ -10,9 +10,19 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
+	"github.com/scionproto/scion/pkg/snet"
 
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
 )
+
+type Translator struct {
+	cache PathCache
+	// other deps / knobs as needed
+}
+
+func NewTranslator(cache PathCache) *Translator {
+	return &Translator{cache: cache}
+}
 
 const (
 	// SCION-mapped IPv6 prefix = fc00::/8
@@ -20,11 +30,8 @@ const (
 )
 
 type PathCache interface {
-	// Lookup returns a tuple (pathBytes, nextHopUDPAddr, ok) if present
-	Lookup(dstIA addr.IA) ([]byte, *net.UDPAddr, bool)
-
-	// LocalIA returns local ISD and ASN as (isd, asn)
-	LocalIA() (uint16, uint32)
+	Lookup(src, dst snet.UDPAddr) ([]snet.Path, bool)
+	Store(src, dst snet.UDPAddr, paths []snet.Path)
 }
 
 type DummyPathCache struct{} // placeholder for now

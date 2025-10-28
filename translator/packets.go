@@ -12,6 +12,14 @@ func ProcessPacket(pkt []byte, IsIPv6 bool) (out []byte, err error) {
 	return pkt, nil
 }
 
+func DeserializePacket() {
+
+}
+
+func SerializePacket() {
+
+}
+
 // TODO: Move to new file?
 func ReadPacket(pkt []byte, IsIPv6 bool) (out []byte, err error) {
 
