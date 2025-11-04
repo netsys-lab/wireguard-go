@@ -10,7 +10,8 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
-	"github.com/scionproto/scion/pkg/snet"
+
+	//"github.com/scionproto/scion/pkg/snet"
 
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
 )
@@ -30,8 +31,8 @@ const (
 )
 
 type PathCache interface {
-	Lookup(src, dst snet.UDPAddr) ([]snet.Path, bool)
-	Store(src, dst snet.UDPAddr, paths []snet.Path)
+	Lookup(srcIA, dstIA addr.IA) ([]byte, bool)
+	Store(srcIA, dstIA addr.IA, pathBytesList [][]byte)
 }
 
 type DummyPathCache struct{} // placeholder for now
@@ -64,9 +65,12 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 		return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
 	}
 
-	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
+	srcisd, srcasn, _, _, _, _, err := UnmapIPv6(ip6.SrcIP, 8)
 
-	pathBytes, nextHop, ok := pathCache.Lookup(dstIA)
+	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
+	srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
+
+	pathBytes, ok := pathCache.Lookup(srcIA, dstIA)
 	if !ok || len(pathBytes) == 0 {
 		return nil, nil, errors.New("no path available for dst IA")
 	}

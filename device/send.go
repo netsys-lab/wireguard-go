@@ -290,6 +290,16 @@ func (device *Device) RoutineReadFromTUN() {
 					elem.packet kann länger gemacht werden solange genug Platz hinter elem.packet ist
 				*/
 
+				//Wir lesen dst und src aus packet
+
+				//Wir übersetzen dst und src in scion adressen - ist dies überhaupt möglich
+
+				//Wenn nicht übersetzbar -> continue
+
+				//Wir fragen PathCache nach Pfaden (kombination von src und dst) ab
+
+				//Wir übergeben Paket, Paths, Scion src und Scion dst an Translation
+
 				newpkt, err := translator.ReadPacket(pkt, true)
 
 				if err != nil {

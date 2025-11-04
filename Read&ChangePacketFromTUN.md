@@ -101,3 +101,29 @@ Wenn nicht im PathCache - Nest step, Neue Paths anfragen
 
 STEP 4:
 Wie neue Paths anfragen - Deamon
+
+
+
+
+
+Scion APP Lauscht auf Port (ISD AS)
+
+
+
+## Step 1:
+
+### a
+
+PathCache implementieren?
+
+Path über SCION Topology extrahieren
+
+Path in PathCache hardcoden
+
+### b
+
+Translation:
+
+
+## Step 
+

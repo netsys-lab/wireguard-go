@@ -8,7 +8,9 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/slayers"
 	"github.com/stretchr/testify/require"
+
 	//"translator/header_parsing"
+	"golang.zx2c4.com/wireguard/translator/pathcache"
 )
 
 func TestTranslateEgress_IPv6toSCION_UDP(t *testing.T) {
@@ -34,7 +36,9 @@ func TestTranslateEgress_IPv6toSCION_UDP(t *testing.T) {
 	pktData := buffer.Bytes()
 
 	// call translation function
-	cache := &DummyPathCache{}
+	//cache := &DummyPathCache{}
+
+	cache := pathcache.New()
 	scionData, _, err := TranslateEgress(pktData, net.ParseIP("2001:db8::127.0.0.1"), 30000, cache)
 	if err != nil {
 		t.Errorf("TranslateEgress failed: %v", err) // automatically prints any errors.New
