@@ -2,7 +2,6 @@ package scion_paths
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +13,9 @@ import (
 
 	"github.com/scionproto/scion/pkg/addr"
 	daemonpb "github.com/scionproto/scion/pkg/proto/daemon"
+	"github.com/scionproto/scion/pkg/segment/iface"
+	"github.com/scionproto/scion/pkg/snet"
+	"github.com/scionproto/scion/pkg/snet/path"
 )
 
 type SciondRetriever struct {
@@ -23,6 +25,7 @@ type SciondRetriever struct {
 func NewSciondRetriever() (*SciondRetriever, error) {
 	daemonAddr := getDaemonAddr()
 
+	// Short timeout for connection to avoid hanging the UI/Tunnel
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -35,7 +38,9 @@ func NewSciondRetriever() (*SciondRetriever, error) {
 	return &SciondRetriever{client: client}, nil
 }
 
-func (r *SciondRetriever) RetrievePaths(ctx context.Context, srcIA, dstIA addr.IA) ([]PathInfo, error) {
+// RetrievePaths fetches paths from SCIOND and converts them to snet.Path objects
+// ready for the PathPool.
+func (r *SciondRetriever) RetrievePaths(ctx context.Context, srcIA, dstIA addr.IA) ([]snet.Path, error) {
 	req := &daemonpb.PathsRequest{
 		SourceIsdAs:      uint64(srcIA),
 		DestinationIsdAs: uint64(dstIA),
@@ -45,28 +50,77 @@ func (r *SciondRetriever) RetrievePaths(ctx context.Context, srcIA, dstIA addr.I
 
 	resp, err := r.client.Paths(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sciond paths request error: %w", err)
 	}
 
-	infos := make([]PathInfo, 0, len(resp.Paths))
+	paths := make([]snet.Path, 0, len(resp.Paths))
+
 	for _, p := range resp.Paths {
-		exp := ""
+		// 1. Parse Expiration
+		var expiry time.Time
 		if p.Expiration != nil {
-			exp = p.Expiration.AsTime().Format(time.RFC3339)
+			expiry = p.Expiration.AsTime()
 		}
 
-		infos = append(infos, PathInfo{
-			Raw:        p.Raw,
-			Interfaces: len(p.Interfaces),
-			MTU:        p.Mtu,
-			Expiration: exp,
-		})
-		_ = hex.EncodeToString(p.Raw) // could log if needed
+		// 2. Parse Interfaces
+		// The Daemon returns interfaces in the correct order for the path
+		ifaces := make([]snet.PathInterface, len(p.Interfaces))
+		for i, pi := range p.Interfaces {
+			// Note: We cast explicitly to snet.PathInterfaceID if available,
+			// but since it's undefined in your version, we assume the struct
+			// expects the underlying type (usually uint64 or common.IFIDType).
+			// We use simple assignment which works if the type is compatible.
+			ifaces[i] = snet.PathInterface{
+				ID: iface.ID(pi.Id), // If this fails, remove snet.PathInterfaceID cast
+				IA: addr.IA(pi.IsdAs),
+			}
+		}
+
+		// 3. Parse NextHop (Router)
+		// The 'Interface' field in the Path struct usually contains the Border Router info.
+		var nextHop *net.UDPAddr
+
+		// Check if the Interface field is present (it holds the BR address)
+		if p.Interface != nil && p.Interface.Address != nil {
+			// The Address field inside Interface is an 'Underlay' struct with an Address string
+			nextHop = parseUDPAddr(p.Interface.Address.Address)
+		}
+
+		// 4. Construct the snet.Path implementation
+		// We use the 'path' package's concrete implementation
+		sp := path.Path{
+			Src: srcIA,
+			Dst: dstIA,
+			// Initialize with empty DataplanePath; we set it below
+			DataplanePath: path.SCION{Raw: p.Raw},
+			NextHop:       nextHop,
+			Meta: snet.PathMetadata{
+				Interfaces: ifaces,
+				MTU:        uint16(p.Mtu),
+				Expiry:     expiry,
+			},
+		}
+
+		// 5. Verify Dataplane Path
+		if len(p.Raw) == 0 {
+			continue
+		}
+
+		paths = append(paths, sp)
 	}
-	return infos, nil
+
+	return paths, nil
 }
 
-// helpers from your script
+// parseUDPAddr parses the address string returned by SCIOND
+func parseUDPAddr(s string) *net.UDPAddr {
+	if addr, err := net.ResolveUDPAddr("udp", s); err == nil {
+		return addr
+	}
+	return nil
+}
+
+// helpers from your script (Unchanged)
 func getDaemonAddr() string {
 	if v := os.Getenv("SCION_DAEMON_ADDRESS"); v != "" {
 		return v

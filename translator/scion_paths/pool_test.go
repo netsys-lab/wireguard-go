@@ -43,7 +43,7 @@ func TestPathPoolAddAndGet(t *testing.T) {
 
 	// Create a mock path that expires in 1 hour
 	expiry := time.Now().Add(1 * time.Hour)
-	mockPath := createPath(src, dst, expiry, "ligma.test", 30041)
+	mockPath := createPath(src, dst, expiry, "127.0.0.1", 30041)
 
 	// Initialize PathPool and add the mock path
 	pp := NewPathPool()
@@ -88,8 +88,8 @@ func TestPathPoolMultiplePaths(t *testing.T) {
 
 	// Create multiple mock paths
 	expiry := time.Now().Add(1 * time.Hour)
-	path1 := createPath(src, dst, expiry, "ligma.test", 30041)
-	path2 := createPath(src, dst, expiry.Add(10*time.Minute), "example.test", 40042)
+	path1 := createPath(src, dst, expiry, "127.0.0.1", 30041)
+	path2 := createPath(src, dst, expiry.Add(10*time.Minute), "127.0.0.2", 40042)
 
 	pp := NewPathPool()
 	defer pp.Close()
@@ -116,7 +116,7 @@ func TestPathPoolExpiredPaths(t *testing.T) {
 
 	// Create a path that's already expired
 	expiry := time.Now().Add(-1 * time.Hour)
-	expiredPath := createPath(src, dst, expiry, "expired.test", 50043)
+	expiredPath := createPath(src, dst, expiry, "127.0.0.1", 50043)
 
 	pp := NewPathPool()
 	defer pp.Close()
