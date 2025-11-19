@@ -10,6 +10,12 @@ import (
 	"github.com/scionproto/scion/pkg/snet"
 )
 
+// PathRetriever defines the interface for fetching paths from a daemon/network.
+// SciondRetriever implements this.
+type PathRetriever interface {
+	RetrievePaths(ctx context.Context, src, dst addr.IA) ([]snet.Path, error)
+}
+
 // key identifies a path pool entry (by source/destination IA pair)
 type key struct {
 	src, dst addr.IA
@@ -33,16 +39,19 @@ type pathsEntry struct {
 
 // PathPool caches snet.Path objects between ISD-AS pairs.
 type PathPool struct {
-	mu     sync.Mutex
-	cache  map[key]*pathsEntry
-	closed chan struct{}
+	mu        sync.Mutex
+	cache     map[key]*pathsEntry
+	closed    chan struct{}
+	retriever PathRetriever // logic to fetch paths if missing
 }
 
-// NewPathPool creates a new empty path pool
-func NewPathPool() *PathPool {
+// NewPathPool creates a new path pool.
+// If retriever is provided, the pool will automatically fetch paths on cache miss.
+func NewPathPool(retriever PathRetriever) *PathPool {
 	pp := &PathPool{
-		cache:  make(map[key]*pathsEntry),
-		closed: make(chan struct{}),
+		cache:     make(map[key]*pathsEntry),
+		closed:    make(chan struct{}),
+		retriever: retriever,
 	}
 	go pp.cleanupLoop()
 	return pp
@@ -69,20 +78,55 @@ func (pp *PathPool) Add(src, dst addr.IA, paths []snet.Path) {
 }
 
 // Get retrieves valid paths for a given src/dst pair.
+// If paths are missing or expired, it attempts to fetch them using the retriever.
 func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
+	// 1. Try to get from cache
 	pp.mu.Lock()
 	entry, ok := pp.cache[key{src, dst}]
+
+	var valid []CachedPath
+	if ok && len(entry.paths) > 0 {
+		// Perform lazy cleanup and check if we have valid paths
+		valid = filterValid(entry.paths)
+		entry.paths = valid // update cache with filtered list
+	}
 	pp.mu.Unlock()
 
-	if ok && len(entry.paths) > 0 {
-		valid := filterValid(entry.paths)
-		if len(valid) > 0 {
-			return valid, nil
-		}
+	// If we found valid paths, return them immediately
+	if len(valid) > 0 {
+		// Return a copy to ensure thread safety for the caller
+		result := make([]CachedPath, len(valid))
+		copy(result, valid)
+		return result, nil
 	}
 
-	// No valid paths cached
-	return nil, nil
+	// 2. Cache Miss: Retrieve from network
+	// We do this OUTSIDE the lock to avoid blocking other cache reads/writes
+	if pp.retriever == nil {
+		return nil, nil
+	}
+
+	// RetrievePaths implementation (SciondRetriever) should handle its own timeouts/context
+	newPaths, err := pp.retriever.RetrievePaths(ctx, src, dst)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(newPaths) == 0 {
+		return nil, nil
+	}
+
+	// 3. Add new paths to cache (Add handles locking)
+	pp.Add(src, dst, newPaths)
+
+	// 4. Convert and return the new paths
+	// We reconstruct the result here to avoid acquiring the lock again or calling Get recursively
+	result := make([]CachedPath, 0, len(newPaths))
+	for _, p := range newPaths {
+		result = append(result, WrapSnetPath(src, dst, p))
+	}
+
+	return result, nil
 }
 
 // Cleanup removes expired or old paths
@@ -125,11 +169,21 @@ func WrapSnetPath(src, dst addr.IA, p snet.Path) CachedPath {
 	}
 	fp := snet.Fingerprint(p).String()
 
+	// Safety check for UnderlayNextHop
+	var nextHop *net.UDPAddr
+	if nh := p.UnderlayNextHop(); nh != nil {
+		nextHop = &net.UDPAddr{
+			IP:   nh.IP,
+			Port: nh.Port,
+			Zone: nh.Zone,
+		}
+	}
+
 	return CachedPath{
 		Src:         src,
 		Dst:         dst,
 		Path:        p,
-		NextHop:     p.UnderlayNextHop(),
+		NextHop:     nextHop,
 		Fingerprint: fp,
 		Expiry:      expiry,
 	}
