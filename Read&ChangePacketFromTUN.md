@@ -1,4 +1,12 @@
+## 3 Namespaces (Host0, Host1, Root)
 
+### Setup
+
+We will create two namespaces that are connected to
+
+host 0 <-> Veth
+
+## 2 Namespaces connected with eachother
 
 ### Setup
 
@@ -126,4 +134,6 @@ Translation:
 
 
 ## Step 
+
+
 

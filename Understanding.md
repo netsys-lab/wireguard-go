@@ -26,3 +26,43 @@ In unserer Funktion wird das pkt in-place manipuliert, da es eine slice des elem
 
 ### Wir verwenden gopacket (layers)
 
+
+
+## ToDo:
+
+Steht der PathCache? Ansonsten versuche ich ohne ihn mit einer Callback und dem Interface einen Testcase zu bauen und Fide kümmert sich um PathCache
+
+Test Cases for Translation - Unit Tests für Translation - orientieren an Lars C++, Go Listen? Testify. Packet generation. Wie PathCache mocken. Callback
+
+Test Cases für PatchCache und PathCache
+
+Deamon initialisieren - Connection to Deamon bei Device initialisierung. Und eigenes AS abfragen
+
+Eigene / Host adresse abfragen - diese muss auf eine Ipv6 abgebildet werden. - Das ist die IP source adresse im Scion Header
+Aus Host Mapped IPv6 adresse muss dem Interface zugeordnet werden. - damit Kernel auch ipv6 adresse als source verwenden können. (muss keine fc00 adresse sein)
+ip -6 route fc00: dev, scion proto
+Dies kann statisch über ein shell skript passieren
+Überprüfen wo und wie dies in Wireguard programatisch gelöst werden kann. Interface zu Ip. Orientieren an scintra tun setup .cpp.
+
+Was sind Flows?
+Map die Flows enthält, HashMap:Flow id, Flows. FlowId aus paket, 
+
+PAN - Fidelio hat das gesehen, als callback function die Path Policy.
+
+Paket Parsen? Was, wann und warum? (Receive und Prase vor TranslateEgress)
+
+Path Selection Dummy Function -> Die soll Path Cache Path Cache abrufen und später dann den richtigen Pfad auswählen.
+
+PathCache with snet path objects - integrate into Translation
+
+Expand to (3) Namespaces (host0, host1, root namespace) - run scion topology in Root namespace
+
+Skript to send IPv6 Packets
+
+Test Cases für Translation: Scion Packet with Path etc. 
+
+Dokumentation: TestEnv Setup + Description, Debugger, TestEnv Packet Sending + Scapy Sniff, PathCache, Translation, 
+
+--- PathCache Update using Deamon etc?
+
+--- PathCache Update using Paths TTL (Expiry time)

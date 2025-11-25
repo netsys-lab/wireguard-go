@@ -125,22 +125,34 @@ func (pp *PathPool) Close() {
 
 // contains checks if a path is already stored
 func contains(paths []snet.Path, p snet.Path) bool {
-	for _, existing := range paths {
-		if existing.Fingerprint() == p.Fingerprint() {
-			return true
-		}
-	}
+	/*
+		//TODO: Add Fingerprint???
+			for _, existing := range paths {
+
+
+					if existing.Fingerprint() == p.Fingerprint() {
+						return true
+					}
+
+			}
+	*/
 	return false
 }
 
 // filterValid returns only unexpired paths
 func filterValid(paths []snet.Path) []snet.Path {
 	valid := []snet.Path{}
-	now := time.Now()
-	for _, p := range paths {
-		if p.Expiry().After(now) {
-			valid = append(valid, p)
-		}
-	}
+	/*
+		//TODO: Add .Expiry???
+			now := time.Now()
+			for _, p := range paths {
+
+
+					if p.Expiry().After(now) {
+						valid = append(valid, p)
+					}
+
+			}
+	*/
 	return valid
 }
