@@ -1,0 +1,298 @@
+package header_parsing
+
+import (
+	"bytes"
+	"encoding/binary"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+
+	//slpathscion "github.com/scionproto/scion/pkg/slayers/path/scion"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/scionproto/scion/pkg/slayers"
+	"github.com/scionproto/scion/pkg/snet"
+
+	//"golang.zx2c4.com/wireguard/translator/pathcache"
+	"github.com/scionproto/scion/pkg/addr"
+	snetpath "github.com/scionproto/scion/pkg/snet/path"
+)
+
+//-------------- HELPER ------------------------
+
+func mustParseIP(t *testing.T, s string) net.IP {
+	t.Helper()
+	ip := net.ParseIP(s)
+	if ip == nil {
+		t.Fatalf("invalid IP: %s", s)
+	}
+	return ip
+}
+
+func mustIA(t *testing.T, isd uint16, asn uint32) addr.IA {
+	t.Helper()
+	ia, err := addr.IAFrom(addr.ISD(isd), addr.AS(asn))
+	if err != nil {
+		t.Fatalf("IAFrom: %v", err)
+	}
+	return ia
+}
+
+func LoadPackets(t *testing.T, rel string) [][]byte {
+	t.Helper()
+	fn := filepath.Clean(rel)
+	f, err := os.Open(fn)
+	if err != nil {
+		t.Fatalf("open %s: %v", fn, err)
+	}
+	defer f.Close()
+
+	var out [][]byte
+	for {
+		var n uint32
+		if err := binary.Read(f, binary.BigEndian, &n); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("read len: %v", err)
+		}
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(f, buf); err != nil {
+			t.Fatalf("read blob: %v", err)
+		}
+		out = append(out, buf)
+	}
+	if len(out) == 0 {
+		t.Fatalf("no entries in %s", fn)
+	}
+	return out
+}
+
+func loadTestPath(t *testing.T, i int) snetpath.Path {
+	t.Helper()
+
+	//Load Raw Paths
+	raw := LoadPackets(t, "/home/paul/Scintra/wireguard-go/translator/data/paths.bin")
+	if len(raw) == 0 {
+		t.Fatalf("no paths in /home/paul/Scintra/wireguard-go/translator/data/paths.bin")
+	}
+
+	//Create Next Hops
+	var nh *net.UDPAddr
+	switch i {
+	case 0: //IPv4 ?
+		nh = &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}
+	case 1: //IPv6 ?
+		nh = &net.UDPAddr{IP: mustParseIP(t, "::1"), Port: 31002}
+	default:
+		t.Fatalf("index out of range: %d", i)
+	}
+
+	//srcIA := addr.IA(addr.MustIAFrom(addr.ISD(1), addr.AS(64496)))
+	//dstIA := addr.IA(addr.MustIAFrom(addr.ISD(2), addr.AS(64497)))
+
+	srcIA := mustIA(t, 1, 64496)
+	dstIA := mustIA(t, 2, 64497)
+
+	meta := snet.PathMetadata{
+		MTU: 1280,
+		// Interfaces, Latency, etc. can be filled if you care.
+	}
+
+	dp := snetpath.SCION{
+		Raw: raw[0],
+	}
+
+	return snetpath.Path{
+		Src:           srcIA,
+		Dst:           dstIA,
+		DataplanePath: dp,
+		NextHop:       nh,
+		Meta:          meta,
+	}
+
+	/*
+		Src           addr.IA
+		Dst           addr.IA
+		DataplanePath snet.DataplanePath
+		NextHop       *net.UDPAddr
+		Meta          snet.PathMetadata
+	*/
+
+	//snet.Dataplane empty pfad
+}
+
+//--------------- Decode -------------------------
+
+func decodeScionUDP(t *testing.T, b []byte) (*slayers.SCION, *layers.UDP, []byte) {
+	t.Helper()
+
+	if len(b) == 0 {
+		t.Fatalf("empty packet")
+	}
+
+	// Detect outer header by first nibble
+	firstNibble := b[0] >> 4
+
+	var (
+		pkt gopacket.Packet
+	)
+
+	switch firstNibble {
+	case 4:
+		// IPv4 underlay
+		pkt = gopacket.NewPacket(b, layers.LayerTypeIPv4, gopacket.Default)
+	case 6:
+		// IPv6 underlay
+		pkt = gopacket.NewPacket(b, layers.LayerTypeIPv6, gopacket.Default)
+	default:
+		// No IP header (or something else) – try UDP directly as a fallback
+		pkt = gopacket.NewPacket(b, layers.LayerTypeUDP, gopacket.Default)
+	}
+
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		t.Fatalf("no UDP layer in packet")
+	}
+	udp := udpLayer.(*layers.UDP)
+
+	// The UDP payload should be the SCION packet
+	sc := &slayers.SCION{}
+	if err := sc.DecodeFromBytes(udp.Payload, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("failed to decode SCION from UDP payload: %v", err)
+	}
+
+	// SCION’s L4 payload
+	payload := append([]byte(nil), sc.Payload...)
+
+	return sc, udp, payload
+}
+
+//--------------- Compare  -----------------------
+
+func compareScion(t *testing.T, expected, scionBytes []byte) {
+
+	expSC, expUDP, expPayload := decodeScionUDP(t, expected)
+	actSC, actUDP, actPayload := decodeScionUDP(t, scionBytes)
+
+	if expSC.SrcIA != actSC.SrcIA {
+		t.Fatalf("SrcIA mismatch: expected %s, got %s", expSC.SrcIA, actSC.SrcIA)
+	}
+	if expSC.DstIA != actSC.DstIA {
+		t.Fatalf("DstIA mismatch: expected %s, got %s", expSC.DstIA, actSC.DstIA)
+	}
+	if expSC.PathType != actSC.PathType {
+		t.Fatalf("PathType mismatch: expected %v, got %v", expSC.PathType, actSC.PathType)
+	}
+	if expSC.NextHdr != actSC.NextHdr {
+		t.Fatalf("NextHdr mismatch: expected %v, got %v", expSC.NextHdr, actSC.NextHdr)
+	}
+	if expSC.FlowID != actSC.FlowID {
+		t.Fatalf("FlowID mismatch: expected %d, got %d", expSC.FlowID, actSC.FlowID)
+	}
+	if expSC.HdrLen != actSC.HdrLen {
+		t.Fatalf("HdrLen mismatch: expected %d, got %d", expSC.HdrLen, actSC.HdrLen)
+	}
+	if expSC.PayloadLen != actSC.PayloadLen {
+		t.Fatalf("PayloadLen mismatch: expected %d, got %d", expSC.PayloadLen, actSC.PayloadLen)
+	}
+
+	// Raw src/dst addresses in the SCION header, if you care:
+	if !bytes.Equal(expSC.RawSrcAddr, actSC.RawSrcAddr) {
+		t.Fatalf("RawSrcAddr mismatch:\nexp=%x\ngot=%x", expSC.RawSrcAddr, actSC.RawSrcAddr)
+	}
+	if !bytes.Equal(expSC.RawDstAddr, actSC.RawDstAddr) {
+		t.Fatalf("RawDstAddr mismatch:\nexp=%x\ngot=%x", expSC.RawDstAddr, actSC.RawDstAddr)
+	}
+
+	// --- UDP header ---
+	if expUDP.SrcPort != actUDP.SrcPort {
+		t.Fatalf("UDP SrcPort mismatch: expected %d, got %d", expUDP.SrcPort, actUDP.SrcPort)
+	}
+	if expUDP.DstPort != actUDP.DstPort {
+		t.Fatalf("UDP DstPort mismatch: expected %d, got %d", expUDP.DstPort, actUDP.DstPort)
+	}
+	if expUDP.Length != actUDP.Length {
+		t.Fatalf("UDP Length mismatch: expected %d, got %d", expUDP.Length, actUDP.Length)
+	}
+	// checksum may legitimately differ if something upstream changes, so
+	// you can decide whether you want to assert this:
+	if expUDP.Checksum != actUDP.Checksum {
+		t.Fatalf("UDP Checksum mismatch: expected 0x%04x, got 0x%04x",
+			expUDP.Checksum, actUDP.Checksum)
+	}
+
+	// --- L4 payload ---
+	if !bytes.Equal(expPayload, actPayload) {
+		t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
+	}
+}
+
+//--------------- Tests ------------------------
+
+func TestTranslateIpUdpToScion4(t *testing.T) {
+	/*
+		Translate UDP/IPv6 to UDP/SCION with a UDP/IPv4 underlay.
+	*/
+
+	// Load Packets
+	pkts := LoadPackets(t, "/home/paul/Scintra/wireguard-go/translator/data/translate_udp_ipv4.bin")
+
+	// Input
+	input := pkts[0]
+
+	// Expected
+	expected := pkts[1]
+
+	// Translator
+	translator := NewTranslator(nil)
+
+	// HostIP
+	hostIP := mustParseIP(t, "10.0.0.1")
+
+	//IA
+	//srcIA := mustIA(t, 1, 64496)
+	//dstIA := mustIA(t, 2, 64497)
+
+	//GetPathCallback
+	GetPathCallback := func(srcIA, dstIA addr.IA) (snetpath.Path, bool) {
+		fake := loadTestPath(t, 0)
+		return fake, true
+	}
+
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32767, GetPathCallback)
+	if err != nil {
+		t.Fatalf("Error in TranslateEgress: %s", err)
+	}
+
+	//------------------- Compare
+	compareScion(t, expected, scionBytes)
+
+	//------------------- Assertions
+	if !bytes.Equal(scionBytes, expected) {
+		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
+	}
+
+}
+
+func TestTranslateScion4ToIpUdp(t *testing.T) {
+
+}
+
+func TestTranslateIpUdpToScion4Local(t *testing.T) {
+
+}
+
+func TestTranslateScion6ToIpUdp(t *testing.T) {
+
+}
+
+func TestTranslateIpUdpToScion6(t *testing.T) {
+
+}
+
+func TestTranslateIpUdpToScion6Local(t *testing.T) {
+
+}

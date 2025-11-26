@@ -17,6 +17,10 @@ WG_SERVER_IP="10.10.10.1/32"
 WG_CLIENT_IP="10.10.10.2/32"
 SERVER_ENDPOINT="10.0.0.1:51820"
 
+# IPv6 im Overlay
+WG_SERVER_IP6="fd00::1/64"
+WG_CLIENT_IP6="fd00::2/64"
+
 # All Paths are from .sh location
 
 # Paths to keys
@@ -89,13 +93,16 @@ function configure_interfaces() {
 	echo "+ Assigning tunnel IPs and bringing up interfaces"
 
 	sudo ip netns exec $SERVER ip addr add $WG_SERVER_IP dev $WG_SERVER
+	sudo ip netns exec $SERVER ip addr add $WG_SERVER_IP6 dev $WG_SERVER
 	sudo ip netns exec Server ip link set wg-server up
-	sudo ip netns exec Server ip route add 10.10.10.2/32 dev wg-server
+	#sudo ip netns exec Server ip route add 10.10.10.2/32 dev wg-server
+	sudo ip netns exec Server ip -6 route add fd00::/64 dev wg-server
 	
 	sudo ip netns exec $CLIENT ip addr add $WG_CLIENT_IP dev $WG_CLIENT
+	sudo ip netns exec $CLIENT ip addr add $WG_CLIENT_IP6 dev $WG_CLIENT
 	sudo ip netns exec Client ip link set wg-client up
-	sudo ip netns exec Client ip route add 10.10.10.1/32 dev wg-client
-
+	#sudo ip netns exec Client ip route add 10.10.10.1/32 dev wg-client
+	sudo ip netns exec Client ip -6 route add fd00::/64 dev wg-client
 }
 
 
@@ -126,6 +133,7 @@ EOF
 set=1
 public_key=$PEER_PUBLIC_KEY_HEX_SERVER
 allowed_ip=$WG_CLIENT_IP
+allowed_ip=$WG_CLIENT_IP6
 endpoint=10.0.0.2:51820
 persistent_keepalive_interval=25
 EOF
@@ -142,6 +150,7 @@ EOF
 set=1
 public_key=$PEER_PUBLIC_KEY_HEX_CLIENT
 allowed_ip=$WG_SERVER_IP
+allowed_ip=$WG_SERVER_IP6
 endpoint=10.0.0.1:51820
 persistent_keepalive_interval=25
 EOF
@@ -200,7 +209,8 @@ function up() {
 	configure_wireguard
 
 	echo "+ Tunnel setup complete."
-	echo "+ Test with: sudo ip netns exec $CLIENT ping -nc 3 ${WG_SERVER_IP%/*}"
+	echo "+ Test IPv4 with: sudo ip netns exec $CLIENT ping -nc 3 ${WG_SERVER_IP%/*}"
+	echo "+ Test IPv6 with: sudo ip netns exec $CLIENT ping -nc 3 ${WG_SERVER_IP6%/*}"
 
 }
 

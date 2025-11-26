@@ -10,10 +10,20 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
-	"github.com/scionproto/scion/pkg/slayers/path"
-	"github.com/scionproto/scion/pkg/slayers/path/empty"
+	snetpath "github.com/scionproto/scion/pkg/snet/path"
+
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
 )
+
+type Translator struct {
+	cache PathCache
+	//localISD uint16
+	//localASN uint32
+}
+
+func NewTranslator(cache PathCache) *Translator {
+	return &Translator{cache: cache}
+}
 
 const (
 	// SCION-mapped IPv6 prefix = fc00::/8
@@ -21,28 +31,37 @@ const (
 )
 
 type PathCache interface {
-	// Lookup returns a tuple (pathBytes, nextHopUDPAddr, ok) if present
-	Lookup(dstIA addr.IA) ([]byte, *net.UDPAddr, bool)
-
-	// LocalIA returns local ISD and ASN as (isd, asn)
-	LocalIA() (uint16, uint32)
+	Lookup(srcIA, dstIA addr.IA) ([]snetpath.Path, bool)
 }
 
-type DummyPathCache struct{} // placeholder for now
+func (t *Translator) ReadPacket(pkt []byte, isIPv6 bool) ([]byte, error) {
+	/*
+		Main entry for the Translation atleast for now.
+		We can later move the decisions into the send.go
+	*/
 
-func (d *DummyPathCache) Lookup(dstIA addr.IA) ([]byte, *net.UDPAddr, bool) {
-	return nil, nil, false
+	return pkt, nil
 }
 
-// Local ISD & Local ASN, local = dst
-func (d *DummyPathCache) LocalIA() (uint16, uint32) {
-	return 1, 64512
-	//return 1, 42
+func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (snetpath.Path, bool) {
+	//Paths retrieval from PathCache
+	paths, _ := t.cache.Lookup(srcIA, dstIA)
+	//Path Selection Criteria
+	//Just select first path for now
+	path := selectPath(paths)
+
+	return path, true
 }
+
+func selectPath(paths []snetpath.Path) snetpath.Path {
+	return paths[0]
+}
+
+type GetPathFunc func(srcIA, dstIA addr.IA) (snetpath.Path, bool)
 
 // IPv6 -> SCION
 // returns SCION packet bytes and the UDP next-hop to send to if successful
-func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache PathCache) ([]byte, *net.UDPAddr, error) {
+func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
 	// Parse IPv6 packet
 	packet := gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
 	ip6Layer := packet.Layer(layers.LayerTypeIPv6)
@@ -60,13 +79,34 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 		return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
 	}
 
-	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
-
-	pathBytes, nextHop, ok := pathCache.Lookup(dstIA)
-	if !ok || len(pathBytes) == 0 {
-		// return nil, nil, errors.New("no path available for dst IA")
-		fmt.Println("PathCache miss for dst IA, falling back to direct host+port")
+	srcisd, srcasn, _, _, _, _, err := UnmapIPv6(ip6.SrcIP, 8)
+	if err != nil {
+		return nil, nil, fmt.Errorf("src unmap IPv6 failed: %w", err)
 	}
+
+	//pathBytes, nextHop, ok := pathCache.Lookup(dstIA)
+	//if !ok || len(pathBytes) == 0 {
+	// return nil, nil, errors.New("no path available for dst IA")
+	//fmt.Println("PathCache miss for dst IA, falling back to direct host+port")
+
+	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
+	srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
+
+	//Using the Callback functio
+	var (
+		selectedPath snetpath.Path
+		ok           bool
+	)
+	if getPath != nil {
+		selectedPath, ok = getPath(srcIA, dstIA)
+	} else {
+		selectedPath, ok = t.getPathFromCache(srcIA, dstIA)
+	}
+	if !ok {
+		return nil, nil, errors.New("no path available for dst IA")
+	}
+	//Return a snet.path.Scion and nexthopfield
+	nextHop := selectedPath.UnderlayNextHop()
 
 	// extract L4 layer and ensure supported protocols (UDP, TCP)
 	var l4Payload []byte
@@ -118,14 +158,12 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 		}
 	}
 
-	//ToDo: Use actual pathCache and path once those are done
-	// TODO: find out from where to use local ISD and local ASN
-	localISD, localASN := pathCache.LocalIA() // PathCache should return dstISD and dstASN
-	path := &empty.Path{}
-	//ToDo: Rename hostIP to srcIP and dstHost to dstIP
-	//Path Docu: https://pkg.go.dev/github.com/scionproto/scion@v0.12.0/pkg/slayers/path
-	//scionBytes, err := BuildSCIONPacket(localISD, localASN, uint16(isd), asn, hostIP, dstHost, l4nextHeader, pathBytes, l4Payload)
-	scionBytes, err := BuildSCIONPacket(localISD, localASN, isd, asn, hostIP, dstHost, l4nextHeader, path, l4Payload)
+	//TODO: What does this do? Needs implementation
+	//localISD, localASN := pathcache.LocalIA()
+	localISD := srcisd
+	localASN := srcasn
+
+	scionBytes, err := BuildSCIONPacket(localISD, localASN, uint16(isd), asn, hostIP, dstHost, l4nextHeader, selectedPath, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 	}
@@ -134,7 +172,7 @@ func TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, pathCache Path
 }
 
 // SCION -> IPv6
-func TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
+func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
 	var scion slayers.SCION
 	//var scmp slayers.SCMP
 	var udp layers.UDP
@@ -301,9 +339,9 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 	return isd, asn, localPrefix, subnet, hostIP, hostIsIPv4, nil
 }
 
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path path.Path, l4Payload []byte) ([]byte, error) {
-	ia, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
+func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path snetpath.Path, l4Payload []byte) ([]byte, error) {
 	//ToDO: dstISD and localISD should both be 1 where do you get dstISD 0? DstASN is also 0, we need to get dstASN from somewhere too.
+	ia, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst IA: %w", err)
 	}
@@ -322,9 +360,14 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 		DstIA:      ia,
 		RawSrcAddr: srcHost,
 		RawDstAddr: dstHost,
-		Path:       path,
+		//Path will be set with teh Dataplane later
 	}
 	pkt.Payload = l4Payload
+
+	//This Sets the Path once the scion paket is build
+	if err := path.DataplanePath.SetPath(pkt); err != nil {
+		return nil, fmt.Errorf("set dataplane path: %w", err)
+	}
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
