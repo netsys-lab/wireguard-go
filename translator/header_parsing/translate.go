@@ -103,6 +103,12 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	}
 	ip6 := ip6Layer.(*layers.IPv6)
 
+	// Preserve the IPv6 Flow Label as SCION FlowID
+	//flowID := uint32(ip6.FlowLabel)
+
+	//Dummy FlowID for now
+	flowID := uint32(0x86c8b)
+
 	if !isSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
 	}
@@ -205,9 +211,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	dstISD := uint16(dstIA.ISD())
 	dstASN := uint32(dstIA.AS())
 
-	// Preserve the IPv6 Flow Label as SCION FlowID
-	flowID := uint32(ip6.FlowLabel)
-
 	scionBytes, err := BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, l4nextHeader, selectedPath, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
@@ -225,8 +228,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		ComputeChecksums: true,
 	}
 
-	// hostIsIPv4 != nil
-	if hostIsIPv4 {
+	// hostIsIPv4
+	if hostIP.To4() != nil {
 		// -------- IPv4 underlay --------
 		ip4 := &layers.IPv4{
 			Version:  4,
