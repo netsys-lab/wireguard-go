@@ -22,6 +22,32 @@ import (
 
 //-------------- HELPER ------------------------
 
+func dumpScionHeader(t *testing.T, scionBytes []byte) {
+	t.Helper()
+	pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv4, gopacket.Default)
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		t.Logf("no outer UDP layer")
+		return
+	}
+	udp := udpLayer.(*layers.UDP)
+
+	sc := &slayers.SCION{}
+	if err := sc.DecodeFromBytes(udp.Payload, gopacket.NilDecodeFeedback); err != nil {
+		t.Logf("SCION decode error: %v", err)
+		t.Logf("First 32 bytes of UDP payload: %x", udp.Payload[:min(32, len(udp.Payload))])
+		return
+	}
+	t.Logf("HdrLen=%d, PathType=%v, SrcIA=%s, DstIA=%s", sc.HdrLen, sc.PathType, sc.SrcIA, sc.DstIA)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func mustParseIP(t *testing.T, s string) net.IP {
 	t.Helper()
 	ip := net.ParseIP(s)
@@ -74,9 +100,9 @@ func loadTestPath(t *testing.T, i int) path.Path {
 	t.Helper()
 
 	//Load Raw Paths
-	raw := LoadPackets(t, "/home/paul/Scintra/wireguard-go/translator/data/paths.bin")
+	raw := LoadPackets(t, "../data/paths.bin")
 	if len(raw) == 0 {
-		t.Fatalf("no paths in /home/paul/Scintra/wireguard-go/translator/data/paths.bin")
+		t.Fatalf("no paths in ../data/paths.bin")
 	}
 
 	//Create Next Hops
@@ -148,7 +174,7 @@ func decodeScionUDP(t *testing.T, b []byte) (*slayers.SCION, *layers.UDP, []byte
 		// IPv6 underlay
 		pkt = gopacket.NewPacket(b, layers.LayerTypeIPv6, gopacket.Default)
 	default:
-		// No IP header (or something else) – try UDP directly as a fallback
+		// No IP header
 		pkt = gopacket.NewPacket(b, layers.LayerTypeUDP, gopacket.Default)
 	}
 
@@ -164,7 +190,13 @@ func decodeScionUDP(t *testing.T, b []byte) (*slayers.SCION, *layers.UDP, []byte
 		t.Fatalf("failed to decode SCION from UDP payload: %v", err)
 	}
 
-	// SCION’s L4 payload
+	//TODO: We get error here: failed to decode SCION from UDP payload: invalid header, negative pathLen {CmdHdrLen=12; addrHdrLen=24; hdrBytes=8}
+	/*
+		The UDP payload produced by TranslateEgress is not a valid SCION header
+		its common header fields are inconsistent, so the decoder calculates a negative path length and bails out.
+	*/
+
+	// scions L4 payload
 	payload := append([]byte(nil), sc.Payload...)
 
 	return sc, udp, payload
@@ -199,7 +231,7 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 		t.Fatalf("PayloadLen mismatch: expected %d, got %d", expSC.PayloadLen, actSC.PayloadLen)
 	}
 
-	// Raw src/dst addresses in the SCION header, if you care:
+	// Raw addresses in the scion header
 	if !bytes.Equal(expSC.RawSrcAddr, actSC.RawSrcAddr) {
 		t.Fatalf("RawSrcAddr mismatch:\nexp=%x\ngot=%x", expSC.RawSrcAddr, actSC.RawSrcAddr)
 	}
@@ -217,8 +249,7 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 	if expUDP.Length != actUDP.Length {
 		t.Fatalf("UDP Length mismatch: expected %d, got %d", expUDP.Length, actUDP.Length)
 	}
-	// checksum may legitimately differ if something upstream changes, so
-	// you can decide whether you want to assert this:
+	// checksum
 	if expUDP.Checksum != actUDP.Checksum {
 		t.Fatalf("UDP Checksum mismatch: expected 0x%04x, got 0x%04x",
 			expUDP.Checksum, actUDP.Checksum)
@@ -238,7 +269,7 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 	*/
 
 	// Load Packets
-	pkts := LoadPackets(t, "/home/paul/Scintra/wireguard-go/translator/data/translate_udp_ipv4.bin")
+	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 
 	// Input
 	input := pkts[0]
@@ -266,6 +297,9 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
+
+	//------------------- Quick ScionHeaderDump
+	dumpScionHeader(t, scionBytes)
 
 	//------------------- Compare
 	compareScion(t, expected, scionBytes)
