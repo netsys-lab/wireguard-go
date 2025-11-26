@@ -206,10 +206,10 @@ func decodeScionUDP(t *testing.T, b []byte) (*slayers.SCION, *layers.UDP, []byte
 
 func compareScion(t *testing.T, expected, scionBytes []byte) {
 
-	//expSC, expUDP, expPayload := decodeScionUDP(t, expected)
-	//actSC, actUDP, actPayload := decodeScionUDP(t, scionBytes)
-	expSC, expUDP, _ := decodeScionUDP(t, expected)
-	actSC, actUDP, _ := decodeScionUDP(t, scionBytes)
+	expSC, expUDP, expPayload := decodeScionUDP(t, expected)
+	actSC, actUDP, actPayload := decodeScionUDP(t, scionBytes)
+	//expSC, expUDP, _ := decodeScionUDP(t, expected)
+	//actSC, actUDP, _ := decodeScionUDP(t, scionBytes)
 
 	if expSC.SrcIA != actSC.SrcIA {
 		t.Fatalf("SrcIA mismatch: expected %s, got %s", expSC.SrcIA, actSC.SrcIA)
@@ -242,10 +242,16 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 	} else {
 		t.Logf("HdrLen match: expected %d, got %d", expSC.HdrLen, actSC.HdrLen)
 	}
+
 	if expSC.PayloadLen != actSC.PayloadLen {
 		t.Fatalf("PayloadLen mismatch: expected %d, got %d", expSC.PayloadLen, actSC.PayloadLen)
 	} else {
 		t.Logf("PayloadLen match: expected %d, got %d", expSC.PayloadLen, actSC.PayloadLen)
+	}
+
+	// --- L4 payload ---
+	if !bytes.Equal(expPayload, actPayload) {
+		t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
 	}
 
 	//Raw addresses in the scion header
@@ -281,17 +287,56 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 	} else {
 		t.Logf("TrafficClass match: expected %d, got %d", expUDP.Length, actUDP.Length)
 	}
+
 	// checksum
 	if expUDP.Checksum != actUDP.Checksum {
 		t.Fatalf("UDP Checksum mismatch: expected 0x%04x, got 0x%04x",
 			expUDP.Checksum, actUDP.Checksum)
 	}
 
-	// --- L4 payload ---
-	//if !bytes.Equal(expPayload, actPayload) {
-	//	t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
-	//}
 }
+
+/*
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|Version| TrafficClass  |                FlowID                 |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    NextHdr    |    HdrLen     |          PayloadLen           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    PathType   |DT |DL |ST |SL |              RSV              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+*/
+
+/*
+Underlay Network (IP/UDP)
+-----------------------------------
+IPv4 or IPv6 underlay      ← optional
+UDP underlay                ← port = 30041 or similar
+-----------------------------------
+SCION Header
+SCION Path
+SCION Address Fields
+-----------------------------------
+L4 Payload
+  ├─ SCION-UDP
+  ├─ SCMP (ICMP of SCION)
+  ├─ SCION-TCP (rare)
+  └─ custom protocol
+-----------------------------------
+Application Payload (“TEST”)
+*/
+
+/*
+	IPv4 (Underlay)
+    └─ UDP (Underlay)
+         └─ SCION Header
+              ├─ Common Header
+              ├─ Address Header (SrcIA, DstIA, Host Addrs)
+              ├─ Path Header (Paths, InfoFields, HopFields)
+              └─ L4 Header (SCION-UDP / SCMP / TCP)
+                   └─ Payload
+*/
 
 //--------------- Tests ------------------------
 
