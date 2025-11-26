@@ -1,6 +1,7 @@
 package header_parsing
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -10,9 +11,12 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
-	snetpath "github.com/scionproto/scion/pkg/snet/path"
+	"github.com/scionproto/scion/pkg/snet"
 
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
+
+	"github.com/scionproto/scion/pkg/snet/path"
+	"golang.zx2c4.com/wireguard/translator/pathcache"
 )
 
 type Translator struct {
@@ -31,7 +35,7 @@ const (
 )
 
 type PathCache interface {
-	Lookup(srcIA, dstIA addr.IA) ([]snetpath.Path, bool)
+	Get(ctx context.Context, srcIA, dstIA addr.IA) ([]pathcache.CachedPath, error)
 }
 
 func (t *Translator) ReadPacket(pkt []byte, isIPv6 bool) ([]byte, error) {
@@ -43,25 +47,35 @@ func (t *Translator) ReadPacket(pkt []byte, isIPv6 bool) ([]byte, error) {
 	return pkt, nil
 }
 
-func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (snetpath.Path, bool) {
+func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	//Paths retrieval from PathCache
-	paths, _ := t.cache.Lookup(srcIA, dstIA)
+	ctx := context.Background()
+	CachedPaths, _ := t.cache.Get(ctx, srcIA, dstIA)
 	//Path Selection Criteria
 	//Just select first path for now
-	path := selectPath(paths)
+	selectedcachedpath := selectPath(CachedPaths)
 
-	return path, true
+	//Extract snet path.Path including type assertion
+	path, ok := selectedcachedpath.Path.(path.Path)
+	if !ok {
+		panic("Path is not a *path.Path")
+	}
+
+	//Until fullly integrated read snetpath.Path from cached path
+
+	return path, nil
 }
 
-func selectPath(paths []snetpath.Path) snetpath.Path {
+func selectPath(paths []pathcache.CachedPath) pathcache.CachedPath {
 	return paths[0]
 }
 
-type GetPathFunc func(srcIA, dstIA addr.IA) (snetpath.Path, bool)
+type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 
 // IPv6 -> SCION
 // returns SCION packet bytes and the UDP next-hop to send to if successful
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
+
 	// Parse IPv6 packet
 	packet := gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
 	ip6Layer := packet.Layer(layers.LayerTypeIPv6)
@@ -93,16 +107,13 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
 
 	//Using the Callback functio
-	var (
-		selectedPath snetpath.Path
-		ok           bool
-	)
+	var selectedPath path.Path
 	if getPath != nil {
-		selectedPath, ok = getPath(srcIA, dstIA)
+		selectedPath, err = getPath(srcIA, dstIA)
 	} else {
-		selectedPath, ok = t.getPathFromCache(srcIA, dstIA)
+		selectedPath, err = t.getPathFromCache(srcIA, dstIA)
 	}
-	if !ok {
+	if err != nil {
 		return nil, nil, errors.New("no path available for dst IA")
 	}
 	//Return a snet.path.Scion and nexthopfield
@@ -339,7 +350,7 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 	return isd, asn, localPrefix, subnet, hostIP, hostIsIPv4, nil
 }
 
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path snetpath.Path, l4Payload []byte) ([]byte, error) {
+func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path snet.Path, l4Payload []byte) ([]byte, error) {
 	//ToDO: dstISD and localISD should both be 1 where do you get dstISD 0? DstASN is also 0, we need to get dstASN from somewhere too.
 	ia, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
@@ -365,7 +376,7 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 	pkt.Payload = l4Payload
 
 	//This Sets the Path once the scion paket is build
-	if err := path.DataplanePath.SetPath(pkt); err != nil {
+	if err := path.Dataplane().SetPath(pkt); err != nil {
 		return nil, fmt.Errorf("set dataplane path: %w", err)
 	}
 

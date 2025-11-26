@@ -17,7 +17,7 @@ import (
 
 	//"golang.zx2c4.com/wireguard/translator/pathcache"
 	"github.com/scionproto/scion/pkg/addr"
-	snetpath "github.com/scionproto/scion/pkg/snet/path"
+	"github.com/scionproto/scion/pkg/snet/path"
 )
 
 //-------------- HELPER ------------------------
@@ -70,7 +70,7 @@ func LoadPackets(t *testing.T, rel string) [][]byte {
 	return out
 }
 
-func loadTestPath(t *testing.T, i int) snetpath.Path {
+func loadTestPath(t *testing.T, i int) path.Path {
 	t.Helper()
 
 	//Load Raw Paths
@@ -101,11 +101,11 @@ func loadTestPath(t *testing.T, i int) snetpath.Path {
 		// Interfaces, Latency, etc. can be filled if you care.
 	}
 
-	dp := snetpath.SCION{
+	dp := path.SCION{
 		Raw: raw[0],
 	}
 
-	return snetpath.Path{
+	return path.Path{
 		Src:           srcIA,
 		Dst:           dstIA,
 		DataplanePath: dp,
@@ -257,9 +257,9 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 	//dstIA := mustIA(t, 2, 64497)
 
 	//GetPathCallback
-	GetPathCallback := func(srcIA, dstIA addr.IA) (snetpath.Path, bool) {
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
 		fake := loadTestPath(t, 0)
-		return fake, true
+		return fake, nil
 	}
 
 	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32767, GetPathCallback)

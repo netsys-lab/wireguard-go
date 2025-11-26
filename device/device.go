@@ -293,7 +293,7 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.net.bind = bind
 	device.tun.device = tunDevice
 	//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
-	pathcache := pathcache.New()
+	pathcache := pathcache.NewPathPool(nil)
 	device.translator = header_parsing.NewTranslator(pathcache)
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
