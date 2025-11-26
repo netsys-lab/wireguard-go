@@ -205,12 +205,79 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	dstISD := uint16(dstIA.ISD())
 	dstASN := uint32(dstIA.AS())
 
-	scionBytes, err := BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, l4nextHeader, selectedPath, l4Payload)
+	// Preserve the IPv6 Flow Label as SCION FlowID
+	flowID := uint32(ip6.FlowLabel)
+
+	scionBytes, err := BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, l4nextHeader, selectedPath, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 	}
 
-	return scionBytes, nextHop, nil
+	//return scionBytes, nextHop, nil
+
+	//scionBytes = [ SCION header | SCION L4 payload ]
+
+	//Wrap Scion Bytes in IP and UDP before returning
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	// hostIsIPv4 != nil
+	if hostIsIPv4 {
+		// -------- IPv4 underlay --------
+		ip4 := &layers.IPv4{
+			Version:  4,
+			TTL:      64,
+			Protocol: layers.IPProtocolUDP,
+			SrcIP:    hostIP.To4(),
+			DstIP:    nextHop.IP.To4(),
+		}
+
+		udp := &layers.UDP{
+			SrcPort: layers.UDPPort(hostPort),
+			DstPort: layers.UDPPort(nextHop.Port),
+		}
+		udp.SetNetworkLayerForChecksum(ip4)
+
+		if err := gopacket.SerializeLayers(buf, opts,
+			ip4,
+			udp,
+			gopacket.Payload(scionBytes),
+		); err != nil {
+			return nil, nil, fmt.Errorf("failed to serialize IPv4/UDP+SCION: %w", err)
+		}
+	} else {
+		// -------- IPv6 underlay --------
+		ip6Under := &layers.IPv6{
+			Version:    6,
+			HopLimit:   64,
+			NextHeader: layers.IPProtocolUDP,
+			SrcIP:      hostIP,
+			DstIP:      nextHop.IP,
+		}
+
+		udp := &layers.UDP{
+			SrcPort: layers.UDPPort(hostPort),
+			DstPort: layers.UDPPort(nextHop.Port),
+		}
+		udp.SetNetworkLayerForChecksum(ip6Under)
+
+		if err := gopacket.SerializeLayers(buf, opts,
+			ip6Under,
+			udp,
+			gopacket.Payload(scionBytes),
+		); err != nil {
+			return nil, nil, fmt.Errorf("failed to serialize IPv6/UDP+SCION: %w", err)
+		}
+	}
+
+	//Outer = [ IPv4 header | UDP header | SCION header | SCION L4 payload ]
+	outer := buf.Bytes()
+	return outer, nextHop, nil
+
 }
 
 // SCION -> IPv6
@@ -381,7 +448,8 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 	return isd, asn, localPrefix, subnet, hostIP, hostIsIPv4, nil
 }
 
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path snet.Path, l4Payload []byte) ([]byte, error) {
+// This only return scion bytes
+func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, flowID uint32, nextHeader slayers.L4ProtocolType, path snet.Path, l4Payload []byte) ([]byte, error) {
 	//ToDO: dstISD and localISD should both be 1 where do you get dstISD 0? DstASN is also 0, we need to get dstASN from somewhere too.
 	dstIA, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
@@ -392,7 +460,7 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 	pkt := &slayers.SCION{
 		Version:      slayers.SCIONVersion,
 		TrafficClass: 0,
-		FlowID:       0,
+		FlowID:       flowID,
 		NextHdr:      nextHeader,
 		SrcIA:        srcIA,
 		DstIA:        dstIA,
