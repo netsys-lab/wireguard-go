@@ -188,22 +188,24 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 	}
 
-	//TODO: What does this do? Needs implementation
-	//localISD, localASN := pathcache.LocalIA()
-	localISD := srcisd
-	localASN := srcasn
-
 	//Change net.IP to netip.Addr
-	srcAddr, err := ipToNetip(hostIP)
-	if err != nil {
-		return nil, nil, fmt.Errorf("convert hostIP: %w", err)
-	}
-	dstAddr, err := ipToNetip(dstHost)
-	if err != nil {
-		return nil, nil, fmt.Errorf("convert dstHost: %w", err)
-	}
+	/*
+		srcAddr, err := ipToNetip(hostIP)
+		if err != nil {
+			return nil, nil, fmt.Errorf("convert hostIP: %w", err)
+		}
+		dstAddr, err := ipToNetip(dstHost)
+		if err != nil {
+			return nil, nil, fmt.Errorf("convert dstHost: %w", err)
+		}
+	*/
 
-	scionBytes, err := BuildSCIONPacket(localISD, localASN, uint16(isd), asn, srcAddr, dstAddr, l4nextHeader, selectedPath, l4Payload)
+	localISD := uint16(srcIA.ISD())
+	localASN := uint32(srcIA.AS())
+	dstISD := uint16(dstIA.ISD())
+	dstASN := uint32(dstIA.AS())
+
+	scionBytes, err := BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, l4nextHeader, selectedPath, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 	}
@@ -379,23 +381,38 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 	return isd, asn, localPrefix, subnet, hostIP, hostIsIPv4, nil
 }
 
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost netip.Addr, dstHost netip.Addr, nextHeader slayers.L4ProtocolType, path snet.Path, l4Payload []byte) ([]byte, error) {
+func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, nextHeader slayers.L4ProtocolType, path snet.Path, l4Payload []byte) ([]byte, error) {
 	//ToDO: dstISD and localISD should both be 1 where do you get dstISD 0? DstASN is also 0, we need to get dstASN from somewhere too.
-	ia, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
+	dstIA, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst IA: %w", err)
 	}
+	srcIA := addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN))
 
 	pkt := &slayers.SCION{
-		Version: slayers.SCIONVersion,
-		NextHdr: nextHeader,
-		SrcIA:   addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN)),
-		DstIA:   ia,
+		Version:      slayers.SCIONVersion,
+		TrafficClass: 0,
+		FlowID:       0,
+		NextHdr:      nextHeader,
+		SrcIA:        srcIA,
+		DstIA:        dstIA,
 	}
 
 	//Need addr.Host to set address of pkt
-	pkt.SetSrcAddr(addr.HostIP(srcHost))
-	pkt.SetDstAddr(addr.HostIP(dstHost))
+	//pkt.SetSrcAddr(addr.HostIP(srcHost))
+	//pkt.SetDstAddr(addr.HostIP(dstHost))
+
+	pkt.RawSrcAddr = srcHost
+	pkt.RawDstAddr = dstHost
+
+	dp := path.Dataplane()
+
+	if dp == nil {
+		return nil, fmt.Errorf("dataplen path is nil")
+	}
+	if err := dp.SetPath(pkt); err != nil {
+		return nil, fmt.Errorf("set dataplen path: %w", err)
+	}
 
 	pkt.Payload = l4Payload
 
@@ -404,6 +421,11 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 		FixLengths:       true,
 		ComputeChecksums: true,
 	}
+
+	if pkt.PathType != 0 && pkt.Path == nil {
+		return nil, fmt.Errorf("SCION header has PathType=%v but Path=nil", pkt.PathType)
+	}
+
 	if err := gopacket.SerializeLayers(buf, opts, pkt); err != nil {
 		return nil, fmt.Errorf("failed to serialize SCION packet: %w", err)
 	}
