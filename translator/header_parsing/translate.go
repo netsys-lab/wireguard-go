@@ -109,6 +109,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//Dummy FlowID for now
 	flowID := uint32(0x86c8b)
 
+	//Preserve Traffic Class
+	tc := ip6.TrafficClass
+
 	if !isSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
 	}
@@ -211,7 +214,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	dstISD := uint16(dstIA.ISD())
 	dstASN := uint32(dstIA.AS())
 
-	scionBytes, err := BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, l4nextHeader, selectedPath, l4Payload)
+	scionBytes, err := BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, tc, l4nextHeader, selectedPath, l4Payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 	}
@@ -452,7 +455,8 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 }
 
 // This only return scion bytes
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, flowID uint32, nextHeader slayers.L4ProtocolType, path snet.Path, l4Payload []byte) ([]byte, error) {
+func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, flowID uint32, tc uint8, udpSrcPort, udpDstPort layers.UDPPort,
+	udpPayload []byte, path snet.Path, l4Payload []byte) ([]byte, error) {
 	//ToDO: dstISD and localISD should both be 1 where do you get dstISD 0? DstASN is also 0, we need to get dstASN from somewhere too.
 	dstIA, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
@@ -462,19 +466,29 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 
 	pkt := &slayers.SCION{
 		Version:      slayers.SCIONVersion,
-		TrafficClass: 0,
+		TrafficClass: tc,
 		FlowID:       flowID,
-		NextHdr:      nextHeader,
+		NextHdr:      slayers.L4UDP,
 		SrcIA:        srcIA,
 		DstIA:        dstIA,
 	}
 
-	//Need addr.Host to set address of pkt
-	//pkt.SetSrcAddr(addr.HostIP(srcHost))
-	//pkt.SetDstAddr(addr.HostIP(dstHost))
+	//pkt.RawSrcAddr = srcHost
+	//pkt.RawDstAddr = dstHost
+	//Need addr.Host to set address of pkt otherwise it does not work
 
-	pkt.RawSrcAddr = srcHost
-	pkt.RawDstAddr = dstHost
+	// Convert net.IP to netip.Addr
+	srcAddr, err := ipToNetip(srcHost)
+	if err != nil {
+		return nil, fmt.Errorf("convert srcHost: %w", err)
+	}
+	dstAddr, err := ipToNetip(dstHost)
+	if err != nil {
+		return nil, fmt.Errorf("convert dstHost: %w", err)
+	}
+
+	pkt.SetSrcAddr(addr.HostIP(srcAddr))
+	pkt.SetDstAddr(addr.HostIP(dstAddr))
 
 	dp := path.Dataplane()
 
@@ -485,7 +499,20 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 		return nil, fmt.Errorf("set dataplen path: %w", err)
 	}
 
-	pkt.Payload = l4Payload
+	//pkt.Payload = l4Payload
+	//pkt.PayloadLen = uint16(len(l4Payload))
+
+	if pkt.PathType != 0 && pkt.Path == nil {
+		return nil, fmt.Errorf("SCION header has PathType=%v but Path=nil", pkt.PathType)
+	}
+
+	// Build inner UDP as a real layer, not raw bytes
+	innerUDP := &layers.UDP{
+		SrcPort: udpSrcPort,
+		DstPort: udpDstPort,
+	}
+	innerUDP.Payload = udpPayload
+	innerUDP.SetNetworkLayerForChecksum(sc)
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
@@ -493,11 +520,10 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 		ComputeChecksums: true,
 	}
 
-	if pkt.PathType != 0 && pkt.Path == nil {
-		return nil, fmt.Errorf("SCION header has PathType=%v but Path=nil", pkt.PathType)
-	}
-
-	if err := gopacket.SerializeLayers(buf, opts, pkt); err != nil {
+	if err := gopacket.SerializeLayers(buf, opts,
+		pkt,
+		gopacket.Payload(l4Payload),
+	); err != nil {
 		return nil, fmt.Errorf("failed to serialize SCION packet: %w", err)
 	}
 	return buf.Bytes(), nil
