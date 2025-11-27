@@ -249,11 +249,6 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 		t.Logf("PayloadLen match: expected %d, got %d", expSC.PayloadLen, actSC.PayloadLen)
 	}
 
-	// --- L4 payload ---
-	if !bytes.Equal(expPayload, actPayload) {
-		t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
-	}
-
 	//Raw addresses in the scion header
 	if !bytes.Equal(expSC.RawSrcAddr, actSC.RawSrcAddr) {
 		t.Fatalf("RawSrcAddr mismatch:\nexp=%x\ngot=%x", expSC.RawSrcAddr, actSC.RawSrcAddr)
@@ -292,6 +287,11 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 	if expUDP.Checksum != actUDP.Checksum {
 		t.Fatalf("UDP Checksum mismatch: expected 0x%04x, got 0x%04x",
 			expUDP.Checksum, actUDP.Checksum)
+	}
+
+	// --- L4 payload ---
+	if !bytes.Equal(expPayload, actPayload) {
+		t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
 	}
 
 }
@@ -382,9 +382,9 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 	compareScion(t, expected, scionBytes)
 
 	//------------------- Assertions
-	//if !bytes.Equal(scionBytes, expected) {
-	//	t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
-	//}
+	if !bytes.Equal(scionBytes, expected) {
+		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
+	}
 
 }
 
@@ -432,9 +432,9 @@ func TestTranslateScion4ToIpUdp(t *testing.T) {
 	compareScion(t, expected, scionBytes)
 
 	//------------------- Assertions
-	//if !bytes.Equal(scionBytes, expected) {
-	//	t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
-	//}
+	if !bytes.Equal(scionBytes, expected) {
+		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
+	}
 }
 
 func TestTranslateIpUdpToScion4Local(t *testing.T) {

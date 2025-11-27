@@ -184,7 +184,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	dstASN := uint32(dstIA.AS())
 
 	// extract L4 layer and ensure supported protocols (UDP, TCP)
-	//var l4Payload []byte
 	nextHeader := ip6.NextHeader
 	var l4nextHeader slayers.L4ProtocolType
 
@@ -200,26 +199,35 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		l4nextHeader = slayers.L4UDP
 
 		// Build a *fresh* UDP for the inner packet (to avoid sharing state)
-		innerUDP := &layers.UDP{
-			SrcPort: udp.SrcPort,
-			DstPort: udp.DstPort,
-		}
-		//innerUDP.Payload = udp.Payload // payload is "TEST"
-		// --- FIX: Extract correct payload ---
-		var appPayload []byte
-		if app := packet.ApplicationLayer(); app != nil {
-			appPayload = append([]byte(nil), app.Payload()...) // copy
+		innerUDP := &slayers.UDP{
+			SrcPort: uint16(udp.SrcPort),
+			DstPort: uint16(udp.DstPort),
 		}
 
-		scionBytes, err = BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, tc, l4nextHeader, innerUDP, appPayload, selectedPath)
+		// --- FIX: Extract correct payload ---
+		var l4Payload []byte
+		if app := packet.ApplicationLayer(); app != nil {
+			l4Payload = append([]byte(nil), app.Payload()...) // copy
+		}
+
+		//innerUDP.Payload = appPayload // payload is "TEST"
+		scionBytes, err = BuildSCIONPacket(
+			localISD, localASN, dstISD, dstASN,
+			hostIP, dstHost,
+			flowID, tc,
+			l4nextHeader, innerUDP, l4Payload,
+			selectedPath,
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 		}
+
 	case layers.IPProtocolTCP:
 		tcpLayer := packet.Layer(layers.LayerTypeTCP)
 		if tcpLayer == nil {
 			return nil, nil, errors.New("tcp layer missing")
 		}
+
 		tcp := tcpLayer.(*layers.TCP)
 		l4nextHeader = slayers.L4TCP
 
@@ -243,19 +251,21 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 		//innerTCP.Payload = tcp.Payload
 
-		var appPayload []byte
+		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
-			appPayload = append([]byte(nil), app.Payload()...) // copy
+			l4Payload = append([]byte(nil), app.Payload()...) // copy
 		}
 
-		scionBytes, err = BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, tc, l4nextHeader, innerTCP, appPayload, selectedPath)
+		scionBytes, err = BuildSCIONPacket(localISD, localASN, dstISD, dstASN, hostIP, dstHost, flowID, tc, l4nextHeader, innerTCP, l4Payload, selectedPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 		}
+
 	case layers.IPProtocolICMPv6: // 58
 		// for simplicity no ICMPv6 -> SCMP translation here yet
-		l4nextHeader = slayers.L4SCMP
+		//l4nextHeader = slayers.L4SCMP
 		return nil, nil, errors.New("ICMPv6 -> SCMP translation not (yet) implemented")
+
 	default:
 		return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", nextHeader)
 	}
@@ -501,27 +511,28 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 }
 
 // This only return scion bytes
-func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN uint32, srcHost net.IP, dstHost net.IP, flowID uint32, tc uint8,
-	nextHeader slayers.L4ProtocolType, l4Payload gopacket.SerializableLayer, appPayload []byte, path snet.Path) ([]byte, error) {
+func BuildSCIONPacket(
+	localISD uint16,
+	localASN uint32,
+	dstISD uint16,
+	dstASN uint32,
+	srcHost net.IP,
+	dstHost net.IP,
+	flowID uint32,
+	tc uint8,
+	nextHeader slayers.L4ProtocolType,
+	l4header gopacket.SerializableLayer, // MUST be *slayers.UDP. Issue: There is no *slayers.TCP - need to handle *layers.TCP
+	l4Payload []byte,
+	path snet.Path,
+) ([]byte, error) {
+	//TODO: Handle TCP
+	//	[ SCION header | L4 header (UDP/TCP) | application payload bytes ]
 
 	dstIA, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
 		return nil, fmt.Errorf("invalid dst IA: %w", err)
 	}
 	srcIA := addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN))
-
-	pkt := &slayers.SCION{
-		Version:      slayers.SCIONVersion,
-		TrafficClass: tc,
-		FlowID:       flowID,
-		NextHdr:      nextHeader,
-		SrcIA:        srcIA,
-		DstIA:        dstIA,
-	}
-
-	//pkt.RawSrcAddr = srcHost
-	//pkt.RawDstAddr = dstHost
-	//Need addr.Host to set address of pkt otherwise it does not work
 
 	// Convert net.IP to netip.Addr
 	srcAddr, err := ipToNetip(srcHost)
@@ -533,17 +544,31 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 		return nil, fmt.Errorf("convert dstHost: %w", err)
 	}
 
-	pkt.SetSrcAddr(addr.HostIP(srcAddr))
-	pkt.SetDstAddr(addr.HostIP(dstAddr))
-
 	dp := path.Dataplane()
 
 	if dp == nil {
 		return nil, fmt.Errorf("dataplen path is nil")
 	}
-	if err := dp.SetPath(pkt); err != nil {
-		return nil, fmt.Errorf("set dataplen path: %w", err)
+
+	pkt := &slayers.SCION{
+		Version:      slayers.SCIONVersion,
+		TrafficClass: tc,
+		FlowID:       flowID,
+		NextHdr:      nextHeader,
+		SrcIA:        srcIA,
+		DstIA:        dstIA,
 	}
+
+	if err := dp.SetPath(pkt); err != nil {
+		return nil, fmt.Errorf("set dataplane path: %w", err)
+	}
+
+	//pkt.RawSrcAddr = srcHost
+	//pkt.RawDstAddr = dstHost
+	//Need addr.Host to set address of pkt otherwise it does not work
+
+	pkt.SetSrcAddr(addr.HostIP(srcAddr))
+	pkt.SetDstAddr(addr.HostIP(dstAddr))
 
 	//pkt.Payload = l4Payload
 	//pkt.PayloadLen = uint16(len(l4Payload))
@@ -553,26 +578,39 @@ func BuildSCIONPacket(localISD uint16, localASN uint32, dstISD uint16, dstASN ui
 	}
 
 	// --- set L4 checksum using SCION as the network layer ---
-	switch l := l4Payload.(type) {
-	case *layers.UDP:
+	switch l := l4header.(type) {
+	case *slayers.UDP:
 		l.SetNetworkLayerForChecksum(pkt)
 	case *layers.TCP:
 		l.SetNetworkLayerForChecksum(pkt)
 		// later: case *slayers.SCMP: etc.
+	default:
+		// If you ever pass something else, checksums won’t be computed correctly.
+		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *slayers.TCP", l4header)
 	}
+	//SetNetworkLayerForChecmsum only accepts *layers.IPv4 or IPv6? Does not work with *slyers.SCION for pkt.
 
-	//slayers scion checksum.
+	//Compute SCION UDP Checksum manually
+	//	DstISD (2) | DstAS (4)
+	//	SrcISD (2) | SrcAS (4)
+	//	DstHostAddr (variable)
+	//	SrcHostAddr (variable)
+	//	Upper-Layer Packet Length (4)
+	//	zero (3) | Next Header (1)
+	// Take One complement sum over :  pseudo header || UDP header || UDP payload
+	// And store in 16-bit one complement in udp.checksum
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
 		FixLengths:       true,
-		ComputeChecksums: false,
+		ComputeChecksums: true,
 	}
+	//gopacket can not compute checksum for scion packets
 
 	if err := gopacket.SerializeLayers(buf, opts,
 		pkt,
-		l4Payload,
-		gopacket.Payload(appPayload),
+		l4header,
+		gopacket.Payload(l4Payload),
 	); err != nil {
 		return nil, fmt.Errorf("failed to serialize SCION+L4: %w", err)
 	}
