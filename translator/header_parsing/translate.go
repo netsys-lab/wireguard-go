@@ -292,6 +292,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		// -------- IPv4 underlay --------
 		ip4 := &layers.IPv4{
 			Version:  4,
+			IHL:      5,                       // standard 20-byte header
+			TOS:      0x20,                    // match expected TOS
+			Flags:    layers.IPv4DontFragment, // DF flag set
 			TTL:      64,
 			Protocol: layers.IPProtocolUDP,
 			SrcIP:    hostIP.To4(),
