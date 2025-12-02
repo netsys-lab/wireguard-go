@@ -121,8 +121,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//Preserve Traffic Class
 	tc := ip6.TrafficClass
 
-	//Init source Port variable
-	var SourcePort int
+	//Init Port variable
+	var SrcPort int
+	var DstPort int
 
 	if !isSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
@@ -166,18 +167,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		dstHost = host.To16() // full IPv6 host inside SCION mapping
 	}
 
-	// If pathBytes encode an "empty path", the PathCache implementation could
-	// return nextHop==nil — in that case we assume direct host+port using hostPort.
-	// Here we prefer nextHop returned by PathCache if non-nil; otherwise fallback to host+hostPort.
-	if nextHop == nil {
-		// fallback direct to mapped host and given port
-		if dstHost.To4() != nil {
-			nextHop = &net.UDPAddr{IP: dstHost, Port: hostPort}
-		} else {
-			nextHop = &net.UDPAddr{IP: dstHost, Port: hostPort, Zone: ""}
-		}
-	}
-
 	//Change net.IP to netip.Addr
 	/*
 		srcAddr, err := ipToNetip(hostIP)
@@ -216,7 +205,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstPort: uint16(udp.DstPort),
 		}
 
-		SourcePort = int(udp.SrcPort)
+		SrcPort = int(udp.SrcPort)
+		DstPort = int(udp.DstPort)
 
 		// --- FIX: Extract correct payload ---
 		var l4Payload []byte
@@ -245,7 +235,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		tcp := tcpLayer.(*layers.TCP)
 		l4nextHeader = slayers.L4TCP
 
-		SourcePort = int(tcp.SrcPort)
+		SrcPort = int(tcp.SrcPort)
+		DstPort = int(tcp.DstPort)
 
 		innerTCP := &layers.TCP{
 			SrcPort: tcp.SrcPort,
@@ -303,6 +294,18 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		ComputeChecksums: true,
 	}
 
+	// If pathBytes encode an "empty path", the PathCache implementation could
+	// return nextHop==nil — in that case we assume direct host+port using hostPort.
+	// Here we prefer nextHop returned by PathCache if non-nil; otherwise fallback to host+hostPort.
+	if nextHop == nil {
+		// fallback direct to mapped host and given port
+		if dstHost.To4() != nil {
+			nextHop = &net.UDPAddr{IP: dstHost, Port: DstPort}
+		} else {
+			nextHop = &net.UDPAddr{IP: dstHost, Port: DstPort, Zone: ""}
+		}
+	}
+
 	// hostIsIPv4
 	if hostIP.To4() != nil {
 		// -------- IPv4 underlay --------
@@ -318,7 +321,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(SourcePort),
+			SrcPort: layers.UDPPort(SrcPort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip4)
@@ -343,7 +346,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(SourcePort),
+			SrcPort: layers.UDPPort(SrcPort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip6Under)

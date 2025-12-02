@@ -489,7 +489,7 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 		return path.Path{}, nil
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32767, GetPathCallback)
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -564,7 +564,7 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 
 func TestTranslateIpUdpToScion6Local(t *testing.T) {
 	/*
-		Translate UDP/IPv6 to UDP/SCION with a UDP/IPv4 underlay and an empty path.
+		Translate UDP/IPv6 to UDP/SCION with a UDP/IPv6 underlay and an empty path.
 	*/
 	// Load Packets
 	pkts := LoadPackets(t, "../data/translate_udp_ipv6_local.bin")
@@ -587,8 +587,8 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 
 	//GetPathCallback
 	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
-		fake := loadTestPath(t, 1)
-		return fake, nil
+		//fake := loadTestPath(t, 1)
+		return path.Path{}, nil
 	}
 
 	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
