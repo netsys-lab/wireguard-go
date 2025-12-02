@@ -104,10 +104,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	ip6 := ip6Layer.(*layers.IPv6)
 
 	// Preserve the IPv6 Flow Label as SCION FlowID
-	//flowID := uint32(ip6.FlowLabel)
+	flowID := uint32(ip6.FlowLabel)
 
 	//Dummy FlowID for now
-	flowID := uint32(0x86c8b)
+	//flowID := uint32(0x86c8b) // Für IPv4
+	//flowID := uint32(0x71d6d) // Für IPv6
 
 	//Preserve Traffic Class
 	tc := ip6.TrafficClass
@@ -151,7 +152,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	if hostIsIPv4 {
 		dstHost = host.To4()
 	} else {
-		dstHost = host // full IPv6 host inside SCION mapping
+		dstHost = host.To16() // full IPv6 host inside SCION mapping
 	}
 
 	// If pathBytes encode an "empty path", the PathCache implementation could
@@ -317,11 +318,13 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	} else {
 		// -------- IPv6 underlay --------
 		ip6Under := &layers.IPv6{
-			Version:    6,
-			HopLimit:   64,
-			NextHeader: layers.IPProtocolUDP,
-			SrcIP:      hostIP,
-			DstIP:      nextHop.IP,
+			Version:      6,
+			TrafficClass: tc,
+			FlowLabel:    ip6.FlowLabel,
+			HopLimit:     64,
+			NextHeader:   layers.IPProtocolUDP,
+			SrcIP:        hostIP,
+			DstIP:        nextHop.IP,
 		}
 
 		udp := &layers.UDP{
@@ -524,7 +527,7 @@ func BuildSCIONPacket(
 	flowID uint32,
 	tc uint8,
 	nextHeader slayers.L4ProtocolType,
-	l4header gopacket.SerializableLayer, // MUST be *slayers.UDP. Issue: There is no *slayers.TCP - need to handle *layers.TCP
+	l4layer gopacket.SerializableLayer, // MUST be *slayers.UDP. Issue: There is no *slayers.TCP - need to handle *layers.TCP
 	l4Payload []byte,
 	path snet.Path,
 ) ([]byte, error) {
@@ -537,6 +540,15 @@ func BuildSCIONPacket(
 	}
 	srcIA := addr.MustIAFrom(addr.ISD(localISD), addr.AS(localASN))
 
+	pkt := &slayers.SCION{
+		Version:      slayers.SCIONVersion,
+		TrafficClass: tc,
+		FlowID:       flowID,
+		NextHdr:      nextHeader,
+		SrcIA:        srcIA,
+		DstIA:        dstIA,
+	}
+
 	// Convert net.IP to netip.Addr
 	srcAddr, err := ipToNetip(srcHost)
 	if err != nil {
@@ -547,19 +559,13 @@ func BuildSCIONPacket(
 		return nil, fmt.Errorf("convert dstHost: %w", err)
 	}
 
+	pkt.SetSrcAddr(addr.HostIP(srcAddr))
+	pkt.SetDstAddr(addr.HostIP(dstAddr))
+
 	dp := path.Dataplane()
 
 	if dp == nil {
 		return nil, fmt.Errorf("dataplen path is nil")
-	}
-
-	pkt := &slayers.SCION{
-		Version:      slayers.SCIONVersion,
-		TrafficClass: tc,
-		FlowID:       flowID,
-		NextHdr:      nextHeader,
-		SrcIA:        srcIA,
-		DstIA:        dstIA,
 	}
 
 	if err := dp.SetPath(pkt); err != nil {
@@ -570,9 +576,6 @@ func BuildSCIONPacket(
 	//pkt.RawDstAddr = dstHost
 	//Need addr.Host to set address of pkt otherwise it does not work
 
-	pkt.SetSrcAddr(addr.HostIP(srcAddr))
-	pkt.SetDstAddr(addr.HostIP(dstAddr))
-
 	//pkt.Payload = l4Payload
 	//pkt.PayloadLen = uint16(len(l4Payload))
 
@@ -581,7 +584,7 @@ func BuildSCIONPacket(
 	}
 
 	// --- set L4 checksum using SCION as the network layer ---
-	switch l := l4header.(type) {
+	switch l := l4layer.(type) {
 	case *slayers.UDP:
 		l.SetNetworkLayerForChecksum(pkt)
 	case *layers.TCP:
@@ -589,11 +592,12 @@ func BuildSCIONPacket(
 		// later: case *slayers.SCMP: etc.
 	default:
 		// If you ever pass something else, checksums won’t be computed correctly.
-		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *slayers.TCP", l4header)
+		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *slayers.TCP", l4layer)
 	}
+
 	//SetNetworkLayerForChecmsum only accepts *layers.IPv4 or IPv6? Does not work with *slyers.SCION for pkt.
 
-	//Compute SCION UDP Checksum manually
+	//----------------------------------- Manual Checksum Compute -------------------------------------------
 	//	DstISD (2) | DstAS (4)
 	//	SrcISD (2) | SrcAS (4)
 	//	DstHostAddr (variable)
@@ -602,6 +606,51 @@ func BuildSCIONPacket(
 	//	zero (3) | Next Header (1)
 	// Take One complement sum over :  pseudo header || UDP header || UDP payload
 	// And store in 16-bit one complement in udp.checksum
+	/*
+		switch udp := l4layer.(type) {
+		case *slayers.UDP:
+			// UDP header (8 bytes) + payload
+			//upperLen := uint16(8 + len(l4Payload))
+			//upperLen := uint16(len(l4Payload))
+			//udp.Length = 8 + upperLen
+			udp.Length = 0
+			udp.Checksum = 0
+
+			// Serialize UDP header (without checksum) once
+			ubuf := gopacket.NewSerializeBuffer()
+			if err := udp.SerializeTo(ubuf, gopacket.SerializeOptions{
+				FixLengths:       true,  // sets Length if needed
+				ComputeChecksums: false, // we do checksum manually
+			}); err != nil {
+				return nil, fmt.Errorf("serialize UDP for checksum: %w", err)
+			}
+			udpBytes := ubuf.Bytes()
+			upperLen := udp.Length
+			// Build SCION pseudo header
+			pseudo, err := buildSCIONUDPPseudoHeader(
+				srcIA, dstIA,
+				srcHost, dstHost,
+				upperLen,
+				nextHeader,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build SCION UDP pseudo header: %w", err)
+			}
+
+			// pseudo | udpHeader | payload
+			bufForCksum := make([]byte, 0, len(pseudo)+len(udpBytes)+len(l4Payload))
+			//bufForCksum := make([]byte, 0, len(pseudo)+len(l4Payload))
+			bufForCksum = append(bufForCksum, pseudo...)
+			bufForCksum = append(bufForCksum, udpBytes...)
+			bufForCksum = append(bufForCksum, l4Payload...)
+
+			udp.Checksum = checksum16(bufForCksum)
+
+		default:
+			// e.g. TCP: leave checksum as is for now
+		}
+	*/
+	//---------------------------------------------------------------------------------------------------------
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
@@ -612,7 +661,7 @@ func BuildSCIONPacket(
 
 	if err := gopacket.SerializeLayers(buf, opts,
 		pkt,
-		l4header,
+		l4layer,
 		gopacket.Payload(l4Payload),
 	); err != nil {
 		return nil, fmt.Errorf("failed to serialize SCION+L4: %w", err)
@@ -620,4 +669,92 @@ func BuildSCIONPacket(
 
 	return buf.Bytes(), nil
 
+}
+
+// -------------------------------------------- CHECKSUM ----------------------------------------
+//https://datatracker.ietf.org/doc/html/rfc1624
+
+// checksum16 computes the standard 16-bit ones-complement checksum
+// used for IP/UDP/TCP.
+func checksum16(data []byte) uint16 {
+	var sum uint32
+	for i := 0; i+1 < len(data); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(data[i:]))
+	}
+	if len(data)%2 == 1 {
+		sum += uint32(data[len(data)-1]) << 8
+	}
+	for (sum >> 16) != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}
+
+// buildSCIONUDPPseudoHeader builds the SCION UDP pseudo header for IPv4 and IPv6
+// host addresses, according to the spec:
+//
+//	DstISD(2) | DstAS(4) | SrcISD(2) | SrcAS(4) |
+//	DstHost | SrcHost | UpperLen(4) | zero(3) | NextHdr(1)
+func buildSCIONUDPPseudoHeader(
+	srcIA, dstIA addr.IA,
+	srcHost, dstHost net.IP,
+	upperLen uint16,
+	nextHdr slayers.L4ProtocolType,
+) ([]byte, error) {
+
+	src4 := srcHost.To4()
+	dst4 := dstHost.To4()
+
+	var hostPart []byte
+	switch {
+	case src4 != nil && dst4 != nil:
+		// IPv4 hosts: 4+4 bytes
+		hostPart = make([]byte, 8)
+		copy(hostPart[0:4], dst4)
+		copy(hostPart[4:8], src4)
+	default:
+		// IPv6 hosts: use full 16-byte addresses
+		src16 := srcHost.To16()
+		dst16 := dstHost.To16()
+		if src16 == nil || dst16 == nil {
+			return nil, fmt.Errorf("buildSCIONUDPPseudoHeader: invalid host IPs")
+		}
+		hostPart = make([]byte, 32)
+		copy(hostPart[0:16], dst16)
+		copy(hostPart[16:32], src16)
+	}
+
+	// base: 2+4 + 2+4 + hostPart + 4 + 4
+	baseLen := 2 + 4 + 2 + 4 + len(hostPart) + 4 + 4
+	b := make([]byte, baseLen)
+
+	off := 0
+
+	// DstIA
+	binary.BigEndian.PutUint16(b[off:], uint16(dstIA.ISD()))
+	off += 2
+	binary.BigEndian.PutUint32(b[off:], uint32(dstIA.AS()))
+	off += 4
+
+	// SrcIA
+	binary.BigEndian.PutUint16(b[off:], uint16(srcIA.ISD()))
+	off += 2
+	binary.BigEndian.PutUint32(b[off:], uint32(srcIA.AS()))
+	off += 4
+
+	// Host addresses
+	copy(b[off:], hostPart)
+	off += len(hostPart)
+
+	// Upper-layer length (UDP header + payload)
+	binary.BigEndian.PutUint32(b[off:], uint32(upperLen))
+	off += 4
+
+	// zero(3) | NextHdr(1)
+	b[off] = 0
+	b[off+1] = 0
+	b[off+2] = 0
+	b[off+3] = byte(nextHdr)
+
+	return b, nil
 }

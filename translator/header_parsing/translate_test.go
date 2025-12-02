@@ -283,15 +283,20 @@ func compareScion(t *testing.T, expected, scionBytes []byte) {
 		t.Logf("TrafficClass match: expected %d, got %d", expUDP.Length, actUDP.Length)
 	}
 
+	// --- L4 payload ---
+	if !bytes.Equal(expPayload, actPayload) {
+		t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
+	} else {
+		t.Logf("UDP payload match:\nexp=%x\ngot=%x", expPayload, actPayload)
+	}
+
 	// checksum
 	if expUDP.Checksum != actUDP.Checksum {
 		t.Fatalf("UDP Checksum mismatch: expected 0x%04x, got 0x%04x",
 			expUDP.Checksum, actUDP.Checksum)
-	}
-
-	// --- L4 payload ---
-	if !bytes.Equal(expPayload, actPayload) {
-		t.Fatalf("UDP payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
+	} else {
+		t.Logf("UDP Checksum match: expected 0x%04x, got 0x%04x",
+			expUDP.Checksum, actUDP.Checksum)
 	}
 
 }
