@@ -464,11 +464,52 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 		Translate UDP/IPv6 to UDP/SCION with a UDP/IPv4 underlay and an empty path.
 	*/
 
+	// Load Packets
+	pkts := LoadPackets(t, "../data/translate_udp_ipv4_local.bin")
+
+	// Input
+	input := pkts[0]
+
+	// Expected
+	expected := pkts[1]
+
+	// Translator
+	translator := NewTranslator(nil)
+
+	// HostIP
+	hostIP := mustParseIP(t, "10.0.0.1")
+
+	//IA
+	//srcIA := mustIA(t, 1, 64496)
+	//dstIA := mustIA(t, 2, 64497)
+
+	//GetPathCallback
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
+		//fake := loadTestPath(t, 0)
+		return path.Path{}, nil
+	}
+
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32767, GetPathCallback)
+	if err != nil {
+		t.Fatalf("Error in TranslateEgress: %s", err)
+	}
+
+	//------------------- Quick ScionHeaderDump
+	dumpScionHeader(t, scionBytes)
+
+	//------------------- Compare
+	compareScion(t, expected, scionBytes)
+
+	//------------------- Assertions
+	if !bytes.Equal(scionBytes, expected) {
+		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
+	}
+
 }
 
 func TestTranslateScion6ToIpUdp(t *testing.T) {
 	/*
-		Translate UDP/SCION with a UDP/IPv4 underlay and an empty path to UDP/IPv6.
+		Translate UDP/SCION with a UDP/IPv6 underlay to UDP/IPv6.
 	*/
 
 }
@@ -523,8 +564,48 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 
 func TestTranslateIpUdpToScion6Local(t *testing.T) {
 	/*
-		Translate UDP/SCION with a UDP/IPv6 underlay to UDP/IPv6.
+		Translate UDP/IPv6 to UDP/SCION with a UDP/IPv4 underlay and an empty path.
 	*/
+	// Load Packets
+	pkts := LoadPackets(t, "../data/translate_udp_ipv6_local.bin")
+
+	// Input
+	input := pkts[0]
+
+	// Expected
+	expected := pkts[1]
+
+	// Translator
+	translator := NewTranslator(nil)
+
+	// HostIP
+	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
+
+	//IA
+	//srcIA := mustIA(t, 1, 64496)
+	//dstIA := mustIA(t, 2, 64497)
+
+	//GetPathCallback
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
+		fake := loadTestPath(t, 1)
+		return fake, nil
+	}
+
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
+	if err != nil {
+		t.Fatalf("Error in TranslateEgress: %s", err)
+	}
+
+	//------------------- Quick ScionHeaderDump
+	dumpScionHeader(t, scionBytes)
+
+	//------------------- Compare
+	compareScion(t, expected, scionBytes)
+
+	//------------------- Assertions
+	if !bytes.Equal(scionBytes, expected) {
+		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
+	}
 
 }
 
