@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-from scapy.layers.inet import IP
+from scapy.layers.inet import IP, TCP
 from scapy.layers.inet6 import IPv6
 from scapy_scion.layers.scion import UDP, SCION, SCIONPath, InfoField, HopField
 from tests import write_packets
@@ -40,13 +40,28 @@ path = SCIONPath(
 
 ip = IPv6(
     tc = 32,
-    fl = 0x86c8b,
+    fl = 0xddd6b,
     hlim = 64,
     src = "fc00:10fb:f000::ffff:a00:1",
     dst = "fc00:20fb:f100::ffff:a00:2"
-) / UDP(
+) / TCP(
     sport = 32766,
-    dport = 32767
+    dport = 32767,
+    flags = "S",
+    options = [("MSS", 1420)]
+) / payload
+
+ip_clamped = IPv6(
+    tc = 32,
+    fl = 0xddd6b,
+    hlim = 64,
+    src = "fc00:10fb:f000::ffff:a00:1",
+    dst = "fc00:20fb:f100::ffff:a00:2"
+) / TCP(
+    sport = 32766,
+    dport = 32767,
+    flags = "S",
+    options = [("MSS", 1088)]
 ) / payload
 
 scion = IP(
@@ -70,9 +85,39 @@ scion = IP(
     dst_host = "10.0.0.2",
     src_host = "10.0.0.1",
     path = path
-) / UDP(
+) / TCP(
     sport = 32766,
-    dport = 32767
+    dport = 32767,
+    flags = "S",
+    options = [("MSS", 1100)]
 ) / payload
 
-write_packets([ip, scion], Path(__file__).with_suffix(".bin"))
+scion_clamped = IP(
+    tos = 32,
+    ttl = 64,
+    id = 0,
+    flags = "DF",
+    frag = 0,
+    src = "10.0.0.1",
+    dst = "127.0.0.9"
+) / UDP(
+    sport = 32766,
+    dport = 31002
+) / SCION(
+    qos = 32,
+    fl = 0x86c8b,
+    dst_isd = 2,
+    dst_asn = "64497",
+    src_isd = 1,
+    src_asn = "64496",
+    dst_host = "10.0.0.2",
+    src_host = "10.0.0.1",
+    path = path
+) / TCP(
+    sport = 32766,
+    dport = 32767,
+    flags = "S",
+    options = [("MSS", 1088)]
+) / payload
+
+write_packets([ip, ip_clamped, scion, scion_clamped], Path(__file__).with_suffix(".bin"))
