@@ -12,6 +12,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/slayers"
+	"github.com/scionproto/scion/pkg/slayers/path/empty"
 	"github.com/scionproto/scion/pkg/snet"
 
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
@@ -67,6 +68,13 @@ func (t *Translator) ReadPacket(pkt []byte, isIPv6 bool) ([]byte, error) {
 }
 
 func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
+
+	//Check if srcIA & dstIA are equal
+	if srcIA == dstIA {
+		//We do not need path Cache - return empty path
+		return path.Path{}, nil
+	}
+
 	//Paths retrieval from PathCache
 	ctx := context.Background()
 	CachedPaths, _ := t.cache.Get(ctx, srcIA, dstIA)
@@ -113,6 +121,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//Preserve Traffic Class
 	tc := ip6.TrafficClass
 
+	//Init source Port variable
+	var SourcePort int
+
 	if !isSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
 	}
@@ -135,7 +146,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
 	srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
 
-	//Using the Callback functio
+	//Using the Callback function
 	var selectedPath path.Path
 	if getPath != nil {
 		selectedPath, err = getPath(srcIA, dstIA)
@@ -205,6 +216,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstPort: uint16(udp.DstPort),
 		}
 
+		SourcePort = int(udp.SrcPort)
+
 		// --- FIX: Extract correct payload ---
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
@@ -231,6 +244,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 		tcp := tcpLayer.(*layers.TCP)
 		l4nextHeader = slayers.L4TCP
+
+		SourcePort = int(tcp.SrcPort)
 
 		innerTCP := &layers.TCP{
 			SrcPort: tcp.SrcPort,
@@ -303,7 +318,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(hostPort),
+			SrcPort: layers.UDPPort(SourcePort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip4)
@@ -328,7 +343,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(hostPort),
+			SrcPort: layers.UDPPort(SourcePort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip6Under)
@@ -529,7 +544,7 @@ func BuildSCIONPacket(
 	nextHeader slayers.L4ProtocolType,
 	l4layer gopacket.SerializableLayer, // MUST be *slayers.UDP. Issue: There is no *slayers.TCP - need to handle *layers.TCP
 	l4Payload []byte,
-	path snet.Path,
+	selectedpath snet.Path,
 ) ([]byte, error) {
 	//TODO: Handle TCP
 	//	[ SCION header | L4 header (UDP/TCP) | application payload bytes ]
@@ -562,19 +577,19 @@ func BuildSCIONPacket(
 	pkt.SetSrcAddr(addr.HostIP(srcAddr))
 	pkt.SetDstAddr(addr.HostIP(dstAddr))
 
-	dp := path.Dataplane()
-
-	if dp == nil {
-		return nil, fmt.Errorf("dataplen path is nil")
-	}
-
-	if err := dp.SetPath(pkt); err != nil {
-		return nil, fmt.Errorf("set dataplane path: %w", err)
+	dp := selectedpath.Dataplane()
+	if dp != nil {
+		if err := dp.SetPath(pkt); err != nil {
+			return nil, fmt.Errorf("set dataplane selectedpath: %w", err)
+		}
+	} else {
+		pkt.PathType = empty.PathType
+		pkt.Path = empty.Path{}
 	}
 
 	//pkt.RawSrcAddr = srcHost
 	//pkt.RawDstAddr = dstHost
-	//Need addr.Host to set address of pkt otherwise it does not work
+	//Need addr.Host to set address of pkt otherwissssssse it does not work
 
 	//pkt.Payload = l4Payload
 	//pkt.PayloadLen = uint16(len(l4Payload))
