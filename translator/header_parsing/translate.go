@@ -583,13 +583,58 @@ func BuildSCIONPacket(
 		return nil, fmt.Errorf("SCION header has PathType=%v but Path=nil", pkt.PathType)
 	}
 
+	buf := gopacket.NewSerializeBuffer()
+
 	// --- set L4 checksum using SCION as the network layer ---
 	switch l := l4layer.(type) {
 	case *slayers.UDP:
+		opts := gopacket.SerializeOptions{
+			FixLengths:       true,
+			ComputeChecksums: true,
+		}
+		//gopacket can not compute checksum for scion packets
+
 		l.SetNetworkLayerForChecksum(pkt)
+
+		if err := gopacket.SerializeLayers(buf, opts,
+			pkt,
+			l4layer,
+			gopacket.Payload(l4Payload),
+		); err != nil {
+			return nil, fmt.Errorf("failed to serialize SCION+L4: %w", err)
+		}
+
 	case *layers.TCP:
-		l.SetNetworkLayerForChecksum(pkt)
-		// later: case *slayers.SCMP: etc.
+		// 1) Header ohne Checksum serialisieren
+		l.Checksum = 0
+
+		if err := l.SerializeTo(buf, gopacket.SerializeOptions{
+			FixLengths:       true,  // setzt DataOffset korrekt
+			ComputeChecksums: false, // wir rechnen selbst
+		}); err != nil {
+			return nil, fmt.Errorf("serialize TCP for checksum: %w", err)
+		}
+		tcpBytes := buf.Bytes()
+
+		upperLen := uint16(len(tcpBytes) + len(l4Payload)) // TCP-Header + Payload
+
+		pseudo, err := buildSCIONPseudoHeader(
+			srcIA, dstIA,
+			srcHost, dstHost,
+			upperLen,
+			nextHeader, // = slayers.L4TCP
+		)
+		if err != nil {
+			return nil, fmt.Errorf("build SCION TCP pseudo header: %w", err)
+		}
+
+		bufForCksum := make([]byte, 0, len(pseudo)+len(tcpBytes)+len(l4Payload))
+		bufForCksum = append(bufForCksum, pseudo...)
+		bufForCksum = append(bufForCksum, tcpBytes...)
+		bufForCksum = append(bufForCksum, l4Payload...)
+
+		l.Checksum = checksum16(bufForCksum)
+
 	default:
 		// If you ever pass something else, checksums won’t be computed correctly.
 		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *slayers.TCP", l4layer)
@@ -649,26 +694,28 @@ func BuildSCIONPacket(
 		default:
 			// e.g. TCP: leave checksum as is for now
 		}
+
+		buf := gopacket.NewSerializeBuffer()
+		opts := gopacket.SerializeOptions{
+			FixLengths:       true,
+			ComputeChecksums: true,
+		}
+		//gopacket can not compute checksum for scion packets
+
+		if err := gopacket.SerializeLayers(buf, opts,
+			pkt,
+			l4layer,
+			gopacket.Payload(l4Payload),
+		); err != nil {
+			return nil, fmt.Errorf("failed to serialize SCION+L4: %w", err)
+		}
+
+		return buf.Bytes(), nil
+
 	*/
 	//---------------------------------------------------------------------------------------------------------
 
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{
-		FixLengths:       true,
-		ComputeChecksums: true,
-	}
-	//gopacket can not compute checksum for scion packets
-
-	if err := gopacket.SerializeLayers(buf, opts,
-		pkt,
-		l4layer,
-		gopacket.Payload(l4Payload),
-	); err != nil {
-		return nil, fmt.Errorf("failed to serialize SCION+L4: %w", err)
-	}
-
 	return buf.Bytes(), nil
-
 }
 
 // -------------------------------------------- CHECKSUM ----------------------------------------
@@ -690,12 +737,12 @@ func checksum16(data []byte) uint16 {
 	return ^uint16(sum)
 }
 
-// buildSCIONUDPPseudoHeader builds the SCION UDP pseudo header for IPv4 and IPv6
+// buildSCIONPseudoHeader builds the SCION pseudo header for IPv4 and IPv6
 // host addresses, according to the spec:
 //
 //	DstISD(2) | DstAS(4) | SrcISD(2) | SrcAS(4) |
 //	DstHost | SrcHost | UpperLen(4) | zero(3) | NextHdr(1)
-func buildSCIONUDPPseudoHeader(
+func buildSCIONPseudoHeader(
 	srcIA, dstIA addr.IA,
 	srcHost, dstHost net.IP,
 	upperLen uint16,
