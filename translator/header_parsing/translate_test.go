@@ -897,13 +897,13 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 	*/
 
 	// Load Packets
-	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
+	pkts := LoadPackets(t, "../data/translate_tcp_ipv4.bin")
 
 	// Input
 	input := pkts[0]
 
 	// Expected
-	expected := pkts[1]
+	expected := pkts[2]
 
 	// Translator
 	translator := NewTranslator(nil)
@@ -948,7 +948,7 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 	pkts := LoadPackets(t, "../data/translate_tcp_ipv4.bin")
 
 	// Input
-	input := pkts[1]
+	input := pkts[2]
 
 	// Expected
 	expected := pkts[0]
