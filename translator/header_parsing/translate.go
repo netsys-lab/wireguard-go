@@ -15,9 +15,8 @@ import (
 	"github.com/scionproto/scion/pkg/slayers/path/empty"
 	"github.com/scionproto/scion/pkg/snet"
 
-	"golang.zx2c4.com/wireguard/translator/addr_translation"
-
 	"github.com/scionproto/scion/pkg/snet/path"
+	"golang.zx2c4.com/wireguard/translator/addr_translation"
 	"golang.zx2c4.com/wireguard/translator/pathcache"
 )
 
@@ -368,34 +367,298 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 // SCION -> IPv6
 func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
-	var scion slayers.SCION
-	//var scmp slayers.SCMP
-	var udp layers.UDP
+
+	//------------------------- Parse outer IP (v4 or v6) + UDP -----------------
+	firstNibble := pktData[0] >> 4
+
+	var pkt gopacket.Packet
+	switch firstNibble {
+	case 4:
+		pkt = gopacket.NewPacket(pktData, layers.LayerTypeIPv4, gopacket.Default)
+	case 6:
+		pkt = gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
+	default:
+		return nil, fmt.Errorf("unsupported IP version nibble %d", firstNibble)
+	}
+
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		return nil, fmt.Errorf("no outer UDP layer")
+	}
+	udpOuter := udpLayer.(*layers.UDP)
+
+	scionPayload := udpOuter.Payload
+	if len(scionPayload) == 0 {
+		return nil, fmt.Errorf("no SCION payload in outer UDP")
+	}
+
+	// ---------------------- Decode Scion -------------------
+
+	var scn slayers.SCION
+	var udp slayers.UDP
 	var tcp layers.TCP
+	var scmp slayers.SCMP
+	var pld gopacket.Payload
 
-	// decode only above protocols
-	//parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scion, &udp, &tcp, &scmp)
-	parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scion)
-	decoded := []gopacket.LayerType{}
-
-	if err := parser.DecodeLayers(pktData, &decoded); err != nil {
+	parser := gopacket.NewDecodingLayerParser(
+		slayers.LayerTypeSCION,
+		&scn,
+		&udp,
+		&tcp,
+		&scmp,
+		&pld,
+	)
+	var decoded []gopacket.LayerType
+	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
 		return nil, fmt.Errorf("failed to parse SCION: %w", err)
 	}
 
+	var l4Layer gopacket.SerializableLayer
+	var l4Payload []byte
+
+	for _, layerType := range decoded {
+		// Handle layers
+		switch layerType {
+		case slayers.LayerTypeSCION:
+
+		case layers.LayerTypeUDP:
+			//udp.SetNetworkLayerForChecksum(&scion)
+			//l4Layer = &udp
+		case layers.LayerTypeTCP:
+			//tcp.SetNetworkLayerForChecksum(&scion)
+			l4Layer = &tcp
+		case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
+			//l4Layer = nil
+			// icmp, err := scmpToICMP(&scmp)
+			// if err != nil {
+			// 	return nil, errors.New("failed to translate SCMP to ICMP")
+			// }
+			// l4Layer = icmp
+
+		case slayers.LayerTypeSCIONUDP:
+			// L4 Layer is UDP
+			l4Layer = &udp
+		case gopacket.LayerTypePayload:
+			// L4 Layer Payload
+			l4Payload = []byte(pld)
+
+		}
+	}
+	/*
+		//var outer gopacket.Packet
+		//var ip4 *layers.IPv4
+		//var ip6 *layers.IPv6
+		//var udpOuter *layers.UDP
+		//var tcpOuter *layers.TCP
+
+		var scn1 slayers.SCION
+		//var hbh slayers.HopByHopExtnSkipper
+		//var e2e slayers.EndToEndExtnSkipper
+		var udp1 slayers.UDP
+		var tcp1 layers.TCP
+		var scmp1 slayers.SCMP
+		var pld1 gopacket.Payload
+
+		outer := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCIONUDP, &scn1, &udp1, &tcp1, &scmp1, &pld1)
+		outerdecoded := []gopacket.LayerType{}
+		if err := outer.DecodeLayers(pktData, &outerdecoded); err != nil {
+			// Handle error
+			return nil, fmt.Errorf("failed to parse SCION: %w", err)
+		}
+
+		// scionpayload
+		scionpayload := []byte(pld1)
+		/*
+			//Try IPv4
+			outer = gopacket.NewPacket(pktData, layers.LayerTypeIPv4, gopacket.Default)
+			if l := outer.Layer(layers.LayerTypeIPv4); l != nil {
+				//ip4 = l.(*layers.IPv4)
+				if l := outer.Layer(layers.LayerTypeUDP); l != nil {
+					udpOuter = l.(*layers.UDP)
+				}
+				if l := outer.Layer(layers.LayerTypeTCP); l != nil {
+					tcpOuter = l.(*layers.TCP)
+				}
+			} else {
+				// Try IPv6
+				outer = gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
+				if l := outer.Layer(layers.LayerTypeIPv6); l != nil {
+					//ip6 = l.(*layers.IPv6)
+					if l := outer.Layer(layers.LayerTypeUDP); l != nil {
+						udpOuter = l.(*layers.UDP)
+					}
+					if l := outer.Layer(layers.LayerTypeTCP); l != nil {
+						tcpOuter = l.(*layers.TCP)
+					}
+				}
+			}
+
+			if udpOuter == nil && tcpOuter == nil {
+				return nil, fmt.Errorf("no outer UDP or TCP layer found in packet")
+			}
+
+			var scionpayload []byte
+			if udpOuter != nil {
+				scionpayload = udpOuter.Payload
+			}
+			if tcpOuter != nil {
+				scionpayload = tcpOuter.Payload
+			}
+			if len(scionpayload) == 0 {
+				return nil, fmt.Errorf("no SCION payload in outer UDP")
+			}
+	*/
+
+	//------------------- Decode SCION + inner L4 (UDP/TCP) -----------------------------
+
+	//https://pkg.go.dev/github.com/scionproto/scion@v0.12.0/pkg/slayers
+	/*
+		// Eagerly decode an entire SCION packet
+		packet := gopacket.NewPacket(scionpayload, slayers.LayerTypeSCION, gopacket.Default)
+		// Access the SCION header
+		if scnL := packet.Layer(slayers.LayerTypeSCION); scnL != nil {
+			fmt.Println("This is a SCION packet.")
+			// Access the actual SCION data from this layer
+			s := scnL.(*slayers.SCION) // Guaranteed to work
+			fmt.Printf("From %s to %s\n", s.SrcIA, s.DstIA)
+		}
+		// Similarly, a SCION/UDP payload can be accessed
+		if udpL := packet.Layer(slayers.LayerTypeSCIONUDP); udpL != nil {
+			u := udpL.(*slayers.UDP) // Guaranteed to work
+			fmt.Printf("From %d to %d\n", u.SrcPort, u.DstPort)
+		}
+	*/
+	/*
+			var l4Layer gopacket.SerializableLayer
+			var l4Payload []byte
+			var scn slayers.SCION
+			//var hbh slayers.HopByHopExtnSkipper
+			//var e2e slayers.EndToEndExtnSkipper
+			var udp slayers.UDP
+			var tcp layers.TCP
+			var scmp slayers.SCMP
+			var pld gopacket.Payload
+			parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCIONUDP, &scn, &udp, &tcp, &scmp, &pld)
+			decoded := []gopacket.LayerType{}
+			if err := parser.DecodeLayers(scionpayload, &decoded); err != nil {
+				// Handle error
+				return nil, fmt.Errorf("failed to parse SCION: %w", err)
+			}
+
+		for _, layerType := range decoded {
+			// Handle layers
+			switch layerType {
+			case slayers.LayerTypeSCION:
+
+			case layers.LayerTypeUDP:
+				//udp.SetNetworkLayerForChecksum(&scion)
+				//l4Layer = &udp
+			case layers.LayerTypeTCP:
+				//tcp.SetNetworkLayerForChecksum(&scion)
+				l4Layer = &tcp
+			case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
+				//l4Layer = nil
+				// icmp, err := scmpToICMP(&scmp)
+				// if err != nil {
+				// 	return nil, errors.New("failed to translate SCMP to ICMP")
+				// }
+				// l4Layer = icmp
+
+			case slayers.LayerTypeSCIONUDP:
+				// L4 Layer is UDP
+				l4Layer = &udp
+			case gopacket.LayerTypePayload:
+				// L4 Layer Payload
+				l4Payload = []byte(pld)
+
+			}
+		}
+	*/
+	//We have UDP and Payload
+
+	//Now we build a new IPv4 or IPv6 Packet
+
+	//var scion slayers.SCION
+	//var innerudp slayers.UDP
+	//var innertcp layers.TCP
+	//var scmp slayers.SCMP
+
+	//var payload sly
+
+	//Inner Packet
+	//innerPkt := gopacket.NewPacket(scionpayload, slayers.LayerTypeSCION, gopacket.Default)
+
+	//scionLayer := innerPkt.Layer(slayers.LayerTypeSCION)
+	//if scionLayer == nil {
+	//	return nil, fmt.Errorf("no SCION layer inside payload")
+	//}
+	//scion := scionLayer.(*slayers.SCION)
+
+	//Now we try to read the
+	//var l4Layer gopacket.SerializableLayer
+
+	// decode only above protocols
+	//parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCIONUDP, &innerudp, &innertcp, &scmp)
+	//parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scion)
+	//decoded := []gopacket.LayerType{}
+
+	//if err := parser.DecodeLayers(scion, &decoded); err != nil {
+	//	return nil, fmt.Errorf("failed to parse SCION: %w", err)
+	//}
+
+	//var l4Layer gopacket.SerializableLayer
+
+	//if u := innerPkt.Layer(slayers.LayerTypeSCIONUDP); u != nil {
+	//	l4Layer = u.(*slayers.UDP) // SCION UDP
+	//} else if t := innerPkt.Layer(layers.LayerTypeTCP); t != nil {
+	//	l4Layer = t.(*layers.TCP)
+	//} else {
+	//	return nil, fmt.Errorf("no inner UDP/TCP inside SCION")
+	//}
+
+	//We need:
+
+	//FlowID
+
+	// ---------------------------- Map SCION dst/src host -> IP -----------------------
+	var dst, src net.IP
+
+	islocal := false
+	if scn.DstIA == scn.SrcIA {
+		islocal = true
+	}
+
 	// ---- dst ----
-	var dst net.IP
-	isd := int(scion.DstIA.ISD())
-	asn := addr_translation.ASN{Value: uint64(scion.DstIA.AS())}
-	iface := net.IP(scion.RawDstAddr)
-	switch scion.DstAddrType {
+	isd := int(scn.DstIA.ISD())
+	asn := addr_translation.ASN{Value: uint64(scn.DstIA.AS())}
+	iface := net.IP(scn.RawDstAddr)
+
+	switch scn.DstAddrType {
 	case slayers.T4Ip:
-		var err error
-		dst, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
-		if err != nil {
-			return nil, fmt.Errorf("ScionToIP failed: %w", err)
+		if islocal {
+			dst = net.IP(scn.RawDstAddr)
+		} else {
+			//Then it needs to be mapped to a IPv6 Address
+			var err error
+			dst, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
+			if err != nil {
+				return nil, fmt.Errorf("ScionToIP failed: %w", err)
+			}
 		}
 	case slayers.T16Ip:
-		dst = net.IP(scion.RawDstAddr)
+		//dst = net.IP(scion.RawDstAddr)
+		mapped := net.IP(scn.RawDstAddr)
+		if isSCIONMapped(mapped) {
+			// SCION-mapped IPv6 (fc00::/8) → unmap to original host
+			_, _, _, _, hostIP, _, err := UnmapIPv6(mapped, 8)
+			if err != nil {
+				return nil, fmt.Errorf("unmap dst SCION-mapped IPv6 failed: %w", err)
+			}
+			dst = hostIP
+		} else {
+			// Normal IPv6 host
+			dst = mapped
+		}
 	default:
 		return nil, errors.New("unsupported destination host type")
 	}
@@ -404,73 +667,206 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	//if !dst.Equal(tunIP) {
 	//return nil, errors.New("packet not for this tunnel endpoint")
 	//}
+	isd = int(scn.SrcIA.ISD())
+	asn = addr_translation.ASN{Value: uint64(scn.SrcIA.AS())}
+	iface = net.IP(scn.RawSrcAddr)
 
 	// ---- src ----
-	var src net.IP
-	switch scion.SrcAddrType {
+	switch scn.SrcAddrType {
 	case slayers.T4Ip:
-		var err error
-		src, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
-		if err != nil {
-			return nil, fmt.Errorf("ScionToIP failed: %w", err)
+		//Only if ASN of src and dst are the same - bool local
+		if islocal {
+			src = net.IP(scn.RawSrcAddr)
+		} else {
+			//Then it needs to be mapped to a IPv6 Address
+			var err error
+			src, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
+			if err != nil {
+				return nil, fmt.Errorf("ScionToIP failed: %w", err)
+			}
 		}
+
 	case slayers.T16Ip:
-		src = net.IP(scion.RawSrcAddr)
-		if !isSCIONMapped(src) {
-			return nil, errors.New("src not in SCION-mapped network")
+		mapped := net.IP(scn.RawSrcAddr)
+		if isSCIONMapped(mapped) {
+			_, _, _, _, hostIP, _, err := UnmapIPv6(mapped, 8)
+			if err != nil {
+				return nil, fmt.Errorf("unmap src SCION-mapped IPv6 failed: %w", err)
+			}
+			src = hostIP
+		} else {
+			// Normal IPv6 host
+			src = mapped
 		}
 	default:
 		return nil, errors.New("unsupported source host type")
 	}
 
-	// ---- L4 payload ----
-	var l4Layer gopacket.SerializableLayer
-
-	for _, layerType := range decoded {
-		switch layerType {
-		case layers.LayerTypeUDP:
-			udp.SetNetworkLayerForChecksum(&scion)
-			l4Layer = &udp
-		case layers.LayerTypeTCP:
-			tcp.SetNetworkLayerForChecksum(&scion)
-			l4Layer = &tcp
-		case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
-			l4Layer = nil
-			// icmp, err := scmpToICMP(&scmp)
-			// if err != nil {
-			// 	return nil, errors.New("failed to translate SCMP to ICMP")
-			// }
-			// l4Layer = icmp
-		case slayers.LayerTypeSCIONUDP:
-			l4Layer = nil
-		case slayers.LayerTypeSCION:
-			l4Layer = &scion
+	// ---- L4 payload TCP or UDP----
+	//var l4Layer gopacket.SerializableLayer
+	/*
+		for _, layerType := range decoded {
+			switch layerType {
+			case layers.LayerTypeUDP:
+				//udp.SetNetworkLayerForChecksum(&scion)
+				l4Layer = &innerudp
+			case layers.LayerTypeTCP:
+				//tcp.SetNetworkLayerForChecksum(&scion)
+				l4Layer = &innertcp
+			case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
+				l4Layer = nil
+				// icmp, err := scmpToICMP(&scmp)
+				// if err != nil {
+				// 	return nil, errors.New("failed to translate SCMP to ICMP")
+				// }
+				// l4Layer = icmp
+			}
 		}
-	}
 
-	if l4Layer == nil {
-		return nil, errors.New("unsupported L4 type")
-	}
-
-	// ---- Build IPv6 ----
-	ip6 := &layers.IPv6{
-		Version: 6,
-		SrcIP:   src,
-		DstIP:   dst,
-		//TODO: set correct nextheader field
-		NextHeader: layers.IPProtocol(l4Layer.LayerType().LayerTypes()[0]),
-	}
+		if l4Layer == nil {
+			return nil, errors.New("unsupported L4 type")
+		}
+	*/
+	// ---- Build IP Packet ----
 
 	buf := gopacket.NewSerializeBuffer()
+
 	opts := gopacket.SerializeOptions{
 		ComputeChecksums: true,
 		FixLengths:       true,
 	}
-	if err := gopacket.SerializeLayers(buf, opts, ip6, l4Layer); err != nil {
-		return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
-	}
 
+	// Return nil if not IPv4 Adr
+	dst4 := dst.To4()
+	src4 := src.To4()
+
+	//If both Src and Dst are IPv4, build IPv4 Packet
+	if dst4 != nil && src4 != nil {
+
+		// -------- Build IPv4 packet --------
+		ip4 := &layers.IPv4{
+			Version: 4,
+			IHL:     5,
+			TTL:     64,
+			//Protocol: layers.IPProtocol(l4Layer.LayerType().LayerTypes()[0]),
+			SrcIP: src4,
+			DstIP: dst4,
+		}
+
+		// set checksum network layer for UDP/TCP
+		switch l4Layer.(type) {
+		case *layers.UDP:
+			//	l.SetNetworkLayerForChecksum(ip4)
+			ip4.Protocol = layers.IPProtocolUDP
+			inner := &layers.UDP{
+				SrcPort: layers.UDPPort(udp.SrcPort),
+				DstPort: layers.UDPPort(udp.DstPort),
+			}
+			inner.SetNetworkLayerForChecksum(ip4)
+
+			if err := gopacket.SerializeLayers(
+				buf,
+				opts,
+				ip4,
+				inner,
+				gopacket.Payload(l4Payload),
+			); err != nil {
+				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
+			}
+			return buf.Bytes(), nil
+
+		case *layers.TCP:
+			//	l.SetNetworkLayerForChecksum(ip4)
+			ip4.Protocol = layers.IPProtocolTCP
+			inner := &layers.TCP{
+				SrcPort: layers.TCPPort(udp.SrcPort),
+				DstPort: layers.TCPPort(udp.DstPort),
+			}
+			inner.SetNetworkLayerForChecksum(ip4)
+
+			if err := gopacket.SerializeLayers(
+				buf,
+				opts,
+				ip4,
+				inner,
+				gopacket.Payload(l4Payload),
+			); err != nil {
+				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
+			}
+			return buf.Bytes(), nil
+		}
+
+	} else {
+		// ---- Build IPv6 ----
+		ip6 := &layers.IPv6{
+			Version: 6,
+			SrcIP:   src,
+			DstIP:   dst,
+			//NextHeader:   layers.IPProtocol(l4Layer.LayerType().LayerTypes()[0]),
+			HopLimit:     64,
+			FlowLabel:    scn.FlowID,
+			TrafficClass: scn.TrafficClass,
+		}
+
+		// set checksum network layer for UDP/TCP
+		switch l4Layer.(type) {
+		case *slayers.UDP:
+			//	l.SetNetworkLayerForChecksum(ip4)
+			ip6.NextHeader = layers.IPProtocolUDP
+			// Convert slayers.UDP (SCION UDP) -> normal IP UDP
+			innerUDP := &layers.UDP{
+				SrcPort: layers.UDPPort(udp.SrcPort),
+				DstPort: layers.UDPPort(udp.DstPort),
+			}
+
+			// Tell UDP which network layer to use for checksum
+			innerUDP.SetNetworkLayerForChecksum(ip6)
+
+			if err := gopacket.SerializeLayers(
+				buf,
+				opts,
+				ip6,
+				innerUDP,
+				gopacket.Payload(l4Payload),
+			); err != nil {
+				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
+			}
+			return buf.Bytes(), nil
+
+		case *layers.TCP:
+			//	l.SetNetworkLayerForChecksum(ip4)
+			ip6.NextHeader = layers.IPProtocolTCP
+			// Convert slayers.UDP (SCION UDP) -> normal IP UDP
+			innerTCP := &layers.TCP{
+				SrcPort: layers.TCPPort(udp.SrcPort),
+				DstPort: layers.TCPPort(udp.DstPort),
+			}
+
+			// Tell UDP which network layer to use for checksum
+			innerTCP.SetNetworkLayerForChecksum(ip6)
+
+			if err := gopacket.SerializeLayers(
+				buf,
+				opts,
+				ip6,
+				innerTCP,
+				gopacket.Payload(l4Payload),
+			); err != nil {
+				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
+			}
+			return buf.Bytes(), nil
+		}
+
+		//switch l := l4Layer.(type) {
+		//case *layers.UDP:
+		//	l.SetNetworkLayerForChecksum(ip6)
+		//case *layers.TCP:
+		//	l.SetNetworkLayerForChecksum(ip6)
+		//}
+
+	}
 	return buf.Bytes(), nil
+
 }
 
 // TODO: implement SCMP -> ICMPv6 translation
@@ -623,6 +1019,10 @@ func BuildSCIONPacket(
 		}
 
 	case *layers.TCP:
+
+		//TODO: Checksum Compute like slayers.UDP check slayers
+		//Optional: Fork Proto, implement directly. <- Preferred (Replace in go.sum) https://go.dev/ref/mod#go-mod-file-replace
+
 		// 1) Header ohne Checksum serialisieren
 		l.Checksum = 0
 
@@ -655,7 +1055,7 @@ func BuildSCIONPacket(
 
 	default:
 		// If you ever pass something else, checksums won’t be computed correctly.
-		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *slayers.TCP", l4layer)
+		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *layers.TCP", l4layer)
 	}
 
 	//SetNetworkLayerForChecmsum only accepts *layers.IPv4 or IPv6? Does not work with *slyers.SCION for pkt.
