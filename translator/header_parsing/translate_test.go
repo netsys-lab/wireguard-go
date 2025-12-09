@@ -606,6 +606,7 @@ func compareIP(t *testing.T, expected, actual []byte) {
 		} else {
 			t.Logf("TCP Checksum match: 0x%04x", expTCP.Checksum)
 		}
+
 	}
 
 }

@@ -860,7 +860,16 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				CWR:     tcp.CWR,
 				NS:      tcp.NS,
 				Window:  tcp.Window,
-				//Options: tcp.Options,
+				Options: tcp.Options,
+			}
+
+			//Compute and Modify MSS
+			for i, opt := range innerTCP.Options {
+				if opt.OptionType == layers.TCPOptionKindMSS {
+					newMSS := computeMSS(1480) // or device MTU
+					opt.OptionData = []byte{byte(newMSS >> 8), byte(newMSS)}
+					innerTCP.Options[i] = opt
+				}
 			}
 
 			// Tell UDP which network layer to use for checksum
@@ -1236,4 +1245,8 @@ func buildSCIONPseudoHeader(
 	b[off+3] = byte(nextHdr)
 
 	return b, nil
+}
+
+func computeMSS(ipMTU int) uint16 {
+	return uint16(ipMTU - 40 - 20) // IPv6(40) + TCP(20)
 }
