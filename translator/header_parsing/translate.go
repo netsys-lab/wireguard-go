@@ -253,9 +253,18 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			NS:      tcp.NS,
 			Window:  tcp.Window,
 			//other flags/options
-			//Options: tcp.Options,
+			Options: tcp.Options,
 		}
-		//TODO:
+		//Clamp MSS
+		//Todo: Get outer MTU from Interface maybe?
+		newMSS := 1100
+		for i, opt := range innerTCP.Options {
+			if opt.OptionType == layers.TCPOptionKindMSS && len(opt.OptionData) >= 2 {
+				opt.OptionData[0] = byte(newMSS >> 8)
+				opt.OptionData[1] = byte(newMSS & 0xff)
+				innerTCP.Options[i] = opt
+			}
+		}
 
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
@@ -360,6 +369,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	}
 
 	//Outer = [ IPv4 header | UDP header | SCION header | SCION L4 payload ]
+	//We need TCP Out the same
 	outer := buf.Bytes()
 	return outer, nextHop, nil
 
@@ -442,7 +452,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			// L4 Layer Payload
 			//l4Payload = []byte(pld)
 		default:
-			return nil, fmt.Errorf("Unknow Layertype!")
+			return nil, fmt.Errorf("unknow layertype")
 		}
 		if l4Layer == nil {
 			//we assume no UDP or SCMP to TCP
@@ -1054,14 +1064,30 @@ func BuildSCIONPacket(
 
 		// 1) Header ohne Checksum serialisieren
 		l.Checksum = 0
+		hdrbuf := gopacket.NewSerializeBuffer()
 
-		if err := l.SerializeTo(buf, gopacket.SerializeOptions{
+		/*
+			opts := gopacket.SerializeOptions{
+				FixLengths:       true,
+				ComputeChecksums: false,
+			}
+
+				if err := gopacket.SerializeLayers(buf, opts,
+					pkt,
+					l4layer,
+					gopacket.Payload(l4Payload),
+				); err != nil {
+					return nil, fmt.Errorf("serialize TCP for checksum: %w", err)
+				}
+		*/
+
+		if err := l.SerializeTo(hdrbuf, gopacket.SerializeOptions{
 			FixLengths:       true,  // setzt DataOffset korrekt
 			ComputeChecksums: false, // wir rechnen selbst
 		}); err != nil {
 			return nil, fmt.Errorf("serialize TCP for checksum: %w", err)
 		}
-		tcpBytes := buf.Bytes()
+		tcpBytes := hdrbuf.Bytes()
 
 		upperLen := uint16(len(tcpBytes) + len(l4Payload)) // TCP-Header + Payload
 
@@ -1081,6 +1107,21 @@ func BuildSCIONPacket(
 		bufForCksum = append(bufForCksum, l4Payload...)
 
 		l.Checksum = checksum16(bufForCksum)
+
+		// 4) NOW build the actual SCION packet: [SCION header | TCP | payload]
+		//scionBuf := gopacket.NewSerializeBuffer()
+		if err := gopacket.SerializeLayers(
+			buf,
+			gopacket.SerializeOptions{
+				FixLengths:       true,  // sets HdrLen, PayloadLen
+				ComputeChecksums: false, // we already set TCP checksum
+			},
+			pkt,
+			l,
+			gopacket.Payload(l4Payload),
+		); err != nil {
+			return nil, fmt.Errorf("serialize SCION/TCP: %w", err)
+		}
 
 	default:
 		// If you ever pass something else, checksums won’t be computed correctly.

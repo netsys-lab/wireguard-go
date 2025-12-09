@@ -928,7 +928,7 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 	}
 
 	//------------------- Quick ScionHeaderDump
-	//dumpScionHeader(t, scionBytes)
+	dumpScionHeader(t, scionBytes)
 
 	//------------------- Compare
 	compareScion(t, expected, scionBytes)
