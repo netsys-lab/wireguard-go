@@ -77,7 +77,7 @@ scion = IP(
     dport = 31002
 ) / SCION(
     qos = 32,
-    fl = 0x86c8b,
+    fl = 0xddd6b,
     dst_isd = 2,
     dst_asn = "64497",
     src_isd = 1,
@@ -105,7 +105,7 @@ scion_clamped = IP(
     dport = 31002
 ) / SCION(
     qos = 32,
-    fl = 0x86c8b,
+    fl = 0xddd6b,
     dst_isd = 2,
     dst_asn = "64497",
     src_isd = 1,

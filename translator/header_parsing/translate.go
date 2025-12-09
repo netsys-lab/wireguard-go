@@ -253,9 +253,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			NS:      tcp.NS,
 			Window:  tcp.Window,
 			//other flags/options
-			Options: tcp.Options,
+			//Options: tcp.Options,
 		}
-		//innerTCP.Payload = tcp.Payload
+		//TODO:
 
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
@@ -416,17 +416,17 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	var l4Layer gopacket.SerializableLayer
 	var l4Payload []byte
 
+	//Assiging layers Scion, UDP or TCP and Payload
 	for _, layerType := range decoded {
 		// Handle layers
 		switch layerType {
 		case slayers.LayerTypeSCION:
-
-		case layers.LayerTypeUDP:
-			//udp.SetNetworkLayerForChecksum(&scion)
-			//l4Layer = &udp
-		case layers.LayerTypeTCP:
-			//tcp.SetNetworkLayerForChecksum(&scion)
-			l4Layer = &tcp
+			l4Layer = &scn
+		case slayers.LayerTypeSCIONUDP:
+			// L4 Layer is UDP
+			l4Layer = &udp
+			l4Payload = []byte(pld)
+			break
 		case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
 			//l4Layer = nil
 			// icmp, err := scmpToICMP(&scmp)
@@ -434,16 +434,24 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			// 	return nil, errors.New("failed to translate SCMP to ICMP")
 			// }
 			// l4Layer = icmp
+			break
+		case layers.LayerTypeTCP:
 
-		case slayers.LayerTypeSCIONUDP:
-			// L4 Layer is UDP
-			l4Layer = &udp
 		case gopacket.LayerTypePayload:
+			//This will be the leftover case - No UDP or SCMP -> Can we assume it is TCP then?
 			// L4 Layer Payload
-			l4Payload = []byte(pld)
-
+			//l4Payload = []byte(pld)
+			//There is no TCP, for TCP inner, pld will contain l4 bytes
+			if err := tcp.DecodeFromBytes([]byte(pld), gopacket.NilDecodeFeedback); err != nil {
+				return nil, fmt.Errorf("failed to decode inner TCP: %w", err)
+			}
+			l4Layer = &tcp
+			l4Payload = tcp.Payload
+			break
 		}
+
 	}
+
 	/*
 		//var outer gopacket.Packet
 		//var ip4 *layers.IPv4
@@ -838,8 +846,21 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			ip6.NextHeader = layers.IPProtocolTCP
 			// Convert slayers.UDP (SCION UDP) -> normal IP UDP
 			innerTCP := &layers.TCP{
-				SrcPort: layers.TCPPort(udp.SrcPort),
-				DstPort: layers.TCPPort(udp.DstPort),
+				SrcPort: layers.TCPPort(tcp.SrcPort),
+				DstPort: layers.TCPPort(tcp.DstPort),
+				Seq:     tcp.Seq,
+				Ack:     tcp.Ack,
+				SYN:     tcp.SYN,
+				ACK:     tcp.ACK,
+				FIN:     tcp.FIN,
+				RST:     tcp.RST,
+				PSH:     tcp.PSH,
+				URG:     tcp.URG,
+				ECE:     tcp.ECE,
+				CWR:     tcp.CWR,
+				NS:      tcp.NS,
+				Window:  tcp.Window,
+				//Options: tcp.Options,
 			}
 
 			// Tell UDP which network layer to use for checksum
@@ -856,13 +877,6 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			}
 			return buf.Bytes(), nil
 		}
-
-		//switch l := l4Layer.(type) {
-		//case *layers.UDP:
-		//	l.SetNetworkLayerForChecksum(ip6)
-		//case *layers.TCP:
-		//	l.SetNetworkLayerForChecksum(ip6)
-		//}
 
 	}
 	return buf.Bytes(), nil

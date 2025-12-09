@@ -411,6 +411,12 @@ func compareIP(t *testing.T, expected, actual []byte) {
 	act4, act6, actUDP, actTCP, actPayload := decodeIPPacket(t, actual)
 
 	// -------- IP version / header --------
+	// -------- Payload --------
+	if !bytes.Equal(expPayload, actPayload) {
+		t.Fatalf("L4 payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
+	} else {
+		t.Logf("L4 payload match:\nexp=%x\ngot=%x", expPayload, actPayload)
+	}
 
 	switch {
 	case exp4 != nil && act4 != nil:
@@ -602,12 +608,6 @@ func compareIP(t *testing.T, expected, actual []byte) {
 		}
 	}
 
-	// -------- Payload --------
-	if !bytes.Equal(expPayload, actPayload) {
-		t.Fatalf("L4 payload mismatch:\nexp=%x\ngot=%x", expPayload, actPayload)
-	} else {
-		t.Logf("L4 payload match:\nexp=%x\ngot=%x", expPayload, actPayload)
-	}
 }
 
 //--------------- Tests ------------------------
@@ -927,7 +927,7 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 	}
 
 	//------------------- Quick ScionHeaderDump
-	dumpScionHeader(t, scionBytes)
+	//dumpScionHeader(t, scionBytes)
 
 	//------------------- Compare
 	compareScion(t, expected, scionBytes)
@@ -963,7 +963,7 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 	//srcIA := mustIA(t, 1, 64496)
 	//dstIA := mustIA(t, 2, 64497)
 
-	scionBytes, err := translator.TranslateIngress(input, hostIP)
+	ipBytes, err := translator.TranslateIngress(input, hostIP)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -972,11 +972,11 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 	//dumpScionHeader(t, scionBytes)
 
 	//------------------- Compare
-	compareScion(t, expected, scionBytes)
+	compareIP(t, expected, ipBytes)
 
 	//------------------- Assertions
-	if !bytes.Equal(scionBytes, expected) {
-		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, scionBytes)
+	if !bytes.Equal(ipBytes, expected) {
+		t.Fatalf("SCION Bytes mismatch: \nexpected: %x\nscion: %x", expected, ipBytes)
 	}
 
 }
