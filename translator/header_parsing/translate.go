@@ -421,33 +421,39 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		// Handle layers
 		switch layerType {
 		case slayers.LayerTypeSCION:
-			l4Layer = &scn
+			continue
 		case slayers.LayerTypeSCIONUDP:
 			// L4 Layer is UDP
 			l4Layer = &udp
 			l4Payload = []byte(pld)
-			break
+
 		case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
+
 			//l4Layer = nil
 			// icmp, err := scmpToICMP(&scmp)
 			// if err != nil {
 			// 	return nil, errors.New("failed to translate SCMP to ICMP")
 			// }
 			// l4Layer = icmp
-			break
 		case layers.LayerTypeTCP:
 
 		case gopacket.LayerTypePayload:
 			//This will be the leftover case - No UDP or SCMP -> Can we assume it is TCP then?
 			// L4 Layer Payload
 			//l4Payload = []byte(pld)
-			//There is no TCP, for TCP inner, pld will contain l4 bytes
-			if err := tcp.DecodeFromBytes([]byte(pld), gopacket.NilDecodeFeedback); err != nil {
+		default:
+			return nil, fmt.Errorf("Unknow Layertype!")
+		}
+		if l4Layer == nil {
+			//we assume no UDP or SCMP to TCP
+			raw := []byte(pld)
+
+			if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err != nil {
 				return nil, fmt.Errorf("failed to decode inner TCP: %w", err)
 			}
+
 			l4Layer = &tcp
 			l4Payload = tcp.Payload
-			break
 		}
 
 	}
