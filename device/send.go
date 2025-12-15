@@ -249,13 +249,18 @@ func (device *Device) RoutineReadFromTUN() {
 	for {
 		// read packets
 		count, readErr = device.tun.device.Read(bufs, sizes, offset)
+		//write byte length into sizes[i]
 		for i := 0; i < count; i++ {
 			if sizes[i] < 1 {
 				continue
 			}
 
 			elem := elems[i]
-			elem.packet = bufs[i][offset : offset+sizes[i]]
+			//create a window elem.packet over just the valid bytes
+			pkt := bufs[i][offset : offset+sizes[i]]
+
+			//Hier schreiben wir die Valid pkt bytes in elem.packet
+			elem.packet = pkt
 
 			// lookup peer
 			var peer *Peer
@@ -266,6 +271,8 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
+				//With false if ipv4
+				//newpkt, err := translator.ReadPacket(pkt, false)
 
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
@@ -273,9 +280,45 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
 				peer = device.allowedips.Lookup(dst)
+				device.log.Verbosef("Sent IPv6 pkt. Call to dummy translation")
+				//dummy_translation(elem.packet, 6)
+
+				//Wir schicken erstmal nur IPv6 Pakete
+				//Hier wurde die dst IPv6 aus dem Paket gelesen
+				//Peer wird gesucht.
+
+				/*
+					elem.packet ist eine Slice desselben Arrays elem.buffer. Also sind änderungen an elem.packet in-place
+					Also wird nichts zurückgeschrieben.
+
+					elem.packet kann länger gemacht werden solange genug Platz hinter elem.packet ist
+				*/
+
+				//Wir lesen dst und src aus packet
+
+				//Wir übersetzen dst und src in scion adressen - ist dies überhaupt möglich
+
+				//Wenn nicht übersetzbar -> continue
+
+				//Wir fragen PathCache nach Pfaden (kombination von src und dst) ab
+
+				//Wir übergeben Paket, Paths, Scion src und Scion dst an Translation
+
+				newpkt, err := device.translator.ReadPacket(pkt, true)
+
+				if err != nil {
+					device.log.Errorf("Process error: %v", err)
+					// drop or continue
+					continue
+				}
+				elem.packet = newpkt
+				sizes[i] = len(newpkt)
+				//TODO: Lookup(translate) SCION dst adresse
 
 			default:
 				device.log.Verbosef("Received packet with unknown IP version")
+				//Müsste hier erkennen das es ein SCION Paket ist.
+				//TODO: Test if this hits if we send SCION packet.
 			}
 
 			if peer == nil {
@@ -323,6 +366,37 @@ func (device *Device) RoutineReadFromTUN() {
 		}
 	}
 }
+
+/*
+func dummy_translation(b []byte, ipv int) {
+	fmt.Println("Dummy translation called")
+	switch ipv {
+	case 4:
+		header, err := ipv4.ParseHeader(b)
+		if err != nil {
+			fmt.Println("Error parsing IPv4 header:", err)
+			return
+		}
+		originalFlags := header.Flags
+		fmt.Println("IPv4 original flags:", originalFlags)
+		header.Flags |= ipv4.DontFragment
+		hdrBytes, _ := header.Marshal()
+		copy(b[:len(hdrBytes)], hdrBytes)
+
+	case 6:
+		header, err := ipv6.ParseHeader(b)
+		if err != nil {
+			fmt.Println("Error parsing IPv6 header:", err)
+			return
+		}
+		originalTC := header.TrafficClass
+		fmt.Println("IPv6 original TrafficClass:", originalTC)
+		b[1] = (b[1] & 0xF0) | ((b[1] ^ 0x01) & 0x0F)
+
+	}
+
+}
+*/
 
 func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 	for {
