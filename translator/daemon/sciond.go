@@ -1,4 +1,4 @@
-package scion_paths
+package daemon
 
 import (
 	"context"
