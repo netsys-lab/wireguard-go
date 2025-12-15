@@ -75,7 +75,7 @@ function start_wireguard_go() {
 	 sudo ip netns exec $SERVER bash -c "
 	  export WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1
 	  export LOG_LEVEL=$WIREGUARD_LOG_LEVEL_ENV
-	  $WIREGUARD_GO  --foreground $WG_SERVER > /tmp/wg-server.log 2>&1
+	  $WIREGUARD_GO --foreground $WG_SERVER > /tmp/wg-server.log 2>&1
 	" &
 	
 	sleep 3
