@@ -17,7 +17,7 @@ import (
 
 	"github.com/scionproto/scion/pkg/snet/path"
 	"golang.zx2c4.com/wireguard/translator/addr_translation"
-	"golang.zx2c4.com/wireguard/translator/pathcache"
+	pathpool "golang.zx2c4.com/wireguard/translator/pathpool"
 )
 
 //--------------- Helper
@@ -39,12 +39,12 @@ func ipToNetip(ip net.IP) (netip.Addr, error) {
 }
 
 type Translator struct {
-	cache PathCache
+	cache PathPool
 	//localISD uint16
 	//localASN uint32
 }
 
-func NewTranslator(cache PathCache) *Translator {
+func NewTranslator(cache PathPool) *Translator {
 	return &Translator{cache: cache}
 }
 
@@ -53,8 +53,8 @@ const (
 	SCIONPrefixFirstByte = 0xfc
 )
 
-type PathCache interface {
-	Get(ctx context.Context, srcIA, dstIA addr.IA) ([]pathcache.CachedPath, error)
+type PathPool interface {
+	Get(ctx context.Context, srcIA, dstIA addr.IA) ([]pathpool.CachedPath, error)
 }
 
 func (t *Translator) ReadPacket(pkt []byte, isIPv6 bool) ([]byte, error) {
@@ -92,7 +92,7 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	return path, nil
 }
 
-func selectPath(paths []pathcache.CachedPath) pathcache.CachedPath {
+func selectPath(paths []pathpool.CachedPath) pathpool.CachedPath {
 	return paths[0]
 }
 
