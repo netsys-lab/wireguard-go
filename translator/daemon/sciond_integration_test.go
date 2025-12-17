@@ -1,4 +1,7 @@
-package scion_paths
+//go:build integration
+// +build integration
+
+package daemon
 
 import (
 	"context"
@@ -22,7 +25,8 @@ func getEnvIA(key, defaultVal string) addr.IA {
 	return ia
 }
 
-func TestSciondRetrieverIntegration(t *testing.T) {
+// TEMP EXPLANATION
+func TestSciondRetrieverRetrievalWithoutPool(t *testing.T) {
 	// 1. Setup Retriever
 	r, err := NewSciondRetriever()
 	if err != nil {

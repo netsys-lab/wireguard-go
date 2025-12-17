@@ -1,4 +1,4 @@
-package pathcache
+package pathpool
 
 import (
 	"context"
