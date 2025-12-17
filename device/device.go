@@ -14,6 +14,8 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
+	"golang.zx2c4.com/wireguard/translator/header_parsing"
+	"golang.zx2c4.com/wireguard/translator/pathcache"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -66,6 +68,8 @@ type Device struct {
 	allowedips    AllowedIPs
 	indexTable    IndexTable
 	cookieChecker CookieChecker
+
+	translator *header_parsing.Translator
 
 	pool struct {
 		inboundElementsContainer  *WaitPool
@@ -288,6 +292,9 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.log = logger
 	device.net.bind = bind
 	device.tun.device = tunDevice
+	//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
+	pathcache := pathcache.NewPathPool(nil)
+	device.translator = header_parsing.NewTranslator(pathcache)
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
 		device.log.Errorf("Trouble determining MTU, assuming default: %v", err)
