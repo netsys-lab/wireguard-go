@@ -7,8 +7,11 @@ package device
 
 import (
 	"bytes"
+	//"context"
 	"encoding/binary"
 	"errors"
+
+	//"fmt"
 	"net"
 	"os"
 	"sync"

@@ -15,7 +15,7 @@ import (
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
-	"golang.zx2c4.com/wireguard/translator/pathcache"
+	pathcache "golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
