@@ -18,11 +18,11 @@ import (
 	"github.com/scionproto/scion/pkg/snet/path"
 )
 
-type SciondRetriever struct {
+type GrpcRetriever struct {
 	client daemonpb.DaemonServiceClient // sciond grpc client
 }
 
-func NewSciondRetriever() (*SciondRetriever, error) {
+func NewGrpcRetriever() (*GrpcRetriever, error) {
 	daemonAddr := getDaemonAddr()
 
 	// dont block forever
@@ -34,13 +34,13 @@ func NewSciondRetriever() (*SciondRetriever, error) {
 		return nil, fmt.Errorf("connect to daemon (%s): %w", daemonAddr, err)
 	}
 
-	return &SciondRetriever{
+	return &GrpcRetriever{
 		client: daemonpb.NewDaemonServiceClient(conn),
 	}, nil
 }
 
 // get paths from sciond
-func (r *SciondRetriever) RetrievePaths(ctx context.Context, srcIA, dstIA addr.IA) ([]snet.Path, error) {
+func (r *GrpcRetriever) RetrievePaths(ctx context.Context, srcIA, dstIA addr.IA) ([]snet.Path, error) {
 	req := &daemonpb.PathsRequest{
 		SourceIsdAs:      uint64(srcIA),
 		DestinationIsdAs: uint64(dstIA),
