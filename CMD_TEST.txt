@@ -1,0 +1,164 @@
+# Test:
+./bootstrap_test.sh up
+
+## Run bootstrap_test.sh up and then check if Client has certs
+sudo ip netns exec Client ls -la /tmp/wg-scion /tmp/wg-scion/certs
+
+## Confirm if Namespaces have IPv6
+sudo ip netns exec Server ip -6 addr show dev wg-server
+sudo ip netns exec Client ip -6 addr show dev wg-client
+
+# Check ipv6 Routing
+sudo ip netns exec Client ip -6 route
+sudo ip netns exec Server ip -6 route
+
+## Check Ipv6 allowed ips
+sudo ip netns exec Client wg show wg-client
+
+## Show WG
+sudo ip netns exec Client wg show wg-client
+sudo ip netns exec Server wg show wg-server
+
+## Wireguard Listening to logs
+Start a Terminal each to Listen
+sudo ip netns exec Server tail -f /tmp/wg-server.log
+sudo ip netns exec Client tail -f /tmp/wg-client.log
+
+## Send an IPv6 packets
+### Client -> Server
+sudo ip netns exec Client ping6 -c 3 fd00::1
+
+### Explicitly Interface
+sudo ip netns exec Client ping6 -I wg-client -c 3 fd00::1
+
+### TCP Arbitrary Traffic - should go Interface
+
+#### Server:
+sudo ip netns exec Server nc -6 -l 12345
+
+#### Client:
+sudo ip netns exec Client nc -6 fd00::1 12345
+
+### UDP Arbitrary Test
+
+#### Server:
+sudo ip netns exec Server nc -6 -u -l 9999
+
+#### Client:
+sudo ip netns exec Client echo "hello ipv6" | nc -6 -u fd00::1 9999
+
+### Prove packet uses Interface:
+sudo ip netns exec Client tcpdump -i wg-client -n ip6
+
+sudo ip netns exec Client ping6 fd00::1
+
+### Get Wireguard Routes
+sudo ip netns exec Client ip -6 route get fd00::1
+
+## Wireguard IPv6 Ping Packet over Interface
+sudo ip netns exec Client ping6 fd00::1
+
+## SCION Mappable IPv6 test
+sudo ip netns exec Client ping6 -I wg-client -c 1 fc00:10fd:e800:1234::1234
+
+
+# Interface Up
+sudo ip netns exec Server bash -lc "ip -br a show dev wg-server; ip -br -6 a show dev wg-server"
+sudo ip netns exec Client bash -lc "ip -br a show dev wg-client; ip -br -6 a show dev wg-client"
+
+IPV4 Ping over wg
+sudo ip netns exec Client bash -lc "ping -c 3 -W 1 10.10.10.1"
+
+
+IPv6 Ping over wg
+sudo ip netns exec Client bash -lc "ping -6 -c 3 -W 1 fd00::1"
+
+
+# IPv4 UDP over wg
+
+## Start Receiver
+sudo ip netns exec Server bash -lc '
+  rm -f /tmp/udp_v4.log
+  nohup nc -u -l -p 9999 >>/tmp/udp_v4.log 2>&1 &
+  echo $! > /tmp/udp_v4.pid
+  echo "udp-v4 sink pid=$(cat /tmp/udp_v4.pid)"
+  ss -lunp | grep -E ":9999\b" || { echo "NOT LISTENING on 9999"; exit 1; }
+'
+## Client Send
+sudo ip netns exec Client bash -lc 'echo "hello-v4" | nc -u -w1 10.10.10.1 9999'
+
+## Server Verify
+sudo ip netns exec Server bash -lc 'tail -n 20 /tmp/udp_v4.log || true'
+
+## Stop reciever
+sudo ip netns exec Server bash -lc 'kill $(cat /tmp/udp_v4.pid) 2>/dev/null || true'
+
+
+# IPv6 UDP over wg
+
+## Start Receiver
+sudo ip netns exec Server bash -lc '
+  rm -f /tmp/udp_v6.log
+  nohup nc -u -6 -l -p 9998 >>/tmp/udp_v6.log 2>&1 &
+  echo $! > /tmp/udp_v6.pid
+  echo "udp-v6 sink pid=$(cat /tmp/udp_v6.pid)"
+  ss -lunp | grep -E ":9998\b" || { echo "NOT LISTENING on 9998"; exit 1; }
+'
+
+## Client send
+sudo ip netns exec Client bash -lc 'echo "hello-v6" | nc -u -6 -w1 fd00::1 9998'
+
+## Server verify
+sudo ip netns exec Server bash -lc 'tail -n 20 /tmp/udp_v6.log || true'
+
+## Stop Receiver
+sudo ip netns exec Server bash -lc 'kill $(cat /tmp/udp_v6.pid) 2>/dev/null || true'
+
+
+# Scion Packet test over tunnel
+
+## Kill other processes and start end2end server AS 111
+SCION_REPO=/home/paul/Scintra/scion
+
+sudo ip netns exec Server bash -lc "
+  set -euo pipefail
+  cd '$SCION_REPO'
+
+  # kill previous end2end safely
+  pkill -x end2end 2>/dev/null || true
+
+  rm -f /tmp/scion_e2e_srv.log /tmp/scion_e2e_srv.pid
+
+  nohup ./bin/end2end \
+    -mode server \
+    -local 1-ff00:0:111,127.0.0.1:30400 \
+    -sciond 10.10.10.1:30255 \
+    -log.console debug \
+    > /tmp/scion_e2e_srv.log 2>&1 &
+
+  echo \$! > /tmp/scion_e2e_srv.pid
+  echo \"e2e server pid=\$(cat /tmp/scion_e2e_srv.pid)\"
+  sleep 0.5
+  tail -n 20 /tmp/scion_e2e_srv.log || true
+"
+
+
+## Verify it end2end is running
+sudo ip netns exec Server bash -lc 'ps -p $(cat /tmp/scion_e2e_srv.pid) -o pid=,cmd='
+
+## Send Scion packets from Client AS 112 to AS 111
+SCION_REPO=/home/paul/Scintra/scion
+
+sudo ip netns exec Client bash -lc "
+  set -euo pipefail
+  cd '$SCION_REPO'
+
+  ./bin/end2end \
+    -mode client \
+    -local 1-ff00:0:112,127.0.0.1 \
+    -remote 1-ff00:0:111,127.0.0.1:30400 \
+    -attempts 5 \
+    -timeout 5s \
+    -sciond 10.10.10.1:30256 \
+    -log.console debug
+"

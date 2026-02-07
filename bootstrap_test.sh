@@ -32,7 +32,7 @@ SCION_DIR="${SCION_DIR:-../scion}"
 TOPO_FILE="${TOPO_FILE:-topology/tiny.topo}" # relative to SCION_DIR
 RUN_LOG="${RUN_LOG:-/tmp/scion_run.log}"
 
-BOOTSTRAP_PY="${BOOTSTRAP_PY:-./bootstrap-server.py}"
+BOOTSTRAP_PY="${BOOTSTRAP_PY:-bootstrap-server.py}"
 BOOTSTRAP_BIND="${BOOTSTRAP_BIND:-10.0.0.1}"
 BOOTSTRAP_PORT="${BOOTSTRAP_PORT:-8042}"
 BOOTSTRAP_URL="http://${BOOTSTRAP_BIND}:${BOOTSTRAP_PORT}"
@@ -186,15 +186,103 @@ start_scion() {
 # 3) Bootstrap server (underlay)
 # =========================
 start_bootstrap() {
+
+  #echo "+ [3] Start Bootstrap server in Server ns (underlay: ${BOOTSTRAP_URL})"
+  #[[ -d "$ASDIR" ]] || die "ASDIR not found: $ASDIR (did topology generate?)"
+  #in_ns "$SERVER_NS" "python3 '$BOOTSTRAP_PY' '$ASDIR' '$BOOTSTRAP_BIND' '$BOOTSTRAP_PORT' > /tmp/bootstrap.log 2>&1 &"
+  #sleep 1
+
   echo "+ [3] Start Bootstrap server in Server ns (underlay: ${BOOTSTRAP_URL})"
   [[ -d "$ASDIR" ]] || die "ASDIR not found: $ASDIR (did topology generate?)"
-  in_ns "$SERVER_NS" "python3 '$BOOTSTRAP_PY' '$ASDIR' '$BOOTSTRAP_BIND' '$BOOTSTRAP_PORT' > /tmp/bootstrap.log 2>&1 &"
-  sleep 1
+
+  # Start (background) + record PID
+  in_ns "$SERVER_NS" "
+    set -euo pipefail
+    rm -f /tmp/bootstrap.pid
+    nohup python3 '$BOOTSTRAP_PY' '$ASDIR' '$BOOTSTRAP_BIND' '$BOOTSTRAP_PORT' > /tmp/bootstrap.log 2>&1 &
+    echo \$! > /tmp/bootstrap.pid
+  "
+
+  # Give it a moment to bind
+  sleep 0.5
+
+  echo "+ [3] Bootstrap startup checks (Server ns)"
+
+  # 1) PID file + process existence
+  in_ns "$SERVER_NS" "
+    set -euo pipefail
+    [[ -s /tmp/bootstrap.pid ]] || { echo 'bootstrap pid file missing/empty' >&2; tail -n 120 /tmp/bootstrap.log >&2 || true; exit 1; }
+    pid=\$(cat /tmp/bootstrap.pid)
+    ps -p \"\$pid\" -o pid=,cmd= >/dev/null || { echo \"bootstrap process not running (pid=\$pid)\" >&2; tail -n 200 /tmp/bootstrap.log >&2 || true; exit 1; }
+    echo \"  pid=\$pid (\$(ps -p \"\$pid\" -o cmd=))\"
+  "
+
+  # 2) Address sanity (is BOOTSTRAP_BIND present on any iface?)
+  #    (Skip if binding to 0.0.0.0/:: which is valid even if not assigned)
+  in_ns "$SERVER_NS" "
+    set -euo pipefail
+    if [[ '$BOOTSTRAP_BIND' != '0.0.0.0' && '$BOOTSTRAP_BIND' != '::' ]]; then
+      ip -o addr show | grep -F ' $BOOTSTRAP_BIND' >/dev/null \
+        || { echo \"bootstrap bind IP not assigned in Server ns: $BOOTSTRAP_BIND\" >&2; ip -br a >&2; tail -n 120 /tmp/bootstrap.log >&2 || true; exit 1; }
+    fi
+  "
+
+  # 3) Port listening check (TCP)
+  in_ns "$SERVER_NS" "
+    set -euo pipefail
+    for i in {1..25}; do
+      ss -lntp | grep -E \":$BOOTSTRAP_PORT\\b\" >/dev/null && break
+      sleep 0.2
+    done
+    ss -lntp | grep -E \":$BOOTSTRAP_PORT\\b\" >/dev/null \
+      || { echo \"bootstrap not listening on :$BOOTSTRAP_PORT\" >&2; ss -lntp >&2; tail -n 200 /tmp/bootstrap.log >&2 || true; exit 1; }
+
+    echo \"  listening: \$(ss -lntp | grep -E \":$BOOTSTRAP_PORT\\b\" | head -n1)\"
+  "
+
+  # 4) Self-HTTP check (works even if bound to 0.0.0.0; use loopback + underlay IP)
+  #    Try both loopback and BOOTSTRAP_BIND (or SERVER_IP) to detect bind-to-localhost issues.
+  in_ns "$SERVER_NS" "
+    set -euo pipefail
+    try() { curl --connect-timeout 1 --max-time 2 -fsS \"\$1\" >/dev/null; }
+
+    urls=(
+      \"http://${BOOTSTRAP_BIND}:$BOOTSTRAP_PORT/topology\"
+      \"http://${BOOTSTRAP_BIND}:$BOOTSTRAP_PORT/trcs\"
+    )
+
+    # If BOOTSTRAP_BIND is a concrete IP, test it; otherwise test SERVER_IP
+    if [[ '$BOOTSTRAP_BIND' != '0.0.0.0' && '$BOOTSTRAP_BIND' != '::' ]]; then
+      urls+=(\"http://$BOOTSTRAP_BIND:$BOOTSTRAP_PORT/topology\" \"http://$BOOTSTRAP_BIND:$BOOTSTRAP_PORT/trcs\")
+    else
+      urls+=(\"http://$SERVER_IP:$BOOTSTRAP_PORT/topology\" \"http://$SERVER_IP:$BOOTSTRAP_PORT/trcs\")
+    fi
+
+    for u in \"\${urls[@]}\"; do
+      try \"\$u\" || { echo \"self-check failed: \$u\" >&2; tail -n 200 /tmp/bootstrap.log >&2 || true; exit 1; }
+    done
+    echo \"  http self-check OK\"
+  "
+
+  echo "  Bootstrap OK"
+
 
   echo "+ [4] Verify bootstrap reachable from Client"
-  in_ns "$CLIENT_NS" "curl -sf '${BOOTSTRAP_URL}/topology' >/dev/null"
-  in_ns "$CLIENT_NS" "curl -sf '${BOOTSTRAP_URL}/trcs' >/dev/null"
+
+  # 1) sanity: does client have curl?
+  in_ns "$CLIENT_NS" "command -v curl >/dev/null || (echo 'curl missing in client context' >&2; exit 127)"
+
+  # 2) show client addressing + route (super useful if it fails)
+  in_ns "$CLIENT_NS" "ip -br a; ip r"
+
+  # 3) try with timeouts + verbose on failure
+  in_ns "$CLIENT_NS" "
+    set -e
+    curl --connect-timeout 2 --max-time 4 -fsS '${BOOTSTRAP_URL}/topology' >/dev/null
+    curl --connect-timeout 2 --max-time 4 -fsS '${BOOTSTRAP_URL}/trcs' >/dev/null
+  "
   echo "  OK"
+
 }
 
 # =========================
@@ -247,7 +335,21 @@ configure_interfaces() {
   in_ns "$CLIENT_NS" "ip addr add '$WG_CLIENT_IP6' dev '$WG_CLIENT' 2>/dev/null || true"
   in_ns "$CLIENT_NS" "ip link set '$WG_CLIENT' up"
   in_ns "$CLIENT_NS" "ip -6 route add fd00::/64 dev '$WG_CLIENT' 2>/dev/null || true"
+
+  echo "+ [wg] Assigning Scion Mappable IPv6 Routes"
+  in_ns "$SERVER_NS" "ip -6 route add fc00::/8 dev '$WG_SERVER' 2>/dev/null || true"
+  in_ns "$CLIENT_NS" "ip -6 route add fc00::/8 '$WG_CLIENT' 2>/dev/null || true"
 }
+
+wait_for_socket_ns() {
+  local ns="$1" sock="$2"
+  for i in {1..50}; do
+    in_ns "$ns" "[[ -S '$sock' ]]" && return 0
+    sleep 0.2
+  done
+  die "UAPI socket not found in ns=$ns: $sock"
+}
+
 
 configure_wireguard_uapi() {
   echo "+ [wg] Configuring WireGuard peers via UAPI (socat)"
@@ -255,8 +357,8 @@ configure_wireguard_uapi() {
   local UAPI_SOCKET_SERVER="/var/run/wireguard/${WG_SERVER}.sock"
   local UAPI_SOCKET_CLIENT="/var/run/wireguard/${WG_CLIENT}.sock"
 
-  wait_for_socket "$UAPI_SOCKET_SERVER"
-  wait_for_socket "$UAPI_SOCKET_CLIENT"
+  wait_for_socket_ns "$SERVER_NS" "$UAPI_SOCKET_SERVER"
+  wait_for_socket_ns "$CLIENT_NS" "$UAPI_SOCKET_CLIENT"
 
   local PRIVATE_KEY_HEX_SERVER PEER_PUBLIC_KEY_HEX_SERVER
   local PRIVATE_KEY_HEX_CLIENT PEER_PUBLIC_KEY_HEX_CLIENT
