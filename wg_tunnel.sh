@@ -81,9 +81,11 @@ function start_wireguard_go() {
 	sleep 3
 
 	sudo ip netns exec $CLIENT bash -c "
-	  export WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1
-	  export LOG_LEVEL=$WIREGUARD_LOG_LEVEL_ENV
-	  $WIREGUARD_GO --foreground $WG_CLIENT > /tmp/wg-client.log 2>&1
+		export WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1
+		export LOG_LEVEL=$WIREGUARD_LOG_LEVEL_ENV
+		export SCION_BOOTSTRAP_URL=http://10.0.0.1:8042
+		export SCION_CONFIG_DIR=/tmp/wg-scion
+		$WIREGUARD_GO --foreground $WG_CLIENT > /tmp/wg-client.log 2>&1
 	" &
 
 	sleep 3
