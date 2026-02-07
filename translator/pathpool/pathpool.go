@@ -167,7 +167,8 @@ func WrapSnetPath(src, dst addr.IA, p snet.Path) CachedPath {
 	if meta := p.Metadata(); meta != nil {
 		expiry = meta.Expiry
 	}
-	fp := snet.Fingerprint(p).String()
+
+	fp := snet.Fingerprint(p.Metadata().Interfaces).String()
 
 	// Safety check for UnderlayNextHop
 	var nextHop *net.UDPAddr
