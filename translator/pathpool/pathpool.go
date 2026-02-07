@@ -162,6 +162,8 @@ func (pp *PathPool) Close() {
 }
 
 // WrapSnetPath converts snet.Path into a CachedPath wrapper.
+// Fingerprint needs snet.PathInterface instead of snet.Path
+// SCION APIs, the PathInterfaces are exposed via Metadata()
 func WrapSnetPath(src, dst addr.IA, p snet.Path) CachedPath {
 	var expiry time.Time
 	if meta := p.Metadata(); meta != nil {

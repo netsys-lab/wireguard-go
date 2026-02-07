@@ -293,15 +293,19 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.log = logger
 	device.net.bind = bind
 	device.tun.device = tunDevice
-	//Hier erstellen wir einen Daemon
-	retriever, err := daemon.NewSciondRetriever(scionConfigDir)
-	if err != nil {
-		logger.Errorf("SCION init failed: %v", err)
-		return nil //TODO: Return Panic?
+	if scionConfigDir != "" {
+		//Hier erstellen wir einen Daemon
+		retriever, err := daemon.NewSciondRetriever(scionConfigDir)
+		if err != nil {
+			logger.Errorf("SCION init failed: %v", err)
+			return nil //TODO: Return Panic?
+		}
+		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
+		pathcache := pathcache.NewPathPool(retriever)
+		device.translator = header_parsing.NewTranslator(pathcache)
+	} else {
+		logger.Errorf("SCION init failed: no scionConfigDir")
 	}
-	//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
-	pathcache := pathcache.NewPathPool(retriever)
-	device.translator = header_parsing.NewTranslator(pathcache)
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
 		device.log.Errorf("Trouble determining MTU, assuming default: %v", err)
