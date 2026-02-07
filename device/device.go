@@ -14,6 +14,7 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
+	daemon "golang.zx2c4.com/wireguard/translator/daemon"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
 	pathcache "golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
@@ -285,15 +286,21 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	return nil
 }
 
-func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
+func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfigDir string) *Device {
 	device := new(Device)
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.net.bind = bind
 	device.tun.device = tunDevice
+	//Hier erstellen wir einen Daemon
+	retriever, err := daemon.NewSciondRetriever(scionConfigDir)
+	if err != nil {
+		logger.Errorf("SCION init failed: %v", err)
+		return nil //TODO: Return Panic?
+	}
 	//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
-	pathcache := pathcache.NewPathPool(nil)
+	pathcache := pathcache.NewPathPool(retriever)
 	device.translator = header_parsing.NewTranslator(pathcache)
 	mtu, err := device.tun.device.MTU()
 	if err != nil {

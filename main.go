@@ -8,16 +8,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
+	bootstrap "golang.zx2c4.com/wireguard/translator/bootstrap"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -222,7 +226,27 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger)
+	scionConfigDir := os.Getenv("SCION_CONFIG_DIR")
+	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
+
+	if bootstrapURL != "" {
+
+		//Annahem nur ein Interface also fixes Verzeichnis
+		if scionConfigDir == "" {
+			scionConfigDir = filepath.Join(os.TempDir(), "wg-scion")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+
+		if err := bootstrap.BootstrapFetch(ctx, bootstrapURL, scionConfigDir); err != nil {
+			logger.Errorf("SCION bootstrap failed: %v", err)
+			os.Exit(ExitSetupFailed)
+			// oder läuft weiter?
+		}
+	}
+
+	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfigDir)
 
 	logger.Verbosef("Device started")
 
