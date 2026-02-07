@@ -629,7 +629,8 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 	expected := pkts[1]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -677,7 +678,8 @@ func TestTranslateScion4ToIpUdp(t *testing.T) {
 	expected := pkts[0]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::ffff:a00:1")
@@ -718,7 +720,8 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 	expected := pkts[1]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -766,7 +769,8 @@ func TestTranslateScion6ToIpUdp(t *testing.T) {
 	expected := pkts[0]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -810,7 +814,8 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 	expected := pkts[1]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -857,7 +862,8 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 	expected := pkts[1]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -907,7 +913,8 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 	expected := pkts[2]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -955,13 +962,14 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 	expected := pkts[0]
 
 	// Translator
-	translator := NewTranslator(nil)
+	srcIA := mustIA(t, 1, 64496)
+	translator := NewTranslator(nil, srcIA)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:20fb:f100::ffff:a00:2")
 
 	//IA
-	//srcIA := mustIA(t, 1, 64496)
+	//
 	//dstIA := mustIA(t, 2, 64497)
 
 	ipBytes, err := translator.TranslateIngress(input, hostIP)

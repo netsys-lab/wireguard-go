@@ -40,7 +40,7 @@ BOOTSTRAP_URL="http://${BOOTSTRAP_BIND}:${BOOTSTRAP_PORT}"
 # Which AS directory to serve for endhost bootstrap (must exist under SCION_DIR/gen/)
 BOOTSTRAP_AS="${BOOTSTRAP_AS:-ASff00_0_111}"
 ASDIR="${ASDIR:-$SCION_DIR/gen/$BOOTSTRAP_AS}"
-
+LOCAL_IA="${BOOTSTRAP_AS:-ASff00_0_111}"
 # Client local cache dir for downloaded topology+TRCs
 SCION_CONFIG_DIR="${SCION_CONFIG_DIR:-/tmp/wg-scion}"
 
@@ -318,6 +318,7 @@ start_wireguard_go() {
     export LOG_LEVEL=$WG_LOG
     export SCION_BOOTSTRAP_URL='${BOOTSTRAP_URL}'
     export SCION_CONFIG_DIR='${SCION_CONFIG_DIR}'
+    export SCION_LOCAL_IA='${LOCAL_IA}'
     '$WIREGUARD_GO' --foreground '$WG_CLIENT' > /tmp/wg-client.log 2>&1
   " &
   sleep 3
@@ -338,7 +339,7 @@ configure_interfaces() {
 
   echo "+ [wg] Assigning Scion Mappable IPv6 Routes"
   in_ns "$SERVER_NS" "ip -6 route add fc00::/8 dev '$WG_SERVER' 2>/dev/null || true"
-  in_ns "$CLIENT_NS" "ip -6 route add fc00::/8 '$WG_CLIENT' 2>/dev/null || true"
+  in_ns "$CLIENT_NS" "ip -6 route add fc00::/8 dev '$WG_CLIENT' 2>/dev/null || true"
 }
 
 wait_for_socket_ns() {

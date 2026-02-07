@@ -274,6 +274,8 @@ func (device *Device) RoutineReadFromTUN() {
 				//With false if ipv4
 				//newpkt, err := translator.ReadPacket(pkt, false)
 
+				//srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len]) // 4 bytes
+
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
 					continue
@@ -304,13 +306,18 @@ func (device *Device) RoutineReadFromTUN() {
 
 				//Wir übergeben Paket, Paths, Scion src und Scion dst an Translation
 
-				newpkt, err := device.translator.ReadPacket(pkt, true)
+				srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len]) // 16 bytes
+
+				hostPort := device.scionUnderlayPort
+
+				newpkt, err := device.translator.ReadOutboundPacket(pkt, dst, srcIP, hostPort, true)
 
 				if err != nil {
 					device.log.Errorf("Process error: %v", err)
 					// drop or continue
 					continue
 				}
+				device.log.Verbosef("Translation sucessful")
 				elem.packet = newpkt
 				sizes[i] = len(newpkt)
 				//TODO: Lookup(translate) SCION dst adresse

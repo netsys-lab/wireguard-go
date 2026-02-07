@@ -61,6 +61,9 @@ sudo ip netns exec Client ping6 fd00::1
 ## SCION Mappable IPv6 test
 sudo ip netns exec Client ping6 -I wg-client -c 1 fc00:10fd:e800:1234::1234
 
+Checken ob es diesen DST IA auch gibt:
+sudo ip netns exec Server sh
+./bin/scion showpaths fc00:10fd:e800:1234::1234
 
 # Interface Up
 sudo ip netns exec Server bash -lc "ip -br a show dev wg-server; ip -br -6 a show dev wg-server"

@@ -228,6 +228,8 @@ func main() {
 
 	scionConfigDir := os.Getenv("SCION_CONFIG_DIR")
 	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
+	scionUnderlayPort := 32766
+	localIAStr := os.Getenv("SCION_LOCAL_IA")
 
 	if bootstrapURL != "" {
 
@@ -246,7 +248,7 @@ func main() {
 		}
 	}
 
-	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfigDir)
+	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfigDir, scionUnderlayPort, localIAStr)
 
 	logger.Verbosef("Device started")
 

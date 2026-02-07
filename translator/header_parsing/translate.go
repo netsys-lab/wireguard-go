@@ -39,13 +39,14 @@ func ipToNetip(ip net.IP) (netip.Addr, error) {
 }
 
 type Translator struct {
-	cache PathPool
+	cache   PathPool
+	localIA addr.IA
 	//localISD uint16
 	//localASN uint32
 }
 
-func NewTranslator(cache PathPool) *Translator {
-	return &Translator{cache: cache}
+func NewTranslator(cache PathPool, localIA addr.IA) *Translator {
+	return &Translator{cache: cache, localIA: localIA}
 }
 
 const (
@@ -57,13 +58,32 @@ type PathPool interface {
 	Get(ctx context.Context, srcIA, dstIA addr.IA) ([]pathpool.CachedPath, error)
 }
 
-func (t *Translator) ReadPacket(pkt []byte, isIPv6 bool) ([]byte, error) {
+func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, hostPort int, isIPv6 bool) ([]byte, error) {
 	/*
 		Main entry for the Translation atleast for now.
 		We can later move the decisions into the send.go
 	*/
+	// Check if the dst address is scrion Translateable
+	if !isSCIONMapped(dstIP) {
+		return pkt, fmt.Errorf("pkt is not scion mappable")
+	} else {
+		if isIPv6 {
+			newpkt, _, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
+			if err != nil {
+				return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
+			}
+			//return newpkt, fmt.Errorf("pkt scion mappable")
+			return newpkt, fmt.Errorf("ipv6 pkt scion mappable")
+		} else {
+			newpkt, _, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
+			if err != nil {
+				return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
+			}
+			//return newpkt, fmt.Errorf("pkt scion mappable")
+			return newpkt, fmt.Errorf("ipv4 pkt scion mappable")
+		}
+	}
 
-	return pkt, nil
 }
 
 func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
@@ -76,7 +96,13 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 
 	//Paths retrieval from PathCache
 	ctx := context.Background()
-	CachedPaths, _ := t.cache.Get(ctx, srcIA, dstIA)
+	CachedPaths, err := t.cache.Get(ctx, srcIA, dstIA)
+	if err != nil {
+		return path.Path{}, err
+	}
+	if len(CachedPaths) == 0 {
+		return path.Path{}, fmt.Errorf("no paths for %s -> %s", srcIA, dstIA)
+	}
 	//Path Selection Criteria
 	//Just select first path for now
 	selectedcachedpath := selectPath(CachedPaths)
@@ -101,7 +127,6 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 // IPv6 -> SCION
 // returns SCION packet bytes and the UDP next-hop to send to if successful
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
-
 	// Parse IPv6 packet
 	packet := gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
 	ip6Layer := packet.Layer(layers.LayerTypeIPv6)
@@ -121,7 +146,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	tc := ip6.TrafficClass
 
 	//Init Port variable
-	var SrcPort int
+	//var SrcPort int
 	var DstPort int
 
 	if !isSCIONMapped(ip6.DstIP) {
@@ -133,10 +158,10 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
 	}
 
-	srcisd, srcasn, _, _, _, _, err := UnmapIPv6(ip6.SrcIP, 8)
-	if err != nil {
-		return nil, nil, fmt.Errorf("src unmap IPv6 failed: %w", err)
-	}
+	//srcisd, srcasn, _, _, _, _, err := UnmapIPv6(ip6.SrcIP, 8)
+	//if err != nil {
+	//	return nil, nil, fmt.Errorf("src unmap IPv6 failed: %w", err)
+	//}
 
 	//pathBytes, nextHop, ok := pathCache.Lookup(dstIA)
 	//if !ok || len(pathBytes) == 0 {
@@ -144,7 +169,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//fmt.Println("PathCache miss for dst IA, falling back to direct host+port")
 
 	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
-	srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
+	//srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
+	srcIA := t.localIA
+	if srcIA == 0 {
+		return nil, nil, fmt.Errorf("localIA not configured")
+	}
 
 	//Using the Callback function
 	var selectedPath path.Path
@@ -192,7 +221,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstPort: uint16(udp.DstPort),
 		}
 
-		SrcPort = int(udp.SrcPort)
+		//SrcPort = int(udp.SrcPort)
 		DstPort = int(udp.DstPort)
 
 		// --- FIX: Extract correct payload ---
@@ -222,7 +251,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		tcp := tcpLayer.(*layers.TCP)
 		l4nextHeader = slayers.L4TCP
 
-		SrcPort = int(tcp.SrcPort)
+		//SrcPort = int(tcp.SrcPort)
 		DstPort = int(tcp.DstPort)
 
 		innerTCP := &layers.TCP{
@@ -310,7 +339,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(SrcPort),
+			SrcPort: layers.UDPPort(hostPort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip4)
@@ -334,8 +363,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstIP:        nextHop.IP,
 		}
 
+		//Muss hostPort sein. Um zwischen SCION und normal zu unterscheiden
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(SrcPort),
+			SrcPort: layers.UDPPort(hostPort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip6Under)

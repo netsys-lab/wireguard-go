@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/scionproto/scion/pkg/addr"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
@@ -94,6 +95,8 @@ type Device struct {
 	ipcMutex sync.RWMutex
 	closed   chan struct{}
 	log      *Logger
+
+	scionUnderlayPort int
 }
 
 // deviceState represents the state of a Device.
@@ -286,13 +289,15 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	return nil
 }
 
-func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfigDir string) *Device {
+func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfigDir string, scionUnderlayPort int, localIAStr string) *Device {
 	device := new(Device)
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.net.bind = bind
 	device.tun.device = tunDevice
+	device.scionUnderlayPort = scionUnderlayPort
+
 	if scionConfigDir != "" {
 		//Hier erstellen wir einen Daemon
 		retriever, err := daemon.NewSciondRetriever(scionConfigDir)
@@ -302,7 +307,8 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 		}
 		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
 		pathcache := pathcache.NewPathPool(retriever)
-		device.translator = header_parsing.NewTranslator(pathcache)
+		localIA := addr.MustParseIA(localIAStr)
+		device.translator = header_parsing.NewTranslator(pathcache, localIA)
 	} else {
 		logger.Errorf("SCION init failed: no scionConfigDir")
 	}
