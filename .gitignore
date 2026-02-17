@@ -2,3 +2,4 @@ wireguard-go
 
 *.key
 *.pub
+.git_backup

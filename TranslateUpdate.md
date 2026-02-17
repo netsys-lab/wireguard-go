@@ -24,11 +24,13 @@ Ein normales IP-Paket geht an eine SCION-mapped IPv6-Adresse (fc00::/8). WireGua
 # Translator bekommt localIA (ISD-AS) aus config?
 JA okay also muss der sender für den SrcIA wer sein? Also eigentlich bin ich es ja. Aber ich habe ja nicht unbedingt eine ip die zu scion gemapped werden kann.
 
+Der SrcIA ist der Ziel IA in dem das Receiving Wg Interface ist.
+
 Okay LocalIA wird in main aus as Enviornment variables gelesen erstmal.
 Und dann an den Translator übergeben.
 
 
-## Probleme
+# Scion & IPv6 Unterscheiden
 
 ### Ein “zweites IP/UDP Paket” erzeugen und so tun, als wäre es normaler Traffic
 Trennung zwischen normalen IPv6 Paketen und Scion-underlay IPv6/UDP Paketen.
@@ -59,3 +61,28 @@ Peer im richtigen AS, ist ein Argument für den einfachen Buffer-Ansatz, weil:
 brauchen nur einen klaren “Transport-Kanal” durch WG
 
 und auf der Receiver-Seite eine feste Stelle, wo wir SCION “einspeisen”.
+
+
+### Feedback:
+
+Also wir müssen zwischen IPv6 und Scion unterscheiden:
+
+Wenn es vom Border Router kommt.
+
+IPv4 to Translate Catchen
+
+Zwei Verschiedene IPs mit Port Egal
+
+Annahme: Default Scion mit aussnahmen:
+
+Privater Scion Adr Raum: 
+
+Local IA vom Bootstrap bekommen.
+Conf MTU für AS
+
+
+JNI
+CGO 
+
+Video Aufnehmen
+
