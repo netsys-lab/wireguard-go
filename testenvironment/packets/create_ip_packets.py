@@ -71,39 +71,42 @@ def write_packets(packets, filepath):
 def main():
     log_info("Generating IP test packets...")
     
-    # === Client -> Server direction ===
-    # Packet from client to server via SCION-mapped addresses
-    # This packet goes: Client TUN -> WG Client -> Translation -> WG Server -> TUN -> BR
+    # === ip_AS64513_to_AS64514.bin ===
+    # Client sends to AS64514 SCION-mapped address
+    # After translation: becomes SCION packet 1-64513 -> 1-64514
+    # Matches: scion_AS64513_to_AS64514.bin
     
-    # Packet 1: UDP from Client to Server (SCION-mapped)
-    # src: fd00::2 (client WG), dst: fc00:10fc:100::1 (server SCION-mapped)
-    pkt_client_to_server = create_ip_udp_packet(
+    # Source: fd00::2 (client WG) - will be mapped to AS64513 (server's AS)
+    # Dest: fc00:10fc:200::2 (client SCION-mapped = AS64514)
+    pkt_to_as64514 = create_ip_udp_packet(
         src_ip=CLIENT_IP_V6,
-        dst_ip=SCION_MAPPED_SERVER,  # Server AS64513
+        dst_ip=SCION_MAPPED_CLIENT,  # AS64514
         sport=12345,
-        dport=30042,  # Echo server port
+        dport=30042,
         payload=PAYLOAD
     )
     
     write_packets(
-        [pkt_client_to_server],
-        f"{OUTPUT_DIR}/ip_client_to_server.bin"
+        [pkt_to_as64514],
+        f"{OUTPUT_DIR}/ip_AS64513_to_AS64514.bin"
     )
     
-    # === Server -> Client direction (return traffic) ===
-    # Packet from server back to client
-    # src: fc00:10fc:100::1 (server SCION-mapped), dst: fc00:10fc:200::2 (client SCION-mapped)
-    pkt_server_to_client = create_ip_udp_packet(
-        src_ip=SCION_MAPPED_SERVER,
-        dst_ip=SCION_MAPPED_CLIENT,
+    # === ip_AS64514_to_AS64513.bin ===  
+    # Server sends to AS64513 SCION-mapped address (return traffic)
+    # After translation: becomes SCION packet 1-64514 -> 1-64513
+    # Matches: scion_AS64514_to_AS64513.bin
+    
+    pkt_to_as64513 = create_ip_udp_packet(
+        src_ip=SCION_MAPPED_SERVER,  # AS64513
+        dst_ip=SCION_MAPPED_CLIENT,  # AS64514
         sport=30042,
         dport=12345,
         payload=PAYLOAD
     )
     
     write_packets(
-        [pkt_server_to_client],
-        f"{OUTPUT_DIR}/ip_server_to_client.bin"
+        [pkt_to_as64513],
+        f"{OUTPUT_DIR}/ip_AS64514_to_AS64513.bin"
     )
     
     log_success("IP packet generation complete!")
@@ -114,7 +117,7 @@ def main():
     print("  Generated Packets")
     print("="*60)
     
-    for fname in ["ip_client_to_server.bin", "ip_server_to_client.bin"]:
+    for fname in ["ip_AS64513_to_AS64514.bin", "ip_AS64514_to_AS64513.bin"]:
         fpath = f"{OUTPUT_DIR}/{fname}"
         with open(fpath, 'rb') as f:
             pkt_data = f.read()

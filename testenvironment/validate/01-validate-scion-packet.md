@@ -113,6 +113,26 @@ sudo ./01-validate-scion-packet.sh send
 - Captured at AS64514 BR (31010): 3 packets received + 1 response
 - SUCCESS: Topology routing verified
 
+## Captured Packets
+
+After running `sudo ./01-validate-scion-packet.sh send`, captures are saved to:
+
+```
+testenvironment/captures/
+├── step1_br_64513_capture.pcap    # Packet at AS64513 BR (first hop)
+└── step1_br_64514_capture.pcap    # Packet at AS64514 BR (after topology routing)
+```
+
+View captures with payload:
+```bash
+# Using the read script
+sudo ./read_capture.sh step1_br_64513_capture.pcap
+sudo ./read_capture.sh step1_br_64514_capture.pcap
+
+# Or directly with tcpdump
+tcpdump -r testenvironment/captures/step1_br_64513_capture.pcap -X
+```
+
 ## Files
 
 - **Script**: `01-validate-scion-packet.sh`

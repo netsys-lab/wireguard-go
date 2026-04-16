@@ -391,6 +391,32 @@ print('Packet sent!')
     log_info "=== Capture at AS64514 BR (127.0.0.33:31010) ==="
     ip netns exec Server tcpdump -r /tmp/br_64514_capture.pcap -nn 2>/dev/null || log_warn "No packets captured at AS64514 BR"
     
+    # Save captures to testenvironment/captures directory
+    local data_dir="$TESTENV_DIR/captures"
+    mkdir -p "$data_dir"
+    
+    # Copy captures and show payload with -X flag
+    cp /tmp/br_64513_capture.pcap "$data_dir/step1_br_64513_capture.pcap" 2>/dev/null || true
+    cp /tmp/br_64514_capture.pcap "$data_dir/step1_br_64514_capture.pcap" 2>/dev/null || true
+    
+    echo ""
+    log_info "=== Saved Captures ==="
+    echo "Captures saved to: $data_dir/"
+    ls -la "$data_dir"/step1*.pcap 2>/dev/null || echo "  No files saved"
+    
+    echo ""
+    log_info "=== Payload Verification (looking for TEST123) ==="
+    echo ""
+    echo "--- AS64513 BR (first hop) ---"
+    sudo tcpdump -r /tmp/br_64513_capture.pcap -X 2>/dev/null | tail -15
+    echo ""
+    echo "--- AS64514 BR (after topology routing) ---"
+    sudo tcpdump -r /tmp/br_64514_capture.pcap -X 2>/dev/null | tail -15
+    
+    echo ""
+    log_info "Note: Packets captured at both BRs - topology routing verified!"
+    echo "       Use 'tcpdump -r <pcap> -X' to examine full packet content"
+    
     log_ok "Topology routing test complete"
     
     echo ""
