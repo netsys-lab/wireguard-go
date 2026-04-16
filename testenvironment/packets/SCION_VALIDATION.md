@@ -81,49 +81,49 @@ Wir haben ein SCION Packet erstellt (`scion_client_to_server.bin`), das die Tran
 
 ## Packet Flow
 
-### Our Test Packet: scion_client_to_server.bin
+### Our Test Packet: scion_AS64513_to_AS64514.bin
 
-Dieses Packet representiert das übersetzte IP Packet:
+Dieses Packet testet die Topologie-Routing von AS64513 zu AS64514:
 
 ```
-Source:      AS 1-64514 (client - SCION-mapped address)
-Dest:        AS 1-64513 (server - SCION-mapped address)
+Source:      AS 1-64513 (Server AS)
+Dest:        AS 1-64514 (Target AS)
 Underlay:    10.0.0.1 → 127.0.0.25:31006 (AS64513 Border Router)
-SCION Host:  fc00:10fc:200::2 → fc00:10fc:100::1
+SCION Host:  fc00:10fc:100::1 (Server) → fc00:10fc:200::2 (Client)
 Payload:     TEST123
 ```
 
-**Was wir testen wollen:**
+**Flow:**
+1. Packet sent to AS64513 BR (127.0.0.25:31006)
+2. BR reads SCION header (dst=1-64514)
+3. BR routes through topology via PEER link
+4. Packet arrives at AS64514 BR (127.0.0.33:31010)
 
-1. Das SCION Packet wird an AS64513's BR geschickt (127.0.0.25:31006)
-2. Der BR erkennt es als gültiges SCION Packet
-3. Der BR leitet es durch die Topology weiter (zu AS64514 oder lokal)
+**Verified**: Packet captured at both BRs - topology routing works!
 
-### Ziel
+**Flow:**
+1. Client sends IP packet to SCION-mapped address
+2. Server translates: IP → SCION (Src AS=64513, Dst AS=64514)
+3. Server sends to BR at 127.0.0.25:31006
+4. BR routes through topology to AS64514 via PEER link
 
 ```
-SCION Packet
+SCION Packet (64513 → 64514)
     ↓
 wg-server TUN (nach Translation)
     ↓
-An BR schicken: 127.0.0.25:31006
+An BR schicken: 127.0.0.25:31006 (AS64513)
     ↓
 BR erkennt SCION Header
     ↓
-Routing durch Topology
+Routing durch Topology (PEER link)
     ↓
-Entweder:
-  - Lokale Zustellung (falls Ziel = AS64513)
-  - Weiterleitung zu AS64514 (über PEER Link)
+Weiterleitung zu AS64514 (127.0.0.33:31010)
 ```
 
-**Wichtig**: Unser SCION Packet hat:
-- Src: 1-64514, Dst: 1-64513
-- Das bedeutet: Das Ziel ist AS64513 (local), also sollte der BR es lokal zustellen
-
-Aber für Integrationstest wollen wir:
-- Src: 1-64513, Dst: 1-64514 (oder umgekehrt)
-- Damit das Packet durch die Topology geroutet wird
+**Wichtig**: 
+- Src: 1-64513, Dst: 1-64514
+- Das Ziel ist NICHT lokal, also ROUTET der BR durch die Topology zu AS64514
 
 ## Validating SCION Packets
 

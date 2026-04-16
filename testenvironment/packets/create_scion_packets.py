@@ -140,13 +140,38 @@ def write_packets(packets, filepath):
 def main():
     log_info("Generating SCION test packets...")
     
-    # === Client -> Server direction (translated packet) ===
-    # From AS64514 (client) to AS64513 (server)
-    # Underlay goes to AS64513 BR (127.0.0.25:31006)
+    # === scion_AS64513_to_AS64514.bin ===
+    # SCION packet from AS64513 to AS64514 - routes through topology via PEER link
+    # This is the packet that results from translating an IP packet from Client to AS64514
+    # Underlay: send to AS64513 BR first (127.0.0.25:31006), then routes through topology
     
-    pkt_client_to_server = create_scion_udp_packet(
+    pkt_64513_to_64514 = create_scion_udp_packet(
         src_isd=1,
-        src_as=64514,  # Client AS
+        src_as=64513,  # Server AS (WG server is in AS64513)
+        dst_isd=1,
+        dst_as=64514,  # Target AS
+        src_host=SCION_SERVER_ADDR,
+        dst_host=SCION_CLIENT_ADDR,
+        sport=30042,
+        dport=12345,
+        payload=PAYLOAD,
+        underlay_dst=UNDERLAY_SERVER,  # Send to AS64513 BR first
+        underlay_sport=32766
+    )
+    
+    write_packets(
+        [pkt_64513_to_64514],
+        f"{OUTPUT_DIR}/scion_AS64513_to_AS64514.bin"
+    )
+    
+    # === scion_AS64514_to_AS64513.bin ===
+    # SCION packet from AS64514 to AS64513 - local delivery (destination is AS64513)
+    # This is the return packet that comes from AS64514 through tunnel to be translated back to IP
+    # Underlay: directly to AS64513 BR (127.0.0.25:31006)
+    
+    pkt_64514_to_64513 = create_scion_udp_packet(
+        src_isd=1,
+        src_as=64514,  # Target AS
         dst_isd=1,
         dst_as=64513,  # Server AS
         src_host=SCION_CLIENT_ADDR,
@@ -155,35 +180,12 @@ def main():
         dport=30042,
         payload=PAYLOAD,
         underlay_dst=UNDERLAY_SERVER,
-        underlay_sport=32766
-    )
-    
-    write_packets(
-        [pkt_client_to_server],
-        f"{OUTPUT_DIR}/scion_client_to_server.bin"
-    )
-    
-    # === Server -> Client direction (return traffic) ===
-    # From AS64513 (server) to AS64514 (client)
-    # Underlay goes to AS64514 BR (127.0.0.33:31010)
-    
-    pkt_server_to_client = create_scion_udp_packet(
-        src_isd=1,
-        src_as=64513,  # Server AS
-        dst_isd=1,
-        dst_as=64514,  # Client AS
-        src_host=SCION_SERVER_ADDR,
-        dst_host=SCION_CLIENT_ADDR,
-        sport=30042,
-        dport=12345,
-        payload=PAYLOAD,
-        underlay_dst=UNDERLAY_CLIENT,
         underlay_sport=32767
     )
     
     write_packets(
-        [pkt_server_to_client],
-        f"{OUTPUT_DIR}/scion_server_to_client.bin"
+        [pkt_64514_to_64513],
+        f"{OUTPUT_DIR}/scion_AS64514_to_AS64513.bin"
     )
     
     log_success("SCION packet generation complete!")
@@ -194,7 +196,7 @@ def main():
     print("  Generated Packets")
     print("="*60)
     
-    for fname in ["scion_client_to_server.bin", "scion_server_to_client.bin"]:
+    for fname in ["scion_AS64513_to_AS64514.bin", "scion_AS64514_to_AS64513.bin"]:
         fpath = f"{OUTPUT_DIR}/{fname}"
         with open(fpath, 'rb') as f:
             pkt_data = f.read()
