@@ -229,6 +229,11 @@ func main() {
 	scionConfigDir := os.Getenv("SCION_CONFIG_DIR")
 	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
 	scionUnderlayPort := 32766
+	if portStr := os.Getenv("SCION_UNDERLAY_PORT"); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port < 65536 {
+			scionUnderlayPort = port
+		}
+	}
 	localIAStr := os.Getenv("SCION_LOCAL_IA")
 
 	if bootstrapURL != "" {

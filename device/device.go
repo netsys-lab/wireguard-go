@@ -6,6 +6,7 @@
 package device
 
 import (
+	"net"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -97,6 +98,9 @@ type Device struct {
 	log      *Logger
 
 	scionUnderlayPort int
+	dispatcherConn    *net.UDPConn
+	scionListenerConn *net.UDPConn
+	brConn            *net.UDPConn // Connection to Border Router for sending SCION packets
 }
 
 // deviceState represents the state of a Device.
@@ -308,7 +312,45 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
 		pathcache := pathcache.NewPathPool(retriever)
 		localIA := addr.MustParseIA(localIAStr)
-		device.translator = header_parsing.NewTranslator(pathcache, localIA)
+		brAddr := getBRAddr(localIA)
+		device.translator = header_parsing.NewTranslator(pathcache, localIA, brAddr)
+
+		// Initialize dispatcher connection for sending SCION packets
+		// Use 10.0.0.1 (veth-server) to reach dispatcher running on host
+		dispatcherAddr := &net.UDPAddr{
+			IP:   net.ParseIP("10.0.0.1"),
+			Port: scionUnderlayPort,
+		}
+		dispatcherConn, err := net.DialUDP("udp", nil, dispatcherAddr)
+		if err != nil {
+			logger.Errorf("Failed to create dispatcher connection: %v", err)
+		} else {
+			device.dispatcherConn = dispatcherConn
+			logger.Verbosef("SCION dispatcher connection established: %v -> %v", dispatcherConn.LocalAddr(), dispatcherConn.RemoteAddr())
+		}
+
+		// Initialize listener for receiving SCION packets (return path)
+		listenerAddr := &net.UDPAddr{
+			IP:   net.ParseIP("127.0.0.1"),
+			Port: scionUnderlayPort + 1, // Use different port for listener
+		}
+		scionListenerConn, err := net.ListenUDP("udp", listenerAddr)
+		if err != nil {
+			logger.Errorf("Failed to create SCION listener: %v", err)
+		} else {
+			device.scionListenerConn = scionListenerConn
+			logger.Verbosef("SCION listener bound to %s", scionListenerConn.LocalAddr().String())
+		}
+
+		// Initialize connection to Border Router for forwarding SCION packets
+		// BR listens on 127.0.0.25:31006 (AS64513) or 127.0.0.33:31010 (AS64514)
+		brConn, err := net.DialUDP("udp", nil, brAddr)
+		if err != nil {
+			logger.Errorf("Failed to create BR connection: %v", err)
+		} else {
+			device.brConn = brConn
+			logger.Verbosef("SCION BR connection established: %v -> %v", brConn.LocalAddr(), brConn.RemoteAddr())
+		}
 	} else {
 		logger.Errorf("SCION init failed: no scionConfigDir")
 	}
@@ -345,6 +387,11 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.queue.encryption.wg.Add(1) // RoutineReadFromTUN
 	go device.RoutineReadFromTUN()
 	go device.RoutineTUNEventReader()
+
+	if device.scionListenerConn != nil && device.translator != nil {
+		device.state.stopping.Add(1)
+		go device.RoutineSCIONIngress()
+	}
 
 	return device
 }
@@ -408,6 +455,10 @@ func (device *Device) Close() {
 	// Remove peers before closing queues,
 	// because peers assume that queues are active.
 	device.RemoveAllPeers()
+
+	if device.scionListenerConn != nil {
+		device.scionListenerConn.Close()
+	}
 
 	// We kept a reference to the encryption and decryption queues,
 	// in case we started any new peers that might write to them.
@@ -557,4 +608,121 @@ func (device *Device) BindClose() error {
 	err := closeBindLocked(device)
 	device.net.Unlock()
 	return err
+}
+
+func (device *Device) RoutineSCIONIngress() {
+	defer func() {
+		device.log.Verbosef("Routine: SCION ingress - stopped")
+		device.state.stopping.Done()
+	}()
+
+	device.log.Verbosef("Routine: SCION ingress - started")
+
+	buf := make([]byte, 65535)
+	for {
+		n, addr, err := device.scionListenerConn.ReadFromUDP(buf)
+		if err != nil {
+			if device.isClosed() {
+				return
+			}
+			device.log.Errorf("SCION listener read error: %v", err)
+			continue
+		}
+
+		if n < 1 {
+			continue
+		}
+
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+
+		device.log.Verbosef("[CLIENT-11-SCION-RECV] Received SCION packet from %s, size=%d", addr.String(), n)
+
+		tunIP, err := device.tun.device.Name()
+		if err != nil {
+			device.log.Errorf("[CLIENT-12-TRANSLATE-INGRESS] Failed to get TUN name: %v", err)
+			continue
+		}
+		device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] TUN device: %s", tunIP)
+
+		device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] Converting SCION->IP...")
+		translatedIP, err := device.translator.TranslateIngress(pkt, net.ParseIP(tunIP))
+		if err != nil {
+			device.log.Errorf("[CLIENT-12-TRANSLATE-INGRESS] ERROR: %v", err)
+			continue
+		}
+
+		device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] SUCCESS: %d bytes", len(translatedIP))
+
+		if len(translatedIP) == 0 {
+			device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] Translated packet is empty, skipping")
+			continue
+		}
+
+		translatedPacket := translatedIP
+		device.log.Verbosef("[CLIENT-13-PEER-LOOKUP] Looking up peer for translated packet, len=%d", len(translatedPacket))
+
+		peer := device.lookupPeerForPacket(translatedPacket)
+		if peer == nil {
+			device.log.Verbosef("[CLIENT-13-PEER-LOOKUP] ERROR: No peer found for translated packet, dropping")
+			continue
+		}
+
+		device.log.Verbosef("[CLIENT-14-WG-ENCRYPT] Found peer %v, sending %d bytes to WireGuard tunnel", peer, len(translatedPacket))
+
+		elem := device.NewOutboundElement()
+		elem.packet = translatedPacket
+
+		elemsContainer := device.GetOutboundElementsContainer()
+		elemsContainer.elems = append(elemsContainer.elems, elem)
+
+		peer.StagePackets(elemsContainer)
+		peer.SendStagedPackets()
+
+		device.log.Verbosef("[CLIENT-15-SENT] Packet sent to wireguard tunnel")
+	}
+}
+
+func (device *Device) lookupPeerForPacket(packet []byte) *Peer {
+	if len(packet) < 1 {
+		return nil
+	}
+
+	version := packet[0] >> 4
+	var dstIP []byte
+
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return nil
+		}
+		dstIP = packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
+	case 6:
+		if len(packet) < 40 {
+			return nil
+		}
+		dstIP = packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
+	default:
+		return nil
+	}
+
+	device.log.Verbosef("[LOOKUP] Looking up peer for IP: %s", net.IP(dstIP).String())
+	peer := device.allowedips.Lookup(dstIP)
+	if peer != nil {
+		device.log.Verbosef("[LOOKUP] Found peer for IP %s", net.IP(dstIP).String())
+	} else {
+		device.log.Verbosef("[LOOKUP] No peer found for IP %s", net.IP(dstIP).String())
+	}
+	return peer
+}
+
+func getBRAddr(localIA addr.IA) *net.UDPAddr {
+	switch localIA {
+	case addr.MustParseIA("1-64513"):
+		return &net.UDPAddr{IP: net.ParseIP("127.0.0.25"), Port: 31006}
+	case addr.MustParseIA("1-64514"):
+		return &net.UDPAddr{IP: net.ParseIP("127.0.0.33"), Port: 31010}
+	default:
+		return &net.UDPAddr{IP: net.ParseIP("127.0.0.25"), Port: 31006}
+	}
 }

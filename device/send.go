@@ -10,8 +10,6 @@ import (
 	//"context"
 	"encoding/binary"
 	"errors"
-
-	//"fmt"
 	"net"
 	"os"
 	"sync"
@@ -21,6 +19,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/translator/header_parsing"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -90,7 +89,6 @@ func (peer *Peer) SendKeepalive() {
 		select {
 		case peer.queue.staged <- elemsContainer:
 			peer.device.log.Verbosef("%v - Sending keepalive packet", peer)
-			peer.device.log.Verbosef("%v - [TEST] Is Sending Working?", peer)
 		default:
 			peer.device.PutMessageBuffer(elem.buffer)
 			peer.device.PutOutboundElement(elem)
@@ -247,8 +245,13 @@ func (device *Device) RoutineReadFromTUN() {
 	}()
 
 	for {
-		// read packets
+		// read packets from TUN
 		count, readErr = device.tun.device.Read(bufs, sizes, offset)
+
+		if count > 0 {
+			device.log.Verbosef("[TUN-IN] Read %d packets from TUN", count)
+		}
+
 		//write byte length into sizes[i]
 		for i := 0; i < count; i++ {
 			if sizes[i] < 1 {
@@ -271,56 +274,83 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
-				//With false if ipv4
-				//newpkt, err := translator.ReadPacket(pkt, false)
 
-				//srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len]) // 4 bytes
+				dstIP := net.IP(dst)
+				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
+					srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len])
+					hostPort := device.scionUnderlayPort
+					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, false)
+					if err != nil {
+						device.log.Errorf("[WG-OUT] IPv4 SCION translation error: %v", err)
+						continue
+					}
+					device.log.Verbosef("[WG-OUT] IPv4 SCION translation successful: %d bytes", len(newpkt))
+					elem.packet = newpkt
+					sizes[i] = len(newpkt)
+				}
 
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
 					continue
 				}
 				dst := elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
-				peer = device.allowedips.Lookup(dst)
-				device.log.Verbosef("Sent IPv6 pkt. Call to dummy translation")
-				//dummy_translation(elem.packet, 6)
 
-				//Wir schicken erstmal nur IPv6 Pakete
-				//Hier wurde die dst IPv6 aus dem Paket gelesen
-				//Peer wird gesucht.
+				// Check if destination is SCION-mapped (fc00::/8)
+				dstIP := net.IP(dst)
+				device.log.Verbosef("[CLIENT-1-CLASSIFY] IPv6 packet: dst=%s src=%s", dstIP.String(), net.IP(pkt[IPv6offsetSrc:IPv6offsetSrc+net.IPv6len]).String())
+				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
+					// Translation needed - first translate, then lookup peer for translated packet
+					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
+					hostPort := device.scionUnderlayPort
+					device.log.Verbosef("[CLIENT-2-SCIPN-DETECTED] SCION-mapped: dst=%s src=%s port=%d", dstIP.String(), srcIP.String(), hostPort)
 
-				/*
-					elem.packet ist eine Slice desselben Arrays elem.buffer. Also sind änderungen an elem.packet in-place
-					Also wird nichts zurückgeschrieben.
+					device.log.Verbosef("[CLIENT-3-TRANSLATE-EGRESS] Converting IP->SCION...")
+					newpkt, err := device.translator.ReadOutboundPacket(pkt, dst, srcIP, hostPort, true)
+					if err != nil {
+						device.log.Errorf("[CLIENT-3-TRANSLATE-EGRESS] ERROR: %v", err)
+						continue
+					}
+					device.log.Verbosef("[CLIENT-3-TRANSLATE-EGRESS] SUCCESS: %d bytes", len(newpkt))
 
-					elem.packet kann länger gemacht werden solange genug Platz hinter elem.packet ist
-				*/
+					// Debug: Log outer IP of translated packet
+					if len(newpkt) > 4 {
+						if newpkt[0]>>4 == 4 {
+							outerIP := net.IP(newpkt[16:20])
+							device.log.Verbosef("[TRANSLATE-EGRESS] Outer IPv4: %s", outerIP.String())
+						} else if newpkt[0]>>4 == 6 {
+							outerIP := net.IP(newpkt[24:40])
+							device.log.Verbosef("[TRANSLATE-EGRESS] Outer IPv6: %s", outerIP.String())
+						}
+					}
 
-				//Wir lesen dst und src aus packet
+					// Now lookup peer based on translated packet's outer destination
+					// The translated packet has outer IP header - extract destination from it
+					if len(newpkt) > 4 {
+						// Check if IPv4 (first nibble == 4) or IPv6 (first nibble == 6)
+						if newpkt[0]>>4 == 4 {
+							// IPv4 outer - dst is at offset 16
+							translatedDst := newpkt[16:20]
+							peer = device.allowedips.Lookup(translatedDst)
+							device.log.Verbosef("[CLIENT-4-PEER-LOOKUP] IPv4: peer=%v", peer)
+						} else if newpkt[0]>>4 == 6 {
+							// IPv6 outer - dst is at offset 24
+							translatedDst := newpkt[24:40]
+							peer = device.allowedips.Lookup(translatedDst)
+							device.log.Verbosef("[CLIENT-4-PEER-LOOKUP] IPv6: peer=%v", peer)
+						}
+					}
 
-				//Wir übersetzen dst und src in scion adressen - ist dies überhaupt möglich
+					if peer != nil {
+						device.log.Verbosef("[CLIENT-5-WG-ENCRYPT] Queuing %d bytes for wireguard send", len(newpkt))
+					}
 
-				//Wenn nicht übersetzbar -> continue
-
-				//Wir fragen PathCache nach Pfaden (kombination von src und dst) ab
-
-				//Wir übergeben Paket, Paths, Scion src und Scion dst an Translation
-
-				srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len]) // 16 bytes
-
-				hostPort := device.scionUnderlayPort
-
-				newpkt, err := device.translator.ReadOutboundPacket(pkt, dst, srcIP, hostPort, true)
-
-				if err != nil {
-					device.log.Errorf("Process error: %v", err)
-					// drop or continue
-					continue
+					elem.packet = newpkt
+					sizes[i] = len(newpkt)
+				} else {
+					// Not SCION-mapped - normal lookup
+					device.log.Verbosef("[CLASSIFY] Non-SCIPN packet, using normal peer lookup")
+					peer = device.allowedips.Lookup(dst)
 				}
-				device.log.Verbosef("Translation sucessful")
-				elem.packet = newpkt
-				sizes[i] = len(newpkt)
-				//TODO: Lookup(translate) SCION dst adresse
 
 			default:
 				device.log.Verbosef("Received packet with unknown IP version")
