@@ -628,7 +628,7 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -677,7 +677,7 @@ func TestTranslateScion4ToIpUdp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::ffff:a00:1")
@@ -719,7 +719,7 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -768,7 +768,7 @@ func TestTranslateScion6ToIpUdp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -813,7 +813,7 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -861,7 +861,7 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -928,7 +928,7 @@ func TestTranslateScion6ToIpUdpLocal(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP - local SCION-mapped address
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -967,7 +967,7 @@ func TestTranslateIcmpToScmp(t *testing.T) {
 	}
 
 	srcIA := mustIA(t, 1, 64513)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	hostIP := mustParseIP(t, "10.0.0.1")
 
@@ -1043,7 +1043,7 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -1092,7 +1092,7 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, nil)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:20fb:f100::ffff:a00:2")
@@ -1291,7 +1291,7 @@ func TestUnmapIPv6_SCIONMapped(t *testing.T) {
 // ---------------- ICMP Translation Tests ----------------
 
 func TestICMPv6ToSCMP(t *testing.T) {
-	translator := NewTranslator(nil, mustIA(t, 1, 64513))
+	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 	if len(pkts) < 1 {
@@ -1325,7 +1325,7 @@ func TestICMPv6ToSCMP(t *testing.T) {
 }
 
 func TestSCMPToICMPv6(t *testing.T) {
-	translator := NewTranslator(nil, mustIA(t, 1, 64513))
+	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 	if len(pkts) < 2 {
@@ -1397,7 +1397,7 @@ func TestMTU_Translation(t *testing.T) {
 	// Test that translation handles different packet sizes correctly
 	// Using existing test data
 
-	translator := NewTranslator(nil, mustIA(t, 1, 64496))
+	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
 
 	// Load test packets
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
@@ -1452,7 +1452,7 @@ func TestTranslateIPv4ToSCION(t *testing.T) {
 	// Test that IPv4 packets with SCION-mapped destination are handled
 	// Note: The actual IPv4→SCION requires the IPv4 to be wrapped in SCION-mapped IPv6
 
-	translator := NewTranslator(nil, mustIA(t, 1, 64496))
+	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
 
 	// Load test packets - IPv6 packet is at index 0
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
