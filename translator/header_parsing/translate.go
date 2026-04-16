@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 
@@ -41,12 +42,13 @@ func ipToNetip(ip net.IP) (netip.Addr, error) {
 type Translator struct {
 	cache   PathPool
 	localIA addr.IA
+	brAddr  *net.UDPAddr // BR address for same-AS fallback
 	//localISD uint16
 	//localASN uint32
 }
 
-func NewTranslator(cache PathPool, localIA addr.IA) *Translator {
-	return &Translator{cache: cache, localIA: localIA}
+func NewTranslator(cache PathPool, localIA addr.IA, brAddr *net.UDPAddr) *Translator {
+	return &Translator{cache: cache, localIA: localIA, brAddr: brAddr}
 }
 
 const (
@@ -63,34 +65,30 @@ func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, 
 		Main entry for the Translation atleast for now.
 		We can later move the decisions into the send.go
 	*/
-	// Check if the dst address is scrion Translateable
-	if !isSCIONMapped(dstIP) {
-		return pkt, fmt.Errorf("pkt is not scion mappable")
-	} else {
-		if isIPv6 {
-			newpkt, _, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
-			if err != nil {
-				return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
-			}
-			//return newpkt, fmt.Errorf("pkt scion mappable")
-			return newpkt, fmt.Errorf("ipv6 pkt scion mappable")
-		} else {
-			newpkt, _, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
-			if err != nil {
-				return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
-			}
-			//return newpkt, fmt.Errorf("pkt scion mappable")
-			return newpkt, fmt.Errorf("ipv4 pkt scion mappable")
-		}
+	if !IsSCIONMapped(dstIP) {
+		return pkt, nil
 	}
 
+	if isIPv6 {
+		newpkt, _, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
+		if err != nil {
+			return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
+		}
+		return newpkt, nil
+	}
+
+	newpkt, _, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
+	if err != nil {
+		return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
+	}
+	return newpkt, nil
 }
 
 func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 
 	//Check if srcIA & dstIA are equal
 	if srcIA == dstIA {
-		//We do not need path Cache - return empty path
+		//Same AS - no path needed, return empty path for local delivery
 		return path.Path{}, nil
 	}
 
@@ -98,7 +96,7 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	ctx := context.Background()
 	CachedPaths, err := t.cache.Get(ctx, srcIA, dstIA)
 	if err != nil {
-		return path.Path{}, err
+		return path.Path{}, fmt.Errorf("path cache error for %s -> %s: %w", srcIA, dstIA, err)
 	}
 	if len(CachedPaths) == 0 {
 		return path.Path{}, fmt.Errorf("no paths for %s -> %s", srcIA, dstIA)
@@ -108,14 +106,12 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	selectedcachedpath := selectPath(CachedPaths)
 
 	//Extract snet path.Path including type assertion
-	path, ok := selectedcachedpath.Path.(path.Path)
+	selectedPath, ok := selectedcachedpath.Path.(path.Path)
 	if !ok {
-		panic("Path is not a *path.Path")
+		return path.Path{}, fmt.Errorf("path type assertion failed for %s -> %s", srcIA, dstIA)
 	}
 
-	//Until fullly integrated read snetpath.Path from cached path
-
-	return path, nil
+	return selectedPath, nil
 }
 
 func selectPath(paths []pathpool.CachedPath) pathpool.CachedPath {
@@ -145,11 +141,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//Preserve Traffic Class
 	tc := ip6.TrafficClass
 
-	//Init Port variable
-	//var SrcPort int
+	// Init Port variable
 	var DstPort int
+	var _ = DstPort // suppress unused var warning (DstPort used in other code paths)
 
-	if !isSCIONMapped(ip6.DstIP) {
+	if !IsSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
 	}
 
@@ -172,8 +168,10 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
 	srcIA := t.localIA
 	if srcIA == 0 {
-		return nil, nil, fmt.Errorf("localIA not configured")
+		return nil, nil, fmt.Errorf("localIA not configured (t.localIA=%v)", t.localIA)
 	}
+
+	fmt.Printf("[TRANSLATE] srcIA=%s, dstIA=%s\n", srcIA, dstIA)
 
 	//Using the Callback function
 	var selectedPath path.Path
@@ -188,11 +186,17 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	//Return a snet.path.Scion and nexthopfield
 	nextHop := selectedPath.UnderlayNextHop()
 
+	log.Printf("[TRANSLATE-EGRESS] Path nextHop: %v", nextHop)
+	log.Printf("[TRANSLATE-EGRESS] Host IP from original packet: %v", hostIP)
+	log.Printf("[TRANSLATE-EGRESS] hostIsIPv4: %v", hostIsIPv4)
+
 	var dstHost net.IP
 	if hostIsIPv4 {
 		dstHost = host.To4()
+		log.Printf("[TRANSLATE-EGRESS] dstHost from To4(): %v", dstHost)
 	} else {
 		dstHost = host.To16() // full IPv6 host inside SCION mapping
+		log.Printf("[TRANSLATE-EGRESS] dstHost from To16(): %v", dstHost)
 	}
 
 	localISD := uint16(srcIA.ISD())
@@ -294,9 +298,34 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 	case layers.IPProtocolICMPv6: // 58
-		// for simplicity no ICMPv6 -> SCMP translation here yet
-		//l4nextHeader = slayers.L4SCMP
-		return nil, nil, errors.New("ICMPv6 -> SCMP translation not (yet) implemented")
+		icmpLayer := packet.Layer(layers.LayerTypeICMPv6)
+		if icmpLayer == nil {
+			return nil, nil, errors.New("ICMPv6 layer missing")
+		}
+		icmp := icmpLayer.(*layers.ICMPv6)
+		l4nextHeader = slayers.L4SCMP
+
+		var scmpPayload []byte
+		if app := packet.ApplicationLayer(); app != nil {
+			scmpPayload = append([]byte(nil), app.Payload()...)
+		}
+
+		scmpTypeCode := translateICMPv6ToSCMPTypeCode(icmp.TypeCode)
+
+		scmp := &slayers.SCMP{
+			TypeCode: scmpTypeCode,
+		}
+
+		scionBytes, err = BuildSCIONPacket(
+			localISD, localASN, dstISD, dstASN,
+			hostIP, dstHost,
+			flowID, tc,
+			l4nextHeader, scmp, scmpPayload,
+			selectedPath,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+		}
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", nextHeader)
@@ -313,19 +342,25 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	}
 
 	// If pathBytes encode an "empty path", the PathCache implementation could
-	// return nextHop==nil — in that case we assume direct host+port using hostPort.
-	// Here we prefer nextHop returned by PathCache if non-nil; otherwise fallback to host+hostPort.
+	// return nextHop==nil — in that case we need to send to the Border Router
+	// for proper SCION delivery, not the tunnel peer address.
 	if nextHop == nil {
-		// fallback direct to mapped host and given port
-		if dstHost.To4() != nil {
-			nextHop = &net.UDPAddr{IP: dstHost, Port: DstPort}
-		} else {
-			nextHop = &net.UDPAddr{IP: dstHost, Port: DstPort, Zone: ""}
-		}
+		log.Printf("[TRANSLATE-EGRESS] nextHop is nil (empty path), using BR address for same-AS traffic")
+		// Use the BR address from Translator config
+		nextHop = t.brAddr
 	}
 
-	// hostIsIPv4
-	if hostIP.To4() != nil {
+	// hostIsIPv4 - check nextHop's address family since that's what we're sending to
+	// For IPv4 underlay, we need an IPv4 source (underlay IP), not the TUN IP
+	if nextHop.IP.To4() != nil {
+		// Use underlay IPv4 address as source (e.g., 10.0.0.2 for client side)
+		// When sending to nextHop (127.0.0.x loopback), use loopback or underlay IP
+		srcIP := hostIP
+		if hostIP.To4() == nil {
+			// hostIP is IPv6 (e.g., fd00::2), use the underlay IP for IPv4 packet
+			// In test env, client's underlay is 10.0.0.2
+			srcIP = net.ParseIP("10.0.0.2")
+		}
 		// -------- IPv4 underlay --------
 		ip4 := &layers.IPv4{
 			Version:  4,
@@ -334,7 +369,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			Flags:    layers.IPv4DontFragment, // DF flag set
 			TTL:      64,
 			Protocol: layers.IPProtocolUDP,
-			SrcIP:    hostIP.To4(),
+			SrcIP:    srcIP.To4(),
 			DstIP:    nextHop.IP.To4(),
 		}
 
@@ -507,7 +542,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	case slayers.T16Ip:
 		//dst = net.IP(scion.RawDstAddr)
 		mapped := net.IP(scn.RawDstAddr)
-		if isSCIONMapped(mapped) {
+		if IsSCIONMapped(mapped) {
 			// SCION-mapped IPv6 (fc00::/8) → unmap to original host
 			_, _, _, _, hostIP, _, err := UnmapIPv6(mapped, 8)
 			if err != nil {
@@ -547,7 +582,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	case slayers.T16Ip:
 		mapped := net.IP(scn.RawSrcAddr)
-		if isSCIONMapped(mapped) {
+		if IsSCIONMapped(mapped) {
 			_, _, _, _, hostIP, _, err := UnmapIPv6(mapped, 8)
 			if err != nil {
 				return nil, fmt.Errorf("unmap src SCION-mapped IPv6 failed: %w", err)
@@ -718,15 +753,72 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 }
 
-// TODO: implement SCMP -> ICMPv6 translation
-func scmpToICMP(sCMP *slayers.SCMP) ([]byte, error) {
-	icmp := &layers.ICMPv6Echo{}
-	// icmp.SetNetworkLayerForChecksum(&layers.IPv6{}) // dummy IPv6 for checksum calc
-	return icmp.LayerPayload(), nil
+// translateICMPv6ToSCMPTypeCode maps ICMPv6 TypeCode to SCMP TypeCode
+func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode) slayers.SCMPTypeCode {
+	switch uint8(icmp6TypeCode) {
+	case 128: // ICMPv6TypeEchoRequest
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, slayers.SCMPCode(0))
+	case 129: // ICMPv6TypeEchoReply
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, slayers.SCMPCode(0))
+	case 1: // ICMPv6TypeDestinationUnreachable
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCode(icmp6TypeCode.Code()))
+	case 2: // ICMPv6TypePacketTooBig
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, slayers.SCMPCode(0))
+	case 3: // ICMPv6TypeTimeExceeded
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCode(0))
+	case 4: // ICMPv6TypeParameterProblem
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCode(icmp6TypeCode.Code()))
+	default:
+		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCode(0))
+	}
 }
 
-// isSCIONMapped returns true if ip is in fc00::/8
-func isSCIONMapped(ip net.IP) bool {
+// translateSCMPTypeCodeToICMPv6 maps SCMP TypeCode to ICMPv6 TypeCode
+func translateSCMPTypeCodeToICMPv6(scmpTypeCode slayers.SCMPTypeCode) layers.ICMPv6TypeCode {
+	switch scmpTypeCode {
+	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0):
+		return layers.ICMPv6TypeEchoRequest
+	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0):
+		return layers.ICMPv6TypeEchoReply
+	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCode(0)):
+		return layers.ICMPv6TypeDestinationUnreachable
+	case slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0):
+		return layers.ICMPv6TypePacketTooBig
+	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, 0):
+		return layers.ICMPv6TypeParameterProblem
+	default:
+		return layers.ICMPv6TypeDestinationUnreachable
+	}
+}
+
+// SCMP -> ICMPv6 translation
+func scmpToICMP(scmp *slayers.SCMP, scionPayload []byte) ([]byte, error) {
+	icmpTypeCode := translateSCMPTypeCodeToICMPv6(scmp.TypeCode)
+
+	icmp := &layers.ICMPv6{
+		TypeCode: icmpTypeCode,
+	}
+
+	var payload []byte
+	if len(scionPayload) > 0 {
+		payload = scionPayload
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	if err := gopacket.SerializeLayers(buf, opts, icmp, gopacket.Payload(payload)); err != nil {
+		return nil, fmt.Errorf("failed to serialize ICMPv6: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+// IsSCIONMapped returns true if ip is in fc00::/8
+func IsSCIONMapped(ip net.IP) bool {
 	ip = ip.To16()
 	if ip == nil {
 		return false // if invalid/non-ipv6 ip addr
@@ -826,11 +918,17 @@ func BuildSCIONPacket(
 	pkt.SetDstAddr(addr.HostIP(dstAddr))
 
 	dp := selectedpath.Dataplane()
+	log.Printf("[TRANSLATE-EGRESS] Dataplane: %v", dp)
+	log.Printf("[TRANSLATE-EGRESS] Path PathType: %v", pkt.PathType)
 	if dp != nil {
+		log.Printf("[TRANSLATE-EGRESS] Calling dp.SetPath()")
 		if err := dp.SetPath(pkt); err != nil {
+			log.Printf("[TRANSLATE-EGRESS] dp.SetPath error: %v", err)
 			return nil, fmt.Errorf("set dataplane selectedpath: %w", err)
 		}
+		log.Printf("[TRANSLATE-EGRESS] dp.SetPath() succeeded")
 	} else {
+		log.Printf("[TRANSLATE-EGRESS] No dataplane, using empty path")
 		pkt.PathType = empty.PathType
 		pkt.Path = empty.Path{}
 	}
@@ -916,6 +1014,22 @@ func BuildSCIONPacket(
 			gopacket.Payload(l4Payload),
 		); err != nil {
 			return nil, fmt.Errorf("serialize SCION/TCP: %w", err)
+		}
+
+	case *slayers.SCMP:
+		opts := gopacket.SerializeOptions{
+			FixLengths:       true,
+			ComputeChecksums: false,
+		}
+
+		l.SetNetworkLayerForChecksum(pkt)
+
+		if err := gopacket.SerializeLayers(buf, opts,
+			pkt,
+			l4layer,
+			gopacket.Payload(l4Payload),
+		); err != nil {
+			return nil, fmt.Errorf("failed to serialize SCION+SCMP: %w", err)
 		}
 
 	default:

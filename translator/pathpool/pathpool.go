@@ -2,6 +2,7 @@ package pathpool
 
 import (
 	"context"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -80,6 +81,8 @@ func (pp *PathPool) Add(src, dst addr.IA, paths []snet.Path) {
 // Get retrieves valid paths for a given src/dst pair.
 // If paths are missing or expired, it attempts to fetch them using the retriever.
 func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
+	log.Printf("[PATHPOOL] Get: src=%s, dst=%s", src, dst)
+
 	// 1. Try to get from cache
 	pp.mu.Lock()
 	entry, ok := pp.cache[key{src, dst}]
@@ -94,27 +97,35 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 
 	// If we found valid paths, return them immediately
 	if len(valid) > 0 {
+		log.Printf("[PATHPOOL] Cache hit: returning %d valid paths", len(valid))
 		// Return a copy to ensure thread safety for the caller
 		result := make([]CachedPath, len(valid))
 		copy(result, valid)
 		return result, nil
 	}
 
+	log.Printf("[PATHPOOL] Cache miss - trying retriever")
+
 	// 2. Cache Miss: Retrieve from network
 	// We do this OUTSIDE the lock to avoid blocking other cache reads/writes
 	if pp.retriever == nil {
+		log.Printf("[PATHPOOL] WARNING: retriever is NIL - cannot fetch paths")
 		return nil, nil
 	}
 
 	// RetrievePaths implementation (SciondRetriever) should handle its own timeouts/context
 	newPaths, err := pp.retriever.RetrievePaths(ctx, src, dst)
 	if err != nil {
+		log.Printf("[PATHPOOL] ERROR: retriever.RetrievePaths failed: %v", err)
 		return nil, err
 	}
 
 	if len(newPaths) == 0 {
+		log.Printf("[PATHPOOL] WARNING: retriever returned 0 paths")
 		return nil, nil
 	}
+
+	log.Printf("[PATHPOOL] Retrieved %d new paths from network", len(newPaths))
 
 	// 3. Add new paths to cache (Add handles locking)
 	pp.Add(src, dst, newPaths)
