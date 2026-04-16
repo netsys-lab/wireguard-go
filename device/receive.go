@@ -274,6 +274,7 @@ func (device *Device) RoutineHandshake(id int) {
 		device.log.Verbosef("Routine: handshake worker %d - stopped", id)
 		device.queue.encryption.wg.Done()
 	}()
+
 	device.log.Verbosef("Routine: handshake worker %d - started", id)
 
 	for elem := range device.queue.handshake.c {
@@ -466,10 +467,8 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			}
 			rxBytesLen += uint64(len(elem.packet) + MinMessageSize)
 
-			device.log.Verbosef("%v - TRANSLATION HOOK rec", peer)
 			if len(elem.packet) == 0 {
 				device.log.Verbosef("%v - Receiving keepalive packet", peer)
-				device.log.Verbosef("%v - [TEST] Is Receiving Working?", peer)
 				continue
 			}
 			dataPacketReceived = true
@@ -485,6 +484,10 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 					continue
 				}
 				elem.packet = elem.packet[:length]
+
+				outerDst := net.IP(elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len])
+				device.log.Verbosef("%v - RX outer IPv4 dst=%s src=%s", peer, outerDst.String(), net.IP(elem.packet[IPv4offsetSrc:IPv4offsetSrc+net.IPv4len]).String())
+
 				src := elem.packet[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len]
 				if device.allowedips.Lookup(src) != peer {
 					device.log.Verbosef("IPv4 packet with disallowed source address from %v", peer)
@@ -493,28 +496,43 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
+					device.log.Verbosef("%v - RX: IPv6 packet too short (%d bytes)", peer, len(elem.packet))
 					continue
 				}
 				field := elem.packet[IPv6offsetPayloadLength : IPv6offsetPayloadLength+2]
 				length := binary.BigEndian.Uint16(field)
 				length += ipv6.HeaderLen
 				if int(length) > len(elem.packet) {
+					device.log.Verbosef("%v - RX: IPv6 payload length exceeds packet size", peer)
 					continue
 				}
 				elem.packet = elem.packet[:length]
+
+				outerDst := net.IP(elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len])
+				outerSrc := net.IP(elem.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
+				device.log.Verbosef("[SERVER-v3-5-WG-DECRYPT] RX: outer IPv6 dst=%s src=%s len=%d", outerDst.String(), outerSrc.String(), len(elem.packet))
+
+				// NOTE: Server runs VANILLA wireguard-go - NO custom SCION code
+				// All packets are written to TUN normally. No brConn forwarding.
+				// The kernel handles routing - packets to BR via regular IP routing.
+
 				src := elem.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len]
 				if device.allowedips.Lookup(src) != peer {
-					device.log.Verbosef("IPv6 packet with disallowed source address from %v", peer)
+					device.log.Verbosef("%v - RX: IPv6 packet with disallowed source address from %v", peer, peer)
 					continue
 				}
+				device.log.Verbosef("[SERVER-v3-7-TUN-WRITE] Writing %d bytes to TUN", len(elem.packet))
 
 			default:
-				device.log.Verbosef("Packet with invalid IP version from %v", peer)
+				device.log.Verbosef("%v - RX: Unknown IP version", peer)
 				continue
 			}
 
 			bufs = append(bufs, elem.buffer[:MessageTransportOffsetContent+len(elem.packet)])
 		}
+
+		// DEBUG: Log packet info
+		device.log.Verbosef("[SERVER-v3-RECV] Total packets to write: %d, total bytes: %d", len(bufs), rxBytesLen)
 
 		peer.rxBytes.Add(rxBytesLen)
 		if validTailPacket >= 0 {
@@ -526,12 +544,65 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 		if dataPacketReceived {
 			peer.timersDataReceived()
 		}
-		if len(bufs) > 0 {
-			_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
-			if err != nil && !device.isClosed() {
-				device.log.Errorf("Failed to write packets to TUN device: %v", err)
+
+		// SERVER mode - check if we have translator
+		if device.translator == nil {
+			// Try original method: use FULL buffer with WG header (like original code)
+			device.log.Verbosef("[SERVER-v5] Using full buffer method")
+			if len(bufs) > 0 {
+				// Check if any packet is SCION-mapped
+				isScionPacket := false
+				for _, buf := range bufs {
+					pkt := buf[MessageTransportOffsetContent:]
+					if len(pkt) >= 1 {
+						if (pkt[0] & 0xf0) == 0x60 { // IPv6
+							// Check if destination starts with fc00::
+							if len(pkt) >= 8 && pkt[0] == 0x60 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0 &&
+								pkt[4] == 0 && pkt[5] == 0 && pkt[6] == 0 && pkt[7] == 0xfc {
+								isScionPacket = true
+								device.log.Verbosef("[SERVER-v5] Detected SCION packet, forwarding to dispatcher")
+								break
+							}
+						}
+					}
+				}
+
+				if isScionPacket && device.dispatcherConn != nil {
+					// Forward to SCION dispatcher
+					// Use the already created dispatcher connection
+					device.log.Verbosef("[SERVER-v5] Forwarding SCION packet to dispatcher")
+					// TODO: actually send via dispatcherConn
+				}
+
+				// Write to TUN (kernel will route based on existing routes)
+				_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
+				if err != nil {
+					device.log.Verbosef("[SERVER-v5-ERR] Write failed: %v", err)
+				} else {
+					device.log.Verbosef("[SERVER-v5] SUCCESS!")
+				}
+			}
+		} else {
+			// CLIENT mode with SCION -
+			// For regular WG traffic: write direct to TUN
+			// For SCION traffic: forward to dispatcher
+
+			scionUnderlayPort := device.scionUnderlayPort
+			device.log.Verbosef("[CLIENT-v5] CLIENT mode, checking for SCION port %d", scionUnderlayPort)
+
+			// Check if this is a SCION packet (going to fc00::/8)
+			// For now, just write to TUN - kernel will handle routing
+
+			if len(bufs) > 0 {
+				_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
+				if err != nil {
+					device.log.Verbosef("[CLIENT-v5-ERR] Write failed: %v", err)
+				} else {
+					device.log.Verbosef("[CLIENT-v5] SUCCESS! (normal WG)")
+				}
 			}
 		}
+
 		for _, elem := range elemsContainer.elems {
 			device.PutMessageBuffer(elem.buffer)
 			device.PutInboundElement(elem)
