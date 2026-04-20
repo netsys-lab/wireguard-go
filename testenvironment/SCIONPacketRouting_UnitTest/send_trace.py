@@ -372,6 +372,9 @@ def main():
     dst_ip = topo_info["dst_ip"]
     dst_port = topo_info["dst_port"]
 
+    #dst_ip = topo_info["src_ip"]
+    #dst_port = topo_info["src_port"]
+
     print(f"Source BR: {src_br}")
     print(f"Destination: {dst_ip}:{dst_port}")
 

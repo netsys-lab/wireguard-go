@@ -142,7 +142,7 @@ pkt = (
         dst_isd=1,
         dst_asn=64513,
         src_isd=1,
-        src_asn=64514,
+        src_asn=6451,
         dst_host="127.0.0.1",
         src_host="127.0.0.2",
         path=SCIONPath(
@@ -208,13 +208,13 @@ pkt = (
 )
 
 pkt.show()
-"""
+
 del pkt[IP].len
 del pkt[IP].chksum
 del pkt[UDP].len
 del pkt[UDP].chksum
 del pkt[SCMP].chksum
-"""
+
 bin_path = Path(__file__).with_suffix(".bin")
 write_packets(pkt, bin_path)
 
