@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #===============================================================================
-# Step 3b: Bootstrap Server
+# Step 4: Bootstrap Server
 # Starts the SCION bootstrap server (needs generated topology)
 #===============================================================================
 

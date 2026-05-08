@@ -48,25 +48,31 @@ cmd_up() {
     log_info "=== STEP 2: Build ==="
     "$SCRIPT_DIR/02-build.sh" build
     
-    # Step 3a: Generate SCION topology (but don't start)
+    # Step 3: Generate SCION topology (but don't start)
     echo ""
-    log_info "=== STEP 3a: Generate SCION Topology ==="
-    "$SCRIPT_DIR/03a-topology.sh" generate
+    log_info "=== STEP 3: Generate SCION Topology ==="
+    "$SCRIPT_DIR/03-topology.sh" generate
     
-    # Step 3b: Start Bootstrap server (needs topology)
+    # Step 4: Start Bootstrap server (needs topology)
     echo ""
-    log_info "=== STEP 3b: Bootstrap Server ==="
-    "$SCRIPT_DIR/03b-bootstrap.sh" up
+    log_info "=== STEP 4: Bootstrap Server ==="
+    "$SCRIPT_DIR/04-bootstrap.sh" up
     
-    # Step 4: Start WireGuard (needs bootstrap for SCION config)
+    # Step 5: Start WireGuard (needs bootstrap for SCION config)
     echo ""
-    log_info "=== STEP 4: WireGuard ==="
-    "$SCRIPT_DIR/04-wireguard.sh" up
+    log_info "=== STEP 5: WireGuard ==="
+    "$SCRIPT_DIR/05-wireguard.sh" up
+
+    # Step 7: Change Gen file ip adresses
+    echo ""
+    log_info "=== STEP 6: Topo Gen file Bind IP config ==="
+    "$SCRIPT_DIR/06-topo_change.sh" || log_warn "Issues with Topo change, may still work"
+
     
     # Step 3c: Start SCION services (needs WireGuard interfaces)
     echo ""
-    log_info "=== STEP 3c: SCION Services ==="
-    "$SCRIPT_DIR/03c-scion.sh" up || log_warn "SCION had issues (may still work)"
+    log_info "=== STEP 7: SCION Services ==="
+    "$SCRIPT_DIR/07-scion.sh" up || log_warn "SCION had issues (may still work)"
     
     echo ""
     log_success "========================================="
@@ -74,7 +80,7 @@ cmd_up() {
     log_success "========================================="
     echo ""
     echo "Run tests with:"
-    echo "  sudo $SCRIPT_DIR/06-test.sh test"
+    echo "  sudo $SCRIPT_DIR/08-test.sh test"
     echo ""
     echo "View logs with:"
     echo "  tail -f $LOGS_DIR/*.log"
@@ -91,10 +97,9 @@ cmd_down() {
     echo ""
     
     # Stop in reverse order
-    "$SCRIPT_DIR/05-echo.sh" down || true
-    "$SCRIPT_DIR/03c-scion.sh" down || true
-    "$SCRIPT_DIR/04-wireguard.sh" down || true
-    "$SCRIPT_DIR/03b-bootstrap.sh" down || true
+    "$SCRIPT_DIR/07-scion.sh" down || true
+    "$SCRIPT_DIR/05-wireguard.sh" down || true
+    "$SCRIPT_DIR/04-bootstrap.sh" down || true
     "$SCRIPT_DIR/01-namespaces.sh" down || true
     
     log_success "Environment stopped"
@@ -110,10 +115,10 @@ cmd_status() {
     echo ""
     
     "$SCRIPT_DIR/01-namespaces.sh" status 2>/dev/null || true
-    "$SCRIPT_DIR/03a-topology.sh" status 2>/dev/null || true
-    "$SCRIPT_DIR/03b-bootstrap.sh" status 2>/dev/null || true
-    "$SCRIPT_DIR/04-wireguard.sh" status 2>/dev/null || true
-    "$SCRIPT_DIR/05-echo.sh" status 2>/dev/null || true
+    "$SCRIPT_DIR/03-topology.sh" status 2>/dev/null || true
+    "$SCRIPT_DIR/04-bootstrap.sh" status 2>/dev/null || true
+    "$SCRIPT_DIR/05-wireguard.sh" status 2>/dev/null || true
+    "$SCRIPT_DIR/07-scion.sh" status 2>/dev/null || true
 }
 
 #-------------------------------------------------------------------------------
@@ -121,7 +126,7 @@ cmd_status() {
 #-------------------------------------------------------------------------------
 
 cmd_test() {
-    "$SCRIPT_DIR/06-test.sh" test
+    "$SCRIPT_DIR/08-test.sh" test
 }
 
 #-------------------------------------------------------------------------------

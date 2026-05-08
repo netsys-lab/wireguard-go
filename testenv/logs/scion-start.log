@@ -1,0 +1,3 @@
+Running the network...
+Note that jaeger is no longer started automatically.
+To run jaeger and prometheus, use scion.sh start-monitoring.

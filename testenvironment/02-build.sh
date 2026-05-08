@@ -6,6 +6,8 @@
 
 set -euo pipefail
 
+export PATH="/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
@@ -26,40 +28,6 @@ build_wireguard_go() {
         log_success "Built wireguard-go: $BIN_DIR/wireguard-go"
     else
         log_error "Failed to build wireguard-go"
-        return 1
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# Build SCION echo server (regular)
-#-------------------------------------------------------------------------------
-
-build_echo_server() {
-    log_info "Building SCION echo server..."
-    
-    cd "$SCRIPT_DIR/cmd/scion_echo_server"
-    
-    if go build -v -o "$BIN_DIR/scion_echo_server" . 2>&1; then
-        log_success "Built scion_echo_server: $BIN_DIR/scion_echo_server"
-    else
-        log_error "Failed to build scion_echo_server"
-        return 1
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# Build SCION echo server (pan-based, using SCION-aware sockets)
-#-------------------------------------------------------------------------------
-
-build_echo_server_pan() {
-    log_info "Building SCION echo server (pan-based)..."
-    
-    cd "$SCRIPT_DIR/cmd/scion_echo_server_pan"
-    
-    if go build -v -o "$BIN_DIR/scion_echo_server_pan" . 2>&1; then
-        log_success "Built scion_echo_server_pan: $BIN_DIR/scion_echo_server_pan"
-    else
-        log_error "Failed to build scion_echo_server_pan"
         return 1
     fi
 }
@@ -113,19 +81,6 @@ verify_builds() {
         ((failed++))
     fi
     
-    if [[ -x "$BIN_DIR/scion_echo_server" ]]; then
-        log_success "scion_echo_server is executable"
-    else
-        log_error "scion_echo_server not found or not executable"
-        ((failed++))
-    fi
-    
-    if [[ -x "$BIN_DIR/scion_echo_server_pan" ]]; then
-        log_success "scion_echo_server_pan is executable"
-    else
-        log_warn "scion_echo_server_pan not found or not executable (optional)"
-    fi
-    
     if [[ -f "$KEYS_DIR/server_private" && -f "$KEYS_DIR/client_private" ]]; then
         log_success "WireGuard keys exist"
     else
@@ -161,8 +116,6 @@ show_status() {
 cmd_build() {
     create_directories
     build_wireguard_go
-    build_echo_server
-    build_echo_server_pan
     generate_keys
     verify_builds
     show_status

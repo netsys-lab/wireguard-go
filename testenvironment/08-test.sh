@@ -19,7 +19,7 @@ test_basic_connectivity() {
     log_info "Test 1: Basic WireGuard connectivity..."
     
     # Ping from client to server
-    if sudo ip netns exec "$CLIENT_NS" ping -c 3 10.10.10.1; then
+    if sudo ip netns exec "$CLIENT_NS" ping -c 3 10.0.0.1; then
         log_success "Basic connectivity: PASS"
         return 0
     else
@@ -29,65 +29,27 @@ test_basic_connectivity() {
 }
 
 #-------------------------------------------------------------------------------
-# Test 2: Check logs for SCION detection
+# Test 2: SCION ping -sciond from Client
 #-------------------------------------------------------------------------------
 
-test_scion_detection() {
-    log_info "Test 2: Checking for SCION-related log messages..."
-    
-    # Check server logs for SCION detection
-    if grep -q "SCION" "$LOGS_DIR/wg-server.log" 2>/dev/null; then
-        log_success "SCION-related logs found in server"
+test_sciond_from_client() {
+    log_info "Test 2: Checking scion ping from Client to Server..."
+
+    echo "Deamon addr: "${SERVER_65413_sciond_addr%%/*}""
+    echo "Scion dir: "$SCION_DIR"/bin/scion"""
+    echo "sudo ip netns exec "$CLIENT_NS" \
+        "$SCION_DIR"/bin/scion ping --sciond "${SERVER_65413_sciond_addr%%/*}":30255 1-64514,127.0.0.1"
+     if output=$(sudo ip netns exec "$CLIENT_NS" \
+        "$SCION_DIR"/bin/scion ping --sciond "${SERVER_65413_sciond_addr%%/*}":30255 1-64514,127.0.0.1 -c 3 2>&1); then
+
+        log_success "SCION ping command executed"
+        echo "$output"
+
     else
-        log_warn "No SCION logs found (may be OK if no SCION traffic)"
+        log_warn "SCION ping command not executed"
+        echo "$output"
     fi
-    
-    # Check for dispatcher connection
-    if grep -q "dispatcher" "$LOGS_DIR/wg-server.log" 2>/dev/null; then
-        log_success "Dispatcher connection logs found"
-    else
-        log_warn "No dispatcher logs found"
-    fi
-    
-    return 0
-}
 
-#-------------------------------------------------------------------------------
-# Test 3: Check listener
-#-------------------------------------------------------------------------------
-
-test_listener() {
-    log_info "Test 3: Checking SCION listener..."
-    
-    # Check if listener is bound
-    if sudo ip netns exec "$SERVER_NS" ss -ulnp 2>/dev/null | grep -q "$SCION_LISTENER_PORT"; then
-        log_success "SCION listener is bound to port $SCION_LISTENER_PORT"
-    else
-        log_warn "SCION listener not detected on port $SCION_LISTENER_PORT"
-    fi
-    
-    return 0
-}
-
-#-------------------------------------------------------------------------------
-# Test 4: SCION echo server
-#-------------------------------------------------------------------------------
-
-test_echo_server() {
-    log_info "Test 4: Testing echo server..."
-    
-    # Send a test packet to the echo server
-    echo "test" | sudo nc -u -w2 127.0.0.1 "$SCION_LISTENER_PORT" 2>/dev/null || true
-    
-    sleep 1
-    
-    # Check echo server logs
-    if grep -q "Received" "$LOGS_DIR/echo-server.log" 2>/dev/null; then
-        log_success "Echo server received packets"
-    else
-        log_warn "No packets received by echo server"
-    fi
-    
     return 0
 }
 
@@ -117,7 +79,7 @@ show_summary() {
     echo "  tail -f $LOGS_DIR/echo-server.log"
     echo ""
     echo "  # Manual ping test"
-    echo "  sudo ip netns exec $CLIENT_NS ping -c 3 10.10.10.1"
+    echo "  sudo ip netns exec $CLIENT_NS ping -c 3 10.0.0.1"
     echo ""
     echo "  # Check namespaces"
     echo "  ip netns list"
@@ -133,9 +95,7 @@ cmd_test() {
     local failed=0
     
     test_basic_connectivity || ((failed++))
-    test_scion_detection || ((failed++))
-    test_listener || ((failed++))
-    test_echo_server || ((failed++))
+    test_sciond_from_client || ((failed++))
     
     show_summary
     

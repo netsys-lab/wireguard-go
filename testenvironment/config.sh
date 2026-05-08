@@ -7,9 +7,9 @@
 set -euo pipefail
 
 # Configuration - these can be overridden via environment
-export TESTENV_DIR="${TESTENV_DIR:-/home/paul/Scintra/wireguard-go/testenv}"
+export TESTENV_DIR="${TESTENV_DIR:-/home/android/Desktop/Scitra/wireguard-go/testenv}"
 export LOG_DIR="${LOG_DIR:-$TESTENV_DIR/logs}"
-export SCION_DIR="${SCION_DIR:-/home/paul/Scintra/scion}"
+export SCION_DIR="${SCION_DIR:-/home/android/Desktop/Scitra/scion}"
 export SCION_TOPOLOGY="${SCION_TOPOLOGY:-topology/tiny-bgp.topo}"
 
 # Network Configuration
@@ -19,6 +19,11 @@ export CLIENT_NS="${CLIENT_NS:-Client}"
 # Network IPs
 export SERVER_VETH_IP="10.0.0.1/24"
 export CLIENT_VETH_IP="10.0.0.2/24"
+
+# SCION TOPO CONFIG
+export SERVER_65413_sciond_addr="10.0.0.3/8"
+# export SERVER_64513_BR_bind_addr"10.0.0.1/24" # Equal to SERVER_VETH_IP
+
 
 # WireGuard Configuration
 export WG_SERVER_IFACE="wg-server"
@@ -44,6 +49,7 @@ export SCION_BR64514_IP="${SCION_BR64514_IP:-127.0.0.33}"
 # Echo server uses different port than dispatcher (30041)
 export SCION_ECHO_PORT="${SCION_ECHO_PORT:-30042}"
 export SCION_CONFIG_DIR="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}"
+export DEAMON_CONFIG_FILE="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}/sd.toml"
 
 # SCION-mapped addresses (must match BR internal_addr in topology.json)
 # AS64513: fc00:10fc:100::/64 (BR internal_addr: [fc00:10fc:100::]:31006)

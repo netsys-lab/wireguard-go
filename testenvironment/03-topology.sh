@@ -24,8 +24,7 @@ generate_topology() {
     
     # Check if topology already exists
     if [[ -d "$SCION_DIR/gen/AS64513" ]]; then
-        log_info "Topology already exists, skipping generation"
-        return 0
+        log_info "Topology already exists, re- generation"
     fi
     
     # Generate topology
