@@ -75,8 +75,6 @@ show_summary() {
     echo "  # View wireguard client logs"  
     echo "  tail -f $LOGS_DIR/wg-client.log"
     echo ""
-    echo "  # View echo server logs"
-    echo "  tail -f $LOGS_DIR/echo-server.log"
     echo ""
     echo "  # Manual ping test"
     echo "  sudo ip netns exec $CLIENT_NS ping -c 3 10.0.0.1"
@@ -120,8 +118,6 @@ cmd_logs() {
     echo "=== Client Logs ==="
     tail -30 "$LOGS_DIR/wg-client.log" 2>/dev/null || echo "(no logs)"
     echo ""
-    echo "=== Echo Server Logs ==="
-    tail -30 "$LOGS_DIR/echo-server.log" 2>/dev/null || echo "(no logs)"
 }
 
 #-------------------------------------------------------------------------------

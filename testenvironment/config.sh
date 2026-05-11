@@ -29,10 +29,10 @@ export SERVER_65413_sciond_addr="10.0.0.3/8"
 export WG_SERVER_IFACE="wg-server"
 export WG_CLIENT_IFACE="wg-client"
 export WG_SERVER_IP="10.10.10.1/24"
-export WG_CLIENT_IP="10.10.10.2/32"
-export WG_SERVER_IP_V6="fd00::1/64"
-export WG_CLIENT_IP_V6="fd00::2/64"
+export WG_CLIENT_IP="10.10.10.2/24"
 export WG_ENDPOINT="10.0.0.1:51820"
+#export WG_IP_V6="fc00:10fc:100::1/64"
+export WG_IP_V6="fc00:10fc:100::1/7" #fc00::/7
 
 # SCION Configuration
 export SCION_LOCAL_IA="${SCION_LOCAL_IA:-1-64513}"
@@ -46,8 +46,7 @@ export SCION_LISTENER_PORT=$((SCION_UNDERLAY_PORT + 1))
 export SCION_BR_PORT="${SCION_BR_PORT:-30442}"
 export SCION_BR64513_IP="${SCION_BR64513_IP:-127.0.0.25}"
 export SCION_BR64514_IP="${SCION_BR64514_IP:-127.0.0.33}"
-# Echo server uses different port than dispatcher (30041)
-export SCION_ECHO_PORT="${SCION_ECHO_PORT:-30042}"
+
 export SCION_CONFIG_DIR="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}"
 export DEAMON_CONFIG_FILE="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}/sd.toml"
 
@@ -159,10 +158,6 @@ get_wg_server_pid() {
 
 get_wg_client_pid() {
     pgrep -f "wireguard-go.*$WG_CLIENT_IFACE" 2>/dev/null || echo ""
-}
-
-get_scion_echo_pid() {
-    pgrep -f "scion_echo_server" 2>/dev/null || echo ""
 }
 
 is_namespace_running() {

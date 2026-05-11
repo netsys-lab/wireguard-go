@@ -52,24 +52,26 @@ cmd_up() {
     echo ""
     log_info "=== STEP 3: Generate SCION Topology ==="
     "$SCRIPT_DIR/03-topology.sh" generate
-    
-    # Step 4: Start Bootstrap server (needs topology)
-    echo ""
-    log_info "=== STEP 4: Bootstrap Server ==="
-    "$SCRIPT_DIR/04-bootstrap.sh" up
-    
-    # Step 5: Start WireGuard (needs bootstrap for SCION config)
-    echo ""
-    log_info "=== STEP 5: WireGuard ==="
-    "$SCRIPT_DIR/05-wireguard.sh" up
 
-    # Step 7: Change Gen file ip adresses
+    # Step 4: Change Gen file ip adresses
     echo ""
-    log_info "=== STEP 6: Topo Gen file Bind IP config ==="
-    "$SCRIPT_DIR/06-topo_change.sh" || log_warn "Issues with Topo change, may still work"
+    log_info "=== STEP 4: Topo Gen file Bind IP config ==="
+    "$SCRIPT_DIR/04-topo_change.sh" || log_warn "Issues with Topo change, may still work"
+    
+    # Step 5: Start Bootstrap server (needs topology)
+    echo ""
+    log_info "=== STEP 5: Bootstrap Server ==="
+    "$SCRIPT_DIR/05-bootstrap.sh" up
+    
+    # Step 6: Start WireGuard (needs bootstrap for SCION config)
+    echo ""
+    log_info "=== STEP 6: WireGuard ==="
+    "$SCRIPT_DIR/06-wireguard.sh" up
+
+
 
     
-    # Step 3c: Start SCION services (needs WireGuard interfaces)
+    # Step 7: Start SCION services (needs WireGuard interfaces)
     echo ""
     log_info "=== STEP 7: SCION Services ==="
     "$SCRIPT_DIR/07-scion.sh" up || log_warn "SCION had issues (may still work)"
@@ -98,8 +100,8 @@ cmd_down() {
     
     # Stop in reverse order
     "$SCRIPT_DIR/07-scion.sh" down || true
-    "$SCRIPT_DIR/05-wireguard.sh" down || true
-    "$SCRIPT_DIR/04-bootstrap.sh" down || true
+    "$SCRIPT_DIR/06-wireguard.sh" down || true
+    "$SCRIPT_DIR/05-bootstrap.sh" down || true
     "$SCRIPT_DIR/01-namespaces.sh" down || true
     
     log_success "Environment stopped"
@@ -170,11 +172,11 @@ Commands:
 Individual steps (for debugging):
     step1   Step 1: Namespaces
     step2   Step 2: Build
-    step3a  Step 3a: Generate topology only
-    step3b  Step 3b: Bootstrap server
-    step3c  Step 3c: SCION services
-    step4   Step 4: WireGuard
-    step5   Step 5: Echo server
+    step3a  Step 4: Generate topology only
+    step3b  Step 5: Bootstrap server
+    step3c  Step 6: SCION services
+    step4   Step 7: WireGuard
+    step5   Step 8: Echo server
 
 Examples:
     # Full setup (recommended)

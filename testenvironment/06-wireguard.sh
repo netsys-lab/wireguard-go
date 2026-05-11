@@ -134,36 +134,36 @@ listen_port=51820\" | socat - UNIX-CONNECT:/var/run/wireguard/$WG_SERVER_IFACE.s
 public_key=\$CLIENT_PUBLIC_HEX
 allowed_ip=10.0.0.0/8
 allowed_ip=10.10.10.2/32
-allowed_ip=fd00::2/128
+allowed_ip=$WG_IP_V6
 persistent_keepalive_interval=25\" | socat - UNIX-CONNECT:/var/run/wireguard/$WG_SERVER_IFACE.sock
     " || true
     
     # Set IP address
-    sudo ip netns exec "$SERVER_NS" ip addr add "$WG_SERVER_IP" dev "$WG_SERVER_IFACE"
-    sudo ip netns exec "$SERVER_NS" ip -6 addr add "$WG_SERVER_IP_V6" dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip addr add "$WG_SERVER_IP" dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip -6 addr add "$WG_SERVER_IP_V6" dev "$WG_SERVER_IFACE"
     
     # Assign SCION-mapped addresses to wg-server (must match BR internal_addr in topology.json)
     # AS64513 BR: 127.0.0.25:31006, AS64514 BR: 127.0.0.33:31010
     # IPv4 matches BR interfaces so kernel routes to BR automatically
-    sudo ip netns exec "$SERVER_NS" ip addr add 127.0.0.25/32 dev "$WG_SERVER_IFACE"
-    sudo ip netns exec "$SERVER_NS" ip addr add 127.0.0.33/32 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip addr add 127.0.0.25/32 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip addr add 127.0.0.33/32 dev "$WG_SERVER_IFACE"
     
     # SCION addresses on wg-server - kernel routes locally
     # NOTE: For SCION to work, BR must also have these addresses
-    sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:100::/64 dev "$WG_SERVER_IFACE"
-    sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:100::1/64 dev "$WG_SERVER_IFACE"
-    sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:200::/64 dev "$WG_SERVER_IFACE"
-    sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:200::1/64 dev "$WG_SERVER_IFACE"
-    sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:200::2/64 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:100::/64 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:100::1/64 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:200::/64 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:200::1/64 dev "$WG_SERVER_IFACE"
+    #sudo ip netns exec "$SERVER_NS" ip -6 addr add fc00:10fc:200::2/64 dev "$WG_SERVER_IFACE"
     
     sudo ip netns exec "$SERVER_NS" ip link set "$WG_SERVER_IFACE" up
     
     # Enable IP forwarding
-    sudo ip netns exec "$SERVER_NS" sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    #sudo ip netns exec "$SERVER_NS" sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 
     # Add explicit routes to BR (via lo, since BR listens on 127.0.0.25:30442)
     # This ensures packets TO 127.0.0.25 go to the BR, not stay local
-    sudo ip netns exec "$SERVER_NS" ip route add 127.0.0.25/32 dev lo || true
+    #sudo ip netns exec "$SERVER_NS" ip route add 127.0.0.25/32 dev lo || true
     
     log_success "Server interface configured"
 }
@@ -239,33 +239,40 @@ listen_port=51820\" | socat - UNIX-CONNECT:/var/run/wireguard/$WG_CLIENT_IFACE.s
 public_key=\$SERVER_PUBLIC_HEX
 allowed_ip=0.0.0.0/0
 allowed_ip=::/0
+allowed_ip=$WG_IP_V6
 endpoint=$WG_ENDPOINT
 persistent_keepalive_interval=25\" | socat - UNIX-CONNECT:/var/run/wireguard/$WG_CLIENT_IFACE.sock
     " || true
     
     # Set IP address
-    sudo ip netns exec "$CLIENT_NS" ip addr add "$WG_CLIENT_IP" dev "$WG_CLIENT_IFACE"
-    sudo ip netns exec "$CLIENT_NS" ip -6 addr add "$WG_CLIENT_IP_V6" dev "$WG_CLIENT_IFACE"
+    # Wireguard Quick macht sonst autmatisch nutzen wir aber nicht daher manuell
+    #sudo ip netns exec "$CLIENT_NS" ip addr add "$WG_CLIENT_IP" dev "$WG_CLIENT_IFACE"
+    #sudo ip netns exec "$CLIENT_NS" ip -6 addr add "$WG_CLIENT_IP_V6" dev "$WG_CLIENT_IFACE"
+
+    #sudo ip netns exec "$CLIENT_NS" ip -6 addr add fc00:10fc:100::2/64 dev "$WG_CLIENT_IFACE"
     sudo ip netns exec "$CLIENT_NS" ip link set "$WG_CLIENT_IFACE" up
     
     log_success "Client interface configured"
 }
 
 #-------------------------------------------------------------------------------
-# Add routes
+# Add routes ---- DONT USE???
 #-------------------------------------------------------------------------------
 
 add_routes() {
     log_info "Adding routes..."
     
     # Client route to server (IPv4)
-    sudo ip netns exec "$CLIENT_NS" ip route add 10.10.10.1/32 dev "$WG_CLIENT_IFACE" 2>/dev/null || true
+    #sudo ip netns exec "$CLIENT_NS" ip route add 10.10.10.1/32 dev "$WG_CLIENT_IFACE" 2>/dev/null || true
     
     # Client route to server (IPv6)
-    sudo ip netns exec "$CLIENT_NS" ip -6 route add fd00::1/128 dev "$WG_CLIENT_IFACE" 2>/dev/null || true
+    #sudo ip netns exec "$CLIENT_NS" ip -6 route add fd00::1/128 dev "$WG_CLIENT_IFACE" 2>/dev/null || true
     
     # SCION-mapped routes (fc00::/8) - route through tunnel
-    sudo ip netns exec "$CLIENT_NS" ip -6 route add fc00::/8 dev "$WG_CLIENT_IFACE" 2>/dev/null || true
+    sudo ip netns exec "$CLIENT_NS" ip -6 route add fc00::/7 dev "$WG_CLIENT_IFACE" 2>/dev/null || true
+
+    # SCION-mapped routes (fc00::/8) - route through tunnel
+    sudo ip netns exec "$SERVER_NS" ip -6 route add fc00::/7 dev "$WG_SERVER_IFACE" 2>/dev/null || true
     
     log_success "Routes added"
 }

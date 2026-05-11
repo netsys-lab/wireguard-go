@@ -719,10 +719,10 @@ func (device *Device) lookupPeerForPacket(packet []byte) *Peer {
 func getBRAddr(localIA addr.IA) *net.UDPAddr {
 	switch localIA {
 	case addr.MustParseIA("1-64513"):
-		return &net.UDPAddr{IP: net.ParseIP("127.0.0.25"), Port: 31006}
+		return &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 31006}
 	case addr.MustParseIA("1-64514"):
 		return &net.UDPAddr{IP: net.ParseIP("127.0.0.33"), Port: 31010}
 	default:
-		return &net.UDPAddr{IP: net.ParseIP("127.0.0.25"), Port: 31006}
+		return &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 31006}
 	}
 }
