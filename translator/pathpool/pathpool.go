@@ -2,6 +2,7 @@ package pathpool
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"sync"
@@ -10,6 +11,15 @@ import (
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/snet"
 )
+
+var ErrPathPending = errors.New("path refresh pending")
+
+const (
+	pathQueryTimeout   = 10 * time.Second
+	minRefreshInterval = 5 * time.Second
+)
+
+type RefreshCallback func(src, dst addr.IA)
 
 // PathRetriever defines the interface for fetching paths from a daemon/network.
 // SciondRetriever implements this.
@@ -36,14 +46,18 @@ type CachedPath struct {
 type pathsEntry struct {
 	paths       []CachedPath
 	lastRefresh time.Time
+	lastError   error
 }
 
 // PathPool caches snet.Path objects between ISD-AS pairs.
 type PathPool struct {
 	mu        sync.Mutex
 	cache     map[key]*pathsEntry
+	inflight  map[key]bool
 	closed    chan struct{}
-	retriever PathRetriever // logic to fetch paths if missing
+	retriever PathRetriever
+
+	onRefresh RefreshCallback
 }
 
 // NewPathPool creates a new path pool.
@@ -51,11 +65,165 @@ type PathPool struct {
 func NewPathPool(retriever PathRetriever) *PathPool {
 	pp := &PathPool{
 		cache:     make(map[key]*pathsEntry),
+		inflight:  make(map[key]bool),
 		closed:    make(chan struct{}),
 		retriever: retriever,
 	}
 	go pp.cleanupLoop()
 	return pp
+}
+
+// Calllback setter
+func (pp *PathPool) SetRefreshCallback(cb RefreshCallback) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	pp.onRefresh = cb
+	log.Printf("[PATHPOOL] refresh callback registered")
+}
+
+// Cache only lookup:
+func (pp *PathPool) GetCached(src, dst addr.IA) []CachedPath {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	k := key{src: src, dst: dst}
+	entry, ok := pp.cache[k]
+	if !ok || len(entry.paths) == 0 {
+		log.Printf("[PATHPOOL] cache lookup miss: src=%s dst=%s no-entry", src, dst)
+		return nil
+	}
+
+	valid := filterValid(entry.paths)
+	entry.paths = valid
+
+	if len(valid) == 0 {
+		log.Printf("[PATHPOOL] cache lookup miss: src=%s dst=%s expired", src, dst)
+		return nil
+	}
+
+	result := make([]CachedPath, len(valid))
+	copy(result, valid)
+
+	log.Printf("[PATHPOOL] cache lookup hit: src=%s dst=%s valid=%d", src, dst, len(result))
+	return result
+}
+
+// Replace Paths
+func (pp *PathPool) Replace(src, dst addr.IA, paths []snet.Path) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	k := key{src: src, dst: dst}
+	entry := &pathsEntry{
+		paths:       make([]CachedPath, 0, len(paths)),
+		lastRefresh: time.Now(),
+		lastError:   nil,
+	}
+
+	for _, p := range paths {
+		wrapped := WrapSnetPath(src, dst, p)
+		if !contains(entry.paths, wrapped.Fingerprint) {
+			entry.paths = append(entry.paths, wrapped)
+		}
+	}
+
+	pp.cache[k] = entry
+
+	log.Printf("[PATHPOOL] cache replaced: src=%s dst=%s paths=%d", src, dst, len(entry.paths))
+}
+
+// Async Refresh:
+func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) {
+	k := key{src: src, dst: dst}
+
+	pp.mu.Lock()
+
+	if pp.retriever == nil {
+		pp.mu.Unlock()
+		log.Printf("[PATHPOOL] refresh skipped: no retriever src=%s dst=%s reason=%s", src, dst, reason)
+		return
+	}
+
+	if entry := pp.cache[k]; entry != nil {
+		if time.Since(entry.lastRefresh) < minRefreshInterval {
+			pp.mu.Unlock()
+			log.Printf("[PATHPOOL] refresh skipped: recently refreshed src=%s dst=%s reason=%s lastRefresh=%s",
+				src, dst, reason, entry.lastRefresh.Format(time.RFC3339Nano))
+			return
+		}
+	}
+
+	if pp.inflight[k] {
+		pp.mu.Unlock()
+		log.Printf("[PATHPOOL] refresh skipped: already in-flight src=%s dst=%s reason=%s", src, dst, reason)
+		return
+	}
+
+	pp.inflight[k] = true
+	pp.mu.Unlock()
+
+	log.Printf("[PATHPOOL] refresh started: src=%s dst=%s reason=%s", src, dst, reason)
+
+	go func() {
+		start := time.Now()
+
+		defer func() {
+			pp.mu.Lock()
+			delete(pp.inflight, k)
+			pp.mu.Unlock()
+
+			log.Printf("[PATHPOOL] refresh ended: src=%s dst=%s reason=%s duration=%s",
+				src, dst, reason, time.Since(start))
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), pathQueryTimeout)
+		defer cancel()
+
+		newPaths, err := pp.retriever.RetrievePaths(ctx, src, dst)
+		if err != nil {
+			log.Printf("[PATHPOOL] refresh failed: src=%s dst=%s reason=%s err=%v", src, dst, reason, err)
+
+			pp.mu.Lock()
+			entry := pp.cache[k]
+			if entry == nil {
+				entry = &pathsEntry{}
+				pp.cache[k] = entry
+			}
+			entry.lastError = err
+			entry.lastRefresh = time.Now()
+			pp.mu.Unlock()
+			return
+		}
+
+		if len(newPaths) == 0 {
+			log.Printf("[PATHPOOL] refresh returned 0 paths: src=%s dst=%s reason=%s", src, dst, reason)
+
+			pp.mu.Lock()
+			entry := pp.cache[k]
+			if entry == nil {
+				entry = &pathsEntry{}
+				pp.cache[k] = entry
+			}
+			entry.lastError = nil
+			entry.lastRefresh = time.Now()
+			pp.mu.Unlock()
+			return
+		}
+
+		pp.Replace(src, dst, newPaths)
+
+		pp.mu.Lock()
+		cb := pp.onRefresh
+		pp.mu.Unlock()
+
+		if cb != nil {
+			log.Printf("[PATHPOOL] invoking refresh callback: src=%s dst=%s reason=%s", src, dst, reason)
+			go cb(src, dst)
+		} else {
+			log.Printf("[PATHPOOL] no refresh callback registered: src=%s dst=%s reason=%s", src, dst, reason)
+		}
+	}()
 }
 
 // Add manually adds paths to the pool
@@ -78,9 +246,24 @@ func (pp *PathPool) Add(src, dst addr.IA, paths []snet.Path) {
 	entry.lastRefresh = time.Now()
 }
 
+// Get Paths
+func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
+	log.Printf("[PATHPOOL] Get: src=%s dst=%s", src, dst)
+
+	valid := pp.GetCached(src, dst)
+	if len(valid) > 0 {
+		return valid, nil
+	}
+
+	log.Printf("[PATHPOOL] cache miss: scheduling async refresh src=%s dst=%s", src, dst)
+	pp.RefreshAsync(src, dst, "cache-miss")
+
+	return nil, ErrPathPending
+}
+
 // Get retrieves valid paths for a given src/dst pair.
 // If paths are missing or expired, it attempts to fetch them using the retriever.
-func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
+/* func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
 	log.Printf("[PATHPOOL] Get: src=%s, dst=%s", src, dst)
 
 	// 1. Try to get from cache
@@ -138,7 +321,7 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 	}
 
 	return result, nil
-}
+} */
 
 // Cleanup removes expired or old paths
 func (pp *PathPool) Cleanup() {
