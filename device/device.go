@@ -297,9 +297,6 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.net.bind = bind
 	device.tun.device = tunDevice
 
-	//Create Pending Queue
-	device.pendingSCION = NewPendingSCIONQueue(64, 3*time.Second)
-
 	if scionConfigDir != "" {
 		//Hier erstellen wir einen Daemon
 		retriever, err := daemon.NewSciondRetriever(scionConfigDir)
@@ -309,9 +306,13 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 		}
 		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
 		pathcache := pathcache.NewPathPool(retriever)
+		//Create Pending Queue
+		device.pendingSCION = NewPendingSCIONQueue(64, 3*time.Second)
+		pathcache.SetRefreshCallback(device.OnPathReady)
 		localIA := addr.MustParseIA(localIAStr)
 		brAddr := getBRAddr(localIA)
-		device.translator = header_parsing.NewTranslator(pathcache, localIA, brAddr)
+		translator := header_parsing.NewTranslator(pathcache, localIA, brAddr)
+		device.translator = translator
 
 	} else {
 		logger.Errorf("SCION init failed: no scionConfigDir")
