@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/scionproto/scion/pkg/addr"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
@@ -290,7 +289,7 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	return nil
 }
 
-func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfigDir string, localIAStr string) *Device {
+func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig ScionDeviceConfig) *Device {
 	device := new(Device)
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
@@ -298,26 +297,47 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.net.bind = bind
 	device.tun.device = tunDevice
 
-	if scionConfigDir != "" {
-		//Hier erstellen wir einen Daemon
-		retriever, err := daemon.NewSciondRetriever(scionConfigDir)
+	if scionConfig.Enabled {
+		if scionConfig.ConfigDir == "" {
+			logger.Errorf("SCION init failed: enabled but no config dir")
+			return nil
+		}
+
+		localIA, err := loadLocalIAFromTopology(scionConfig.ConfigDir)
+		if err != nil {
+			logger.Errorf("SCION init failed: could not load local IA from topology: %v", err)
+			return nil
+		}
+
+		brAddr, err := loadBRAddrFromTopology(scionConfig.ConfigDir)
+		if err != nil {
+			logger.Errorf("SCION init failed: could not load BR address from topology: %v", err)
+			return nil
+		}
+
+		retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir)
 		if err != nil {
 			logger.Errorf("SCION init failed: %v", err)
-			return nil //TODO: Return Panic?
+			return nil
 		}
-		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
+
 		pathPool := pathcache.NewPathPool(retriever)
 		device.pathPool = pathPool
-		//Create Pending Queue
+
 		device.pendingSCION = NewPendingSCIONQueue(64, 3*time.Second)
 		pathPool.SetRefreshCallback(device.OnPathReady)
-		localIA := addr.MustParseIA(localIAStr)
-		brAddr := getBRAddr(localIA)
+
 		translator := header_parsing.NewTranslator(pathPool, localIA, brAddr)
 		device.translator = translator
 
+		logger.Verbosef(
+			"SCION init success: configDir=%s localIA=%s brAddr=%s",
+			scionConfig.ConfigDir,
+			localIA,
+			brAddr,
+		)
 	} else {
-		logger.Errorf("SCION init failed: no scionConfigDir")
+		logger.Verbosef("SCION disabled")
 	}
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
@@ -597,15 +617,4 @@ func (device *Device) lookupPeerForPacket(packet []byte) *Peer {
 		device.log.Verbosef("[LOOKUP] No peer found for IP %s", net.IP(dstIP).String())
 	}
 	return peer
-}
-
-func getBRAddr(localIA addr.IA) *net.UDPAddr {
-	switch localIA {
-	case addr.MustParseIA("1-64513"):
-		return &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 31006}
-	case addr.MustParseIA("1-64514"):
-		return &net.UDPAddr{IP: net.ParseIP("127.0.0.33"), Port: 31010}
-	default:
-		return &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 31006}
-	}
 }
