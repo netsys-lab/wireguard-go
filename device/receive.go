@@ -510,7 +510,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 
 				outerDst := net.IP(elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len])
 				outerSrc := net.IP(elem.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
-				device.log.Verbosef("[SERVER-v3-5-WG-DECRYPT] RX: outer IPv6 dst=%s src=%s len=%d", outerDst.String(), outerSrc.String(), len(elem.packet))
+				device.log.Verbosef("[CLIENT-WG-DECRYPT] RX: outer IPv6 dst=%s src=%s len=%d", outerDst.String(), outerSrc.String(), len(elem.packet))
 
 				// NOTE: Server runs VANILLA wireguard-go - NO custom SCION code
 				// All packets are written to TUN normally. No brConn forwarding.
@@ -518,13 +518,13 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 
 				src := elem.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len]
 				if device.allowedips.Lookup(src) != peer {
-					device.log.Verbosef("%v - RX: IPv6 packet with disallowed source address from %v", peer, peer)
+					device.log.Verbosef("IPv6 packet with disallowed source address from %v", peer)
 					continue
 				}
-				device.log.Verbosef("[SERVER-v3-7-TUN-WRITE] Writing %d bytes to TUN", len(elem.packet))
+				device.log.Verbosef("[CLIENT-TUN-WRITE] Writing %d bytes to TUN", len(elem.packet))
 
 			default:
-				device.log.Verbosef("%v - RX: Unknown IP version", peer)
+				device.log.Verbosef("Packet with invalid IP version from %v", peer)
 				continue
 			}
 
@@ -532,10 +532,11 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 		}
 
 		// DEBUG: Log packet info
-		device.log.Verbosef("[SERVER-v3-RECV] Total packets to write: %d, total bytes: %d", len(bufs), rxBytesLen)
+		device.log.Verbosef("[CLIENT-RECV] Total packets to write: %d, total bytes: %d", len(bufs), rxBytesLen)
 
 		peer.rxBytes.Add(rxBytesLen)
 		if validTailPacket >= 0 {
+			device.log.Verbosef("[CLIENT-RECV] validTailPacket >= 0")
 			peer.SetEndpointFromPacket(elemsContainer.elems[validTailPacket].endpoint)
 			peer.keepKeyFreshReceiving()
 			peer.timersAnyAuthenticatedPacketTraversal()
@@ -545,61 +546,12 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			peer.timersDataReceived()
 		}
 
-		// SERVER mode - check if we have translator
-		if device.translator == nil {
-			// Try original method: use FULL buffer with WG header (like original code)
-			device.log.Verbosef("[SERVER-v5] Using full buffer method")
-			if len(bufs) > 0 {
-				// Check if any packet is SCION-mapped
-				isScionPacket := false
-				for _, buf := range bufs {
-					pkt := buf[MessageTransportOffsetContent:]
-					if len(pkt) >= 1 {
-						if (pkt[0] & 0xf0) == 0x60 { // IPv6
-							// Check if destination starts with fc00::
-							if len(pkt) >= 8 && pkt[0] == 0x60 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0 &&
-								pkt[4] == 0 && pkt[5] == 0 && pkt[6] == 0 && pkt[7] == 0xfc {
-								isScionPacket = true
-								device.log.Verbosef("[SERVER-v5] Detected SCION packet, forwarding to dispatcher")
-								break
-							}
-						}
-					}
-				}
-
-				if isScionPacket && device.dispatcherConn != nil {
-					// Forward to SCION dispatcher
-					// Use the already created dispatcher connection
-					device.log.Verbosef("[SERVER-v5] Forwarding SCION packet to dispatcher")
-					// TODO: actually send via dispatcherConn
-				}
-
-				// Write to TUN (kernel will route based on existing routes)
-				_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
-				if err != nil {
-					device.log.Verbosef("[SERVER-v5-ERR] Write failed: %v", err)
-				} else {
-					device.log.Verbosef("[SERVER-v5] SUCCESS!")
-				}
-			}
-		} else {
-			// CLIENT mode with SCION -
-			// For regular WG traffic: write direct to TUN
-			// For SCION traffic: forward to dispatcher
-
-			scionUnderlayPort := device.scionUnderlayPort
-			device.log.Verbosef("[CLIENT-v5] CLIENT mode, checking for SCION port %d", scionUnderlayPort)
-
-			// Check if this is a SCION packet (going to fc00::/8)
-			// For now, just write to TUN - kernel will handle routing
-
-			if len(bufs) > 0 {
-				_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
-				if err != nil {
-					device.log.Verbosef("[CLIENT-v5-ERR] Write failed: %v", err)
-				} else {
-					device.log.Verbosef("[CLIENT-v5] SUCCESS! (normal WG)")
-				}
+		if len(bufs) > 0 {
+			_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
+			if err != nil && !device.isClosed() {
+				device.log.Errorf("Failed to write packets to TUN device: %v", err)
+			} else {
+				device.log.Verbosef("Successfully wrote packets to TUN device! (normal WG)")
 			}
 		}
 
