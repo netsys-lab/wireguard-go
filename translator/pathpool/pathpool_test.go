@@ -251,3 +251,38 @@ func TestPathPoolInflightDeduplicatesRefreshes(t *testing.T) {
 		t.Fatalf("expected only one in-flight refresh, got %d calls", mock.Calls())
 	}
 }
+
+func TestPathPoolRefreshCallbackFiresOnSuccess(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	expiry := time.Now().Add(1 * time.Hour)
+	retrievedPath := createPath(src, dst, 77, expiry, "127.0.0.77", 50077)
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{retrievedPath},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	done := make(chan struct{})
+
+	pp.SetRefreshCallback(func(cbSrc, cbDst addr.IA) {
+		if cbSrc != src || cbDst != dst {
+			t.Errorf("callback IA mismatch: got %s -> %s", cbSrc, cbDst)
+		}
+		close(done)
+	})
+
+	_, err := pp.Get(context.Background(), src, dst)
+	if !errors.Is(err, ErrPathPending) {
+		t.Fatalf("expected ErrPathPending, got %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresh callback was not called")
+	}
+}
