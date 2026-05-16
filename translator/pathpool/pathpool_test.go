@@ -356,3 +356,68 @@ func TestPathPoolNoPathsResultIsVisibleInSnapshot(t *testing.T) {
 		t.Fatal("expected InFlight to be false after no-path refresh")
 	}
 }
+
+func TestPathPoolExpirySoonTriggersBackgroundRefresh(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	soonExpiry := time.Now().Add(5 * time.Second)
+	freshExpiry := time.Now().Add(1 * time.Hour)
+
+	oldPath := createPath(src, dst, 1, soonExpiry, "127.0.0.1", 30041)
+	freshPath := createPath(src, dst, 2, freshExpiry, "127.0.0.2", 30042)
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{freshPath},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	pp.Add(src, dst, []snet.Path{oldPath})
+
+	paths, err := pp.Get(context.Background(), src, dst)
+	if err != nil {
+		t.Fatalf("expected valid old path to be returned immediately, got err=%v", err)
+	}
+
+	if len(paths) != 1 {
+		t.Fatalf("expected 1 valid path, got %d", len(paths))
+	}
+
+	waitUntil(t, time.Second, func() bool {
+		return mock.Calls() == 1
+	})
+
+	waitUntil(t, time.Second, func() bool {
+		paths, err := pp.Get(context.Background(), src, dst)
+		if err != nil || len(paths) != 1 || paths[0].NextHop == nil {
+			return false
+		}
+		return paths[0].NextHop.String() == "127.0.0.2:30042"
+	})
+}
+
+func TestPathPoolPrefetchAsync(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	expiry := time.Now().Add(1 * time.Hour)
+	retrievedPath := createPath(src, dst, 123, expiry, "127.0.0.123", 50123)
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{retrievedPath},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	pp.PrefetchAsync([]IAPair{
+		{Src: src, Dst: dst},
+	})
+
+	waitUntil(t, time.Second, func() bool {
+		paths, err := pp.Get(context.Background(), src, dst)
+		return err == nil && len(paths) == 1
+	})
+}
