@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
+	"golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -278,8 +279,11 @@ func (device *Device) RoutineReadFromTUN() {
 				dstIP := net.IP(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 					srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len])
-					hostPort := device.scionUnderlayPort
+					hostPort := 35000
+					start := time.Now()
+					device.log.Verbosef("[TUN-READER] before translation")
 					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, false)
+					device.log.Verbosef("[TUN-READER] after translation duration=%s", time.Since(start))
 					if err != nil {
 						device.log.Errorf("[WG-OUT] IPv4 SCION translation error: %v", err)
 						continue
@@ -301,12 +305,30 @@ func (device *Device) RoutineReadFromTUN() {
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 					// Translation needed - first translate, then lookup peer for translated packet
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
-					hostPort := device.scionUnderlayPort
+					hostPort := 35000
 					device.log.Verbosef("[CLIENT-2-SCIPN-DETECTED] SCION-mapped: dst=%s src=%s port=%d", dstIP.String(), srcIP.String(), hostPort)
 
 					device.log.Verbosef("[CLIENT-3-TRANSLATE-EGRESS] Converting IP->SCION...")
-					newpkt, err := device.translator.ReadOutboundPacket(pkt, dst, srcIP, hostPort, true)
+					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, true)
 					if err != nil {
+						if errors.Is(err, pathpool.ErrPathPending) {
+							srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP)
+							if iaErr != nil {
+								device.log.Errorf("[SCION-PENDING] IA extraction failed: %v", iaErr)
+								continue
+							}
+
+							if device.pendingSCION == nil {
+								device.log.Errorf("[SCION-PENDING] pending queue nil; dropping packet src=%s dst=%s", srcIA, dstIA)
+								continue
+							}
+
+							device.pendingSCION.Enqueue(srcIA, dstIA, pkt, true, hostPort)
+							device.log.Verbosef("[SCION-PENDING] queued packet after path miss: src=%s dst=%s len=%d",
+								srcIA, dstIA, len(pkt))
+							continue
+						}
+
 						device.log.Errorf("[CLIENT-3-TRANSLATE-EGRESS] ERROR: %v", err)
 						continue
 					}

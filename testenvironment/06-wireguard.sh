@@ -139,7 +139,7 @@ persistent_keepalive_interval=25\" | socat - UNIX-CONNECT:/var/run/wireguard/$WG
     " || true
     
     # Set IP address
-    #sudo ip netns exec "$SERVER_NS" ip addr add "$WG_SERVER_IP" dev "$WG_SERVER_IFACE"
+    sudo ip netns exec "$SERVER_NS" ip addr add "$WG_SERVER_IP" dev "$WG_SERVER_IFACE"
     #sudo ip netns exec "$SERVER_NS" ip -6 addr add "$WG_SERVER_IP_V6" dev "$WG_SERVER_IFACE"
     
     # Assign SCION-mapped addresses to wg-server (must match BR internal_addr in topology.json)
@@ -183,10 +183,10 @@ start_client_wg() {
     sudo ip netns exec "$CLIENT_NS" bash -c "
         export WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1
         export LOG_LEVEL='$LOG_LEVEL'
+        export SCION_ENABLED=true
         export SCION_CONFIG_DIR='$SCION_CONFIG_DIR'
-        export SCION_LOCAL_IA='$SCION_LOCAL_IA'
         export SCION_UNDERLAY_PORT='$SCION_UNDERLAY_PORT'
-        
+
         cd '$SCRIPT_DIR/../'
         '$BIN_DIR/wireguard-go' --foreground '$WG_CLIENT_IFACE' >> '$LOGS_DIR/wg-client.log' 2>&1
     " &
@@ -246,7 +246,7 @@ persistent_keepalive_interval=25\" | socat - UNIX-CONNECT:/var/run/wireguard/$WG
     
     # Set IP address
     # Wireguard Quick macht sonst autmatisch nutzen wir aber nicht daher manuell
-    #sudo ip netns exec "$CLIENT_NS" ip addr add "$WG_CLIENT_IP" dev "$WG_CLIENT_IFACE"
+    sudo ip netns exec "$CLIENT_NS" ip addr add "$WG_CLIENT_IP" dev "$WG_CLIENT_IFACE"
     #sudo ip netns exec "$CLIENT_NS" ip -6 addr add "$WG_CLIENT_IP_V6" dev "$WG_CLIENT_IFACE"
 
     #sudo ip netns exec "$CLIENT_NS" ip -6 addr add fc00:10fc:100::2/64 dev "$WG_CLIENT_IFACE"

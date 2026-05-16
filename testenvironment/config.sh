@@ -7,9 +7,10 @@
 set -euo pipefail
 
 # Configuration - these can be overridden via environment
-export TESTENV_DIR="${TESTENV_DIR:-/home/android/Desktop/Scitra/wireguard-go/testenv}"
+export TESTENV_DIR="${TESTENV_DIR:-/home/paul/Scintra/test/wireguard-go/testenv}"
 export LOG_DIR="${LOG_DIR:-$TESTENV_DIR/logs}"
-export SCION_DIR="${SCION_DIR:-/home/android/Desktop/Scitra/scion}"
+export SCION_DIR="${SCION_DIR:-/home/paul/Scintra/scion}"
+
 export SCION_TOPOLOGY="${SCION_TOPOLOGY:-topology/tiny-bgp.topo}"
 
 # Network Configuration
@@ -17,8 +18,8 @@ export SERVER_NS="${SERVER_NS:-Server}"
 export CLIENT_NS="${CLIENT_NS:-Client}"
 
 # Network IPs
-export SERVER_VETH_IP="10.0.0.1/24"
-export CLIENT_VETH_IP="10.0.0.2/24"
+export SERVER_VETH_IP="10.10.10.1/24"
+export CLIENT_VETH_IP="10.10.10.2/24"
 
 # SCION TOPO CONFIG
 export SERVER_65413_sciond_addr="10.0.0.3/8"
@@ -28,14 +29,14 @@ export SERVER_65413_sciond_addr="10.0.0.3/8"
 # WireGuard Configuration
 export WG_SERVER_IFACE="wg-server"
 export WG_CLIENT_IFACE="wg-client"
-export WG_SERVER_IP="10.10.10.1/24"
-export WG_CLIENT_IP="10.10.10.2/24"
-export WG_ENDPOINT="10.0.0.1:51820"
+export WG_SERVER_IP="10.0.0.1/24"
+export WG_CLIENT_IP="10.0.0.2/24"
+export WG_ENDPOINT="10.10.10.1:51820"
 #export WG_IP_V6="fc00:10fc:100::1/64"
 export WG_IP_V6="fc00:10fc:100::1/7" #fc00::/7
 
 # SCION Configuration
-export SCION_LOCAL_IA="${SCION_LOCAL_IA:-1-64513}"
+export SCION_LOCAL_IA="${SCION_LOCAL_IA:-1-64513}" # Not needed for wg startup anymore loaded from topology.json but still here for config dir etc
 export SCION_UNDERLAY_PORT="${SCION_UNDERLAY_PORT:-30041}"
 export SCION_LISTENER_PORT=$((SCION_UNDERLAY_PORT + 1))
 
@@ -43,10 +44,13 @@ export SCION_LISTENER_PORT=$((SCION_UNDERLAY_PORT + 1))
 # AS64513 BR: 127.0.0.25:30442 (topology says 31006 but router uses 30442)
 # AS64514 BR: 127.0.0.33:30442 (topology says 31010 but router uses 30442)
 # Note: topology internal_addr shows 31006/31010 but actual router binds to 30442
-export SCION_BR_PORT="${SCION_BR_PORT:-30442}"
+
+# Lets test 31006 - Outer dst port is 31006
+export SCION_BR_PORT="${SCION_BR_PORT:-31006}"
 export SCION_BR64513_IP="${SCION_BR64513_IP:-127.0.0.25}"
 export SCION_BR64514_IP="${SCION_BR64514_IP:-127.0.0.33}"
 
+export SCION_ENABLED=true
 export SCION_CONFIG_DIR="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}"
 export DEAMON_CONFIG_FILE="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}/sd.toml"
 

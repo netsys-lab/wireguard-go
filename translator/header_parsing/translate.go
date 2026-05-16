@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
@@ -22,6 +23,26 @@ import (
 )
 
 //--------------- Helper
+
+func (t *Translator) IAPairForMappedDst(dstIP net.IP) (addr.IA, addr.IA, error) {
+	if !IsSCIONMapped(dstIP) {
+		return 0, 0, fmt.Errorf("dst IP is not SCION-mapped: %s", dstIP)
+	}
+
+	isd, asn, _, _, _, _, err := UnmapIPv6(dstIP, 8)
+	if err != nil {
+		return 0, 0, fmt.Errorf("unmap IPv6 failed: %w", err)
+	}
+
+	dstIA := addr.MustIAFrom(addr.ISD(isd), addr.AS(asn))
+
+	srcIA := t.localIA
+	if srcIA == 0 {
+		return 0, 0, fmt.Errorf("localIA not configured")
+	}
+
+	return srcIA, dstIA, nil
+}
 
 func ipToNetip(ip net.IP) (netip.Addr, error) {
 	if ip4 := ip.To4(); ip4 != nil {
@@ -93,17 +114,75 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	}
 
 	//Paths retrieval from PathCache
-	ctx := context.Background()
+	//ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	log.Printf("[TRANSLATE-EGRESS] path lookup requested: srcIA=%s dstIA=%s", srcIA, dstIA)
+
 	CachedPaths, err := t.cache.Get(ctx, srcIA, dstIA)
 	if err != nil {
+		log.Printf("[TRANSLATE-EGRESS] path lookup unavailable: srcIA=%s dstIA=%s err=%v", srcIA, dstIA, err)
 		return path.Path{}, fmt.Errorf("path cache error for %s -> %s: %w", srcIA, dstIA, err)
 	}
 	if len(CachedPaths) == 0 {
 		return path.Path{}, fmt.Errorf("no paths for %s -> %s", srcIA, dstIA)
 	}
+
+	for i, cp := range CachedPaths {
+		meta := cp.Path.Metadata()
+
+		var expiry time.Time
+		var mtu uint16
+		var interfaces any
+
+		if meta != nil {
+			expiry = meta.Expiry
+			mtu = meta.MTU
+			interfaces = meta.Interfaces
+		}
+
+		log.Printf("[PATHPOOL] candidate path[%d]: src=%s dst=%s fp=%s nextHop=%v expiry=%s mtu=%d interfaces=%v",
+			i,
+			srcIA,
+			dstIA,
+			cp.Fingerprint,
+			cp.NextHop,
+			expiry.Format(time.RFC3339Nano),
+			mtu,
+			interfaces,
+		)
+	}
+
 	//Path Selection Criteria
 	//Just select first path for now
 	selectedcachedpath := selectPath(CachedPaths)
+
+	meta := selectedcachedpath.Path.Metadata()
+
+	var expiry time.Time
+	var mtu uint16
+	var interfaces any
+
+	if meta != nil {
+		expiry = meta.Expiry
+		mtu = meta.MTU
+		interfaces = meta.Interfaces
+	}
+
+	log.Printf("[PATHPOOL] selection strategy=first-valid src=%s dst=%s selectedFingerprint=%s nextHop=%v expiry=%s mtu=%d interfaces=%v available=%d",
+		srcIA,
+		dstIA,
+		selectedcachedpath.Fingerprint,
+		selectedcachedpath.NextHop,
+		expiry.Format(time.RFC3339Nano),
+		mtu,
+		interfaces,
+		len(CachedPaths),
+	)
+
+	log.Printf("[TRANSLATE-EGRESS] selected cached path: srcIA=%s dstIA=%s fp=%s nextHop=%v",
+		srcIA, dstIA, selectedcachedpath.Fingerprint, selectedcachedpath.NextHop)
 
 	//Extract snet path.Path including type assertion
 	selectedPath, ok := selectedcachedpath.Path.(path.Path)
@@ -171,7 +250,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		return nil, nil, fmt.Errorf("localIA not configured (t.localIA=%v)", t.localIA)
 	}
 
-	fmt.Printf("[TRANSLATE] srcIA=%s, dstIA=%s\n", srcIA, dstIA)
+	log.Printf("[TRANSLATE] srcIA=%s, dstIA=%s\n", srcIA, dstIA)
 
 	//Using the Callback function
 	var selectedPath path.Path
@@ -181,7 +260,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		selectedPath, err = t.getPathFromCache(srcIA, dstIA)
 	}
 	if err != nil {
-		return nil, nil, errors.New("no path available for dst IA")
+		return nil, nil, fmt.Errorf("path unavailable for dst IA: %w", err)
 	}
 	//Return a snet.path.Scion and nexthopfield
 	nextHop := selectedPath.UnderlayNextHop()
@@ -904,6 +983,9 @@ func BuildSCIONPacket(
 		DstIA:        dstIA,
 	}
 
+	log.Printf("[TRANSLATE-EGRESS] SrcIA: %v", srcIA)
+	log.Printf("[TRANSLATE-EGRESS] DstIA: %v", dstIA)
+
 	// Convert net.IP to netip.Addr
 	srcAddr, err := ipToNetip(srcHost)
 	if err != nil {
@@ -919,7 +1001,6 @@ func BuildSCIONPacket(
 
 	dp := selectedpath.Dataplane()
 	log.Printf("[TRANSLATE-EGRESS] Dataplane: %v", dp)
-	log.Printf("[TRANSLATE-EGRESS] Path PathType: %v", pkt.PathType)
 	if dp != nil {
 		log.Printf("[TRANSLATE-EGRESS] Calling dp.SetPath()")
 		if err := dp.SetPath(pkt); err != nil {
@@ -932,6 +1013,7 @@ func BuildSCIONPacket(
 		pkt.PathType = empty.PathType
 		pkt.Path = empty.Path{}
 	}
+	log.Printf("[TRANSLATE-EGRESS] Path PathType: %v", pkt.PathType)
 
 	//pkt.RawSrcAddr = srcHost
 	//pkt.RawDstAddr = dstHost

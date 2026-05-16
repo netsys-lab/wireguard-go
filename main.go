@@ -226,34 +226,30 @@ func main() {
 		return
 	}
 
-	scionConfigDir := os.Getenv("SCION_CONFIG_DIR")
+	scionConfig := device.ScionDeviceConfigFromEnv()
 	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
-	scionUnderlayPort := 32766
-	if portStr := os.Getenv("SCION_UNDERLAY_PORT"); portStr != "" {
-		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port < 65536 {
-			scionUnderlayPort = port
-		}
-	}
-	localIAStr := os.Getenv("SCION_LOCAL_IA")
 
 	if bootstrapURL != "" {
-
-		//Annahem nur ein Interface also fixes Verzeichnis
-		if scionConfigDir == "" {
-			scionConfigDir = filepath.Join(os.TempDir(), "wg-scion")
+		if scionConfig.ConfigDir == "" {
+			scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
 
-		if err := bootstrap.BootstrapFetch(ctx, bootstrapURL, scionConfigDir); err != nil {
+		if err := bootstrap.BootstrapFetch(ctx, bootstrapURL, scionConfig.ConfigDir); err != nil {
 			logger.Errorf("SCION bootstrap failed: %v", err)
 			os.Exit(ExitSetupFailed)
-			// oder läuft weiter?
 		}
+
+		scionConfig.Enabled = true
 	}
 
-	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfigDir, scionUnderlayPort, localIAStr)
+	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfig)
+	if device == nil {
+		logger.Errorf("Failed to create device")
+		os.Exit(ExitSetupFailed)
+	}
 
 	logger.Verbosef("Device started")
 

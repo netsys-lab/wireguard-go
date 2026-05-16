@@ -13,7 +13,7 @@ GENFILE="$SCION_CONFIG_DIR"
 
 # BR internal address
 OLD_BR_IP="127.0.0.25"
-NEW_BR_IP="${SERVER_VETH_IP%%/*}"          # usually 10.0.0.1
+NEW_BR_IP="${WG_SERVER_IP%%/*}"          # usually 10.0.0.1
 
 # sciond / control / discovery reachable address
 OLD_DAEMON_IP="127.0.0.27"

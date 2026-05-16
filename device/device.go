@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/scionproto/scion/pkg/addr"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
@@ -72,6 +71,7 @@ type Device struct {
 	indexTable    IndexTable
 	cookieChecker CookieChecker
 
+	pathPool   *pathcache.PathPool
 	translator *header_parsing.Translator
 
 	pool struct {
@@ -93,14 +93,10 @@ type Device struct {
 		mtu    atomic.Int32
 	}
 
-	ipcMutex sync.RWMutex
-	closed   chan struct{}
-	log      *Logger
-
-	scionUnderlayPort int
-	dispatcherConn    *net.UDPConn
-	scionListenerConn *net.UDPConn
-	brConn            *net.UDPConn // Connection to Border Router for sending SCION packets
+	ipcMutex     sync.RWMutex
+	closed       chan struct{}
+	log          *Logger
+	pendingSCION *PendingSCIONQueue
 }
 
 // deviceState represents the state of a Device.
@@ -293,66 +289,55 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	return nil
 }
 
-func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfigDir string, scionUnderlayPort int, localIAStr string) *Device {
+func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig ScionDeviceConfig) *Device {
 	device := new(Device)
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.net.bind = bind
 	device.tun.device = tunDevice
-	device.scionUnderlayPort = scionUnderlayPort
 
-	if scionConfigDir != "" {
-		//Hier erstellen wir einen Daemon
-		retriever, err := daemon.NewSciondRetriever(scionConfigDir)
+	if scionConfig.Enabled {
+		if scionConfig.ConfigDir == "" {
+			logger.Errorf("SCION init failed: enabled but no config dir")
+			return nil
+		}
+
+		localIA, err := loadLocalIAFromTopology(scionConfig.ConfigDir)
+		if err != nil {
+			logger.Errorf("SCION init failed: could not load local IA from topology: %v", err)
+			return nil
+		}
+
+		brAddr, err := loadBRAddrFromTopology(scionConfig.ConfigDir)
+		if err != nil {
+			logger.Errorf("SCION init failed: could not load BR address from topology: %v", err)
+			return nil
+		}
+
+		retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir)
 		if err != nil {
 			logger.Errorf("SCION init failed: %v", err)
-			return nil //TODO: Return Panic?
-		}
-		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
-		pathcache := pathcache.NewPathPool(retriever)
-		localIA := addr.MustParseIA(localIAStr)
-		brAddr := getBRAddr(localIA)
-		device.translator = header_parsing.NewTranslator(pathcache, localIA, brAddr)
-
-		// Initialize dispatcher connection for sending SCION packets
-		// Use 10.0.0.1 (veth-server) to reach dispatcher running on host
-		dispatcherAddr := &net.UDPAddr{
-			IP:   net.ParseIP("10.0.0.1"),
-			Port: scionUnderlayPort,
-		}
-		dispatcherConn, err := net.DialUDP("udp", nil, dispatcherAddr)
-		if err != nil {
-			logger.Errorf("Failed to create dispatcher connection: %v", err)
-		} else {
-			device.dispatcherConn = dispatcherConn
-			logger.Verbosef("SCION dispatcher connection established: %v -> %v", dispatcherConn.LocalAddr(), dispatcherConn.RemoteAddr())
+			return nil
 		}
 
-		// Initialize listener for receiving SCION packets (return path)
-		listenerAddr := &net.UDPAddr{
-			IP:   net.ParseIP("127.0.0.1"),
-			Port: scionUnderlayPort + 1, // Use different port for listener
-		}
-		scionListenerConn, err := net.ListenUDP("udp", listenerAddr)
-		if err != nil {
-			logger.Errorf("Failed to create SCION listener: %v", err)
-		} else {
-			device.scionListenerConn = scionListenerConn
-			logger.Verbosef("SCION listener bound to %s", scionListenerConn.LocalAddr().String())
-		}
+		pathPool := pathcache.NewPathPool(retriever)
+		device.pathPool = pathPool
 
-		// Initialize connection to Border Router for forwarding SCION packets
-		// BR listens on 127.0.0.25:31006 (AS64513) or 127.0.0.33:31010 (AS64514)
-		brConn, err := net.DialUDP("udp", nil, brAddr)
-		if err != nil {
-			logger.Errorf("Failed to create BR connection: %v", err)
-		} else {
-			device.brConn = brConn
-			logger.Verbosef("SCION BR connection established: %v -> %v", brConn.LocalAddr(), brConn.RemoteAddr())
-		}
+		device.pendingSCION = NewPendingSCIONQueue(64, 3*time.Second)
+		pathPool.SetRefreshCallback(device.OnPathReady)
+
+		translator := header_parsing.NewTranslator(pathPool, localIA, brAddr)
+		device.translator = translator
+
+		logger.Verbosef(
+			"SCION init success: configDir=%s localIA=%s brAddr=%s",
+			scionConfig.ConfigDir,
+			localIA,
+			brAddr,
+		)
 	} else {
-		logger.Errorf("SCION init failed: no scionConfigDir")
+		logger.Verbosef("SCION disabled")
 	}
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
@@ -387,11 +372,6 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.queue.encryption.wg.Add(1) // RoutineReadFromTUN
 	go device.RoutineReadFromTUN()
 	go device.RoutineTUNEventReader()
-
-	if device.scionListenerConn != nil && device.translator != nil {
-		device.state.stopping.Add(1)
-		go device.RoutineSCIONIngress()
-	}
 
 	return device
 }
@@ -455,10 +435,6 @@ func (device *Device) Close() {
 	// Remove peers before closing queues,
 	// because peers assume that queues are active.
 	device.RemoveAllPeers()
-
-	if device.scionListenerConn != nil {
-		device.scionListenerConn.Close()
-	}
 
 	// We kept a reference to the encryption and decryption queues,
 	// in case we started any new peers that might write to them.
@@ -610,79 +586,6 @@ func (device *Device) BindClose() error {
 	return err
 }
 
-func (device *Device) RoutineSCIONIngress() {
-	defer func() {
-		device.log.Verbosef("Routine: SCION ingress - stopped")
-		device.state.stopping.Done()
-	}()
-
-	device.log.Verbosef("Routine: SCION ingress - started")
-
-	buf := make([]byte, 65535)
-	for {
-		n, addr, err := device.scionListenerConn.ReadFromUDP(buf)
-		if err != nil {
-			if device.isClosed() {
-				return
-			}
-			device.log.Errorf("SCION listener read error: %v", err)
-			continue
-		}
-
-		if n < 1 {
-			continue
-		}
-
-		pkt := make([]byte, n)
-		copy(pkt, buf[:n])
-
-		device.log.Verbosef("[CLIENT-11-SCION-RECV] Received SCION packet from %s, size=%d", addr.String(), n)
-
-		tunIP, err := device.tun.device.Name()
-		if err != nil {
-			device.log.Errorf("[CLIENT-12-TRANSLATE-INGRESS] Failed to get TUN name: %v", err)
-			continue
-		}
-		device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] TUN device: %s", tunIP)
-
-		device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] Converting SCION->IP...")
-		translatedIP, err := device.translator.TranslateIngress(pkt, net.ParseIP(tunIP))
-		if err != nil {
-			device.log.Errorf("[CLIENT-12-TRANSLATE-INGRESS] ERROR: %v", err)
-			continue
-		}
-
-		device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] SUCCESS: %d bytes", len(translatedIP))
-
-		if len(translatedIP) == 0 {
-			device.log.Verbosef("[CLIENT-12-TRANSLATE-INGRESS] Translated packet is empty, skipping")
-			continue
-		}
-
-		translatedPacket := translatedIP
-		device.log.Verbosef("[CLIENT-13-PEER-LOOKUP] Looking up peer for translated packet, len=%d", len(translatedPacket))
-
-		peer := device.lookupPeerForPacket(translatedPacket)
-		if peer == nil {
-			device.log.Verbosef("[CLIENT-13-PEER-LOOKUP] ERROR: No peer found for translated packet, dropping")
-			continue
-		}
-
-		device.log.Verbosef("[CLIENT-14-WG-ENCRYPT] Found peer %v, sending %d bytes to WireGuard tunnel", peer, len(translatedPacket))
-
-		elem := device.NewOutboundElement()
-		elem.packet = translatedPacket
-
-		elemsContainer := device.GetOutboundElementsContainer()
-		elemsContainer.elems = append(elemsContainer.elems, elem)
-
-		peer.StagePackets(elemsContainer)
-		peer.SendStagedPackets()
-
-		device.log.Verbosef("[CLIENT-15-SENT] Packet sent to wireguard tunnel")
-	}
-}
-
 func (device *Device) lookupPeerForPacket(packet []byte) *Peer {
 	if len(packet) < 1 {
 		return nil
@@ -714,15 +617,4 @@ func (device *Device) lookupPeerForPacket(packet []byte) *Peer {
 		device.log.Verbosef("[LOOKUP] No peer found for IP %s", net.IP(dstIP).String())
 	}
 	return peer
-}
-
-func getBRAddr(localIA addr.IA) *net.UDPAddr {
-	switch localIA {
-	case addr.MustParseIA("1-64513"):
-		return &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 31006}
-	case addr.MustParseIA("1-64514"):
-		return &net.UDPAddr{IP: net.ParseIP("127.0.0.33"), Port: 31010}
-	default:
-		return &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 31006}
-	}
 }
