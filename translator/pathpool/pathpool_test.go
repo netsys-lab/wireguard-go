@@ -286,3 +286,73 @@ func TestPathPoolRefreshCallbackFiresOnSuccess(t *testing.T) {
 		t.Fatal("refresh callback was not called")
 	}
 }
+
+func TestPathPoolRefreshErrorIsVisibleInSnapshot(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mockErr := errors.New("mock retriever failed")
+
+	mock := &MockRetriever{
+		ErrToReturn: mockErr,
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	_, err := pp.Get(context.Background(), src, dst)
+	if !errors.Is(err, ErrPathPending) {
+		t.Fatalf("expected ErrPathPending, got %v", err)
+	}
+
+	waitUntil(t, time.Second, func() bool {
+		pair := pp.SnapshotFor(src, dst)
+		return pair.LastError != ""
+	})
+
+	pair := pp.SnapshotFor(src, dst)
+
+	if pair.AvailablePaths != 0 {
+		t.Fatalf("expected 0 available paths, got %d", pair.AvailablePaths)
+	}
+
+	if pair.LastError == "" {
+		t.Fatal("expected LastError to be set")
+	}
+
+	if pair.InFlight {
+		t.Fatal("expected InFlight to be false after failed refresh")
+	}
+}
+
+func TestPathPoolNoPathsResultIsVisibleInSnapshot(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	_, err := pp.Get(context.Background(), src, dst)
+	if !errors.Is(err, ErrPathPending) {
+		t.Fatalf("expected ErrPathPending, got %v", err)
+	}
+
+	waitUntil(t, time.Second, func() bool {
+		pair := pp.SnapshotFor(src, dst)
+		return pair.LastError != ""
+	})
+
+	pair := pp.SnapshotFor(src, dst)
+
+	if pair.LastError != ErrNoPaths.Error() {
+		t.Fatalf("expected LastError %q, got %q", ErrNoPaths.Error(), pair.LastError)
+	}
+
+	if pair.InFlight {
+		t.Fatal("expected InFlight to be false after no-path refresh")
+	}
+}
