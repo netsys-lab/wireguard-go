@@ -10,6 +10,7 @@ set -euo pipefail
 export TESTENV_DIR="${TESTENV_DIR:-/home/paul/Scintra/test/wireguard-go/testenv}"
 export LOG_DIR="${LOG_DIR:-$TESTENV_DIR/logs}"
 export SCION_DIR="${SCION_DIR:-/home/paul/Scintra/scion}"
+
 export SCION_TOPOLOGY="${SCION_TOPOLOGY:-topology/tiny-bgp.topo}"
 
 # Network Configuration
@@ -35,7 +36,7 @@ export WG_ENDPOINT="10.10.10.1:51820"
 export WG_IP_V6="fc00:10fc:100::1/7" #fc00::/7
 
 # SCION Configuration
-export SCION_LOCAL_IA="${SCION_LOCAL_IA:-1-64513}"
+export SCION_LOCAL_IA="${SCION_LOCAL_IA:-1-64513}" # Not needed for wg startup anymore loaded from topology.json but still here for config dir etc
 export SCION_UNDERLAY_PORT="${SCION_UNDERLAY_PORT:-30041}"
 export SCION_LISTENER_PORT=$((SCION_UNDERLAY_PORT + 1))
 
@@ -49,6 +50,7 @@ export SCION_BR_PORT="${SCION_BR_PORT:-31006}"
 export SCION_BR64513_IP="${SCION_BR64513_IP:-127.0.0.25}"
 export SCION_BR64514_IP="${SCION_BR64514_IP:-127.0.0.33}"
 
+export SCION_ENABLED=true
 export SCION_CONFIG_DIR="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}"
 export DEAMON_CONFIG_FILE="${SCION_DIR}/gen/AS${SCION_LOCAL_IA#*-}/sd.toml"
 

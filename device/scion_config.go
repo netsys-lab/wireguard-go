@@ -24,6 +24,17 @@ type scionBorderRouter struct {
 	InternalAddr string `json:"internal_addr"`
 }
 
+func ScionDeviceConfigFromEnv() ScionDeviceConfig {
+	configDir := os.Getenv("SCION_CONFIG_DIR")
+
+	enabled := os.Getenv("SCION_ENABLED") == "true" || configDir != ""
+
+	return ScionDeviceConfig{
+		Enabled:   enabled,
+		ConfigDir: configDir,
+	}
+}
+
 func loadSCIONTopology(configDir string) (*scionTopologyFile, error) {
 	if configDir == "" {
 		return nil, fmt.Errorf("empty SCION config dir")
