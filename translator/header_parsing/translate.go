@@ -128,9 +128,58 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	if len(CachedPaths) == 0 {
 		return path.Path{}, fmt.Errorf("no paths for %s -> %s", srcIA, dstIA)
 	}
+
+	for i, cp := range CachedPaths {
+		meta := cp.Path.Metadata()
+
+		var expiry time.Time
+		var mtu uint16
+		var interfaces any
+
+		if meta != nil {
+			expiry = meta.Expiry
+			mtu = meta.MTU
+			interfaces = meta.Interfaces
+		}
+
+		log.Printf("[PATHPOOL] candidate path[%d]: src=%s dst=%s fp=%s nextHop=%v expiry=%s mtu=%d interfaces=%v",
+			i,
+			srcIA,
+			dstIA,
+			cp.Fingerprint,
+			cp.NextHop,
+			expiry.Format(time.RFC3339Nano),
+			mtu,
+			interfaces,
+		)
+	}
+
 	//Path Selection Criteria
 	//Just select first path for now
 	selectedcachedpath := selectPath(CachedPaths)
+
+	meta := selectedcachedpath.Path.Metadata()
+
+	var expiry time.Time
+	var mtu uint16
+	var interfaces any
+
+	if meta != nil {
+		expiry = meta.Expiry
+		mtu = meta.MTU
+		interfaces = meta.Interfaces
+	}
+
+	log.Printf("[PATHPOOL] selection strategy=first-valid src=%s dst=%s selectedFingerprint=%s nextHop=%v expiry=%s mtu=%d interfaces=%v available=%d",
+		srcIA,
+		dstIA,
+		selectedcachedpath.Fingerprint,
+		selectedcachedpath.NextHop,
+		expiry.Format(time.RFC3339Nano),
+		mtu,
+		interfaces,
+		len(CachedPaths),
+	)
 
 	log.Printf("[TRANSLATE-EGRESS] selected cached path: srcIA=%s dstIA=%s fp=%s nextHop=%v",
 		srcIA, dstIA, selectedcachedpath.Fingerprint, selectedcachedpath.NextHop)
