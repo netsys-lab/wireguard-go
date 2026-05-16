@@ -8,6 +8,15 @@ import (
 	"github.com/scionproto/scion/pkg/addr"
 )
 
+/*
+Implements the pending SCION packet queue.
+
+When a SCION-mapped packet arrives but no path is currently cached,
+the packet is copied into this queue instead of blocking the TUN reader or dropping the packet immediately.
+
+Packets are grouped by source/destination IA pair and are retried once the asynchronous path refresh completes.
+*/
+
 type pendingSCIONKey struct {
 	src addr.IA
 	dst addr.IA

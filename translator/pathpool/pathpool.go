@@ -211,6 +211,30 @@ func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) {
 			return
 		}
 
+		for i, p := range newPaths {
+			meta := p.Metadata()
+
+			var expiry time.Time
+			var mtu uint16
+			var interfaces any
+
+			if meta != nil {
+				expiry = meta.Expiry
+				mtu = meta.MTU
+				interfaces = meta.Interfaces
+			}
+
+			log.Printf("[PATHPOOL] fetched path[%d]: src=%s dst=%s nextHop=%v expiry=%s mtu=%d interfaces=%v",
+				i,
+				src,
+				dst,
+				p.UnderlayNextHop(),
+				expiry.Format(time.RFC3339Nano),
+				mtu,
+				interfaces,
+			)
+		}
+
 		pp.Replace(src, dst, newPaths)
 
 		pp.mu.Lock()

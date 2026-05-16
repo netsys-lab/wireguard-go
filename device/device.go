@@ -72,6 +72,7 @@ type Device struct {
 	indexTable    IndexTable
 	cookieChecker CookieChecker
 
+	pathPool   *pathcache.PathPool
 	translator *header_parsing.Translator
 
 	pool struct {
@@ -305,13 +306,14 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 			return nil //TODO: Return Panic?
 		}
 		//Hier erstellen wir den PathCache und mit diesem einen neuen Translator
-		pathcache := pathcache.NewPathPool(retriever)
+		pathPool := pathcache.NewPathPool(retriever)
+		device.pathPool = pathPool
 		//Create Pending Queue
 		device.pendingSCION = NewPendingSCIONQueue(64, 3*time.Second)
-		pathcache.SetRefreshCallback(device.OnPathReady)
+		pathPool.SetRefreshCallback(device.OnPathReady)
 		localIA := addr.MustParseIA(localIAStr)
 		brAddr := getBRAddr(localIA)
-		translator := header_parsing.NewTranslator(pathcache, localIA, brAddr)
+		translator := header_parsing.NewTranslator(pathPool, localIA, brAddr)
 		device.translator = translator
 
 	} else {

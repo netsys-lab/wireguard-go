@@ -8,6 +8,18 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+/*
+Handles retrying queued SCION packets after paths become available.
+
+When the PathPool finishes an async refresh, Device.OnPathReady is called.
+
+This file pops pending packets for that IA pair, translates them again using the refreshed path cache,
+performs peer lookup, and injects them into the normal WireGuard outbound pipeline.
+
+This keeps path fetching asynchronous while still preserving packets that
+arrived during a cache miss.
+*/
+
 func (device *Device) OnPathReady(src, dst addr.IA) {
 	device.log.Verbosef("[SCION-PENDING] OnPathReady: src=%s dst=%s", src, dst)
 
