@@ -213,3 +213,41 @@ func TestPathPoolCacheMissTriggersAsyncRefresh(t *testing.T) {
 
 	t.Log("Successfully verified async cache-miss refresh behavior")
 }
+
+func TestPathPoolInflightDeduplicatesRefreshes(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	expiry := time.Now().Add(1 * time.Hour)
+	retrievedPath := createPath(src, dst, 42, expiry, "127.0.0.42", 50042)
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{retrievedPath},
+		Delay:         100 * time.Millisecond,
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		paths, err := pp.Get(ctx, src, dst)
+		if !errors.Is(err, ErrPathPending) {
+			t.Fatalf("expected ErrPathPending on Get %d, got paths=%d err=%v", i, len(paths), err)
+		}
+	}
+
+	waitUntil(t, time.Second, func() bool {
+		return mock.Calls() == 1
+	})
+
+	waitUntil(t, time.Second, func() bool {
+		paths, err := pp.Get(ctx, src, dst)
+		return err == nil && len(paths) == 1
+	})
+
+	if mock.Calls() != 1 {
+		t.Fatalf("expected only one in-flight refresh, got %d calls", mock.Calls())
+	}
+}
