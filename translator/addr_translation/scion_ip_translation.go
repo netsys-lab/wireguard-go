@@ -143,8 +143,15 @@ func IPToScion(ip net.IP, subnetBits int) (isd int, asn ASN, localPrefix uint64,
 	isd = int(ip128.Rsh(108).lo & 0xFFF)
 
 	encodedASN := ip128.Rsh(88).lo & 0xFFFFF
-	if (ip128.Rsh(88).lo & (1 << 19)) != 0 {
-		asn.Value = 0x200000000 | encodedASN
+	/*
+		if (ip128.Rsh(88).lo & (1 << 19)) != 0 {
+			asn.Value = 0x200000000 | encodedASN
+		} else {
+			asn.Value = encodedASN
+		}
+	*/
+	if encodedASN&(1<<19) != 0 {
+		asn.Value = 0x200000000 | (encodedASN & 0x7ffff)
 	} else {
 		asn.Value = encodedASN
 	}

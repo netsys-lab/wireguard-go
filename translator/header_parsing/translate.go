@@ -905,7 +905,28 @@ func IsSCIONMapped(ip net.IP) bool {
 	return ip[0] == SCIONPrefixFirstByte // fc00::/8
 }
 
-func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.IP, bool, error) {
+/*
+func UnmapIPv6(ip net.IP, subnetBits uint) (
+
+	uint16,
+	uint32,
+	uint32,
+	uint32,
+	net.IP,
+	bool,
+	error,
+
+)
+*/
+func UnmapIPv6(ip net.IP, subnetBits uint) (
+	uint16,
+	uint64,
+	uint32,
+	uint32,
+	net.IP,
+	bool,
+	error,
+) {
 	ip = ip.To16()
 	if ip == nil || ip[0] != SCIONPrefixFirstByte {
 		return 0, 0, 0, 0, nil, false, errors.New("not a scion-mapped ipv6")
@@ -926,7 +947,17 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (uint16, uint32, uint32, uint32, net.
 	localPrefixMask := uint64((1 << (24 - subnetBits)) - 1)
 	localPrefix := uint32((hi >> subnetBits) & localPrefixMask)
 
-	asn := uint32((hi >> 24) & 0x000fffff)
+	//asn := uint32((hi >> 24) & 0x000fffff)
+	encodedASN := uint64((hi >> 24) & 0x000fffff)
+
+	var asn uint64
+	if encodedASN&(1<<19) != 0 {
+		// colon-style AS encoded as 0x200000000 | low 19 bits
+		asn = 0x200000000 | (encodedASN & 0x7ffff)
+	} else {
+		// decimal/BGP-style AS
+		asn = encodedASN
+	}
 
 	isd := uint16((hi >> 44) & 0x0fff)
 
