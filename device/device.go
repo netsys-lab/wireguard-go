@@ -6,6 +6,7 @@
 package device
 
 import (
+	"fmt"
 	"net"
 	"runtime"
 	"sync"
@@ -298,47 +299,11 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.tun.device = tunDevice
 
 	if scionConfig.Enabled {
-		if scionConfig.ConfigDir == "" {
-			logger.Errorf("SCION init failed: enabled but no config dir")
-			return nil
-		}
-
-		localIA, err := loadLocalIAFromTopology(scionConfig.ConfigDir)
-		if err != nil {
-			logger.Errorf("SCION init failed: could not load local IA from topology: %v", err)
-			return nil
-		}
-
-		brAddr, err := loadBRAddrFromTopology(scionConfig.ConfigDir)
-		if err != nil {
-			logger.Errorf("SCION init failed: could not load BR address from topology: %v", err)
-			return nil
-		}
-
-		retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir)
-		if err != nil {
-			logger.Errorf("SCION init failed: %v", err)
-			return nil
-		}
-
-		pathPool := pathcache.NewPathPool(retriever)
-		device.pathPool = pathPool
-
-		device.pendingSCION = NewPendingSCIONQueue(64, 3*time.Second)
-		pathPool.SetRefreshCallback(device.OnPathReady)
-
-		translator := header_parsing.NewTranslator(pathPool, localIA, brAddr)
-		device.translator = translator
-
-		logger.Verbosef(
-			"SCION init success: configDir=%s localIA=%s brAddr=%s",
-			scionConfig.ConfigDir,
-			localIA,
-			brAddr,
-		)
+		logger.Verbosef("SCION requested, deferred init")
 	} else {
 		logger.Verbosef("SCION disabled")
 	}
+
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
 		device.log.Errorf("Trouble determining MTU, assuming default: %v", err)
@@ -374,6 +339,73 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	go device.RoutineTUNEventReader()
 
 	return device
+}
+
+// We want the Bootstrapping for SCION to happen through the tunnel, so we need to create the device before we fetch and use it to create translator.
+// So we need a Function for the device, that creates the translator and does all that afterwards, Would that be called from the main.go?
+func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
+	if !scionConfig.Enabled {
+		device.log.Verbosef("SCION disabled")
+		return nil
+	}
+
+	if scionConfig.ConfigDir == "" {
+		device.log.Errorf("SCION init failed: enabled but no config dir")
+		return fmt.Errorf("SCION init failed: enabled but no config dir")
+	}
+
+	localIA, err := loadLocalIAFromTopology(scionConfig.ConfigDir)
+	if err != nil {
+		device.log.Errorf("SCION init failed: could not load local IA from topology: %v", err)
+		return fmt.Errorf("SCION init failed: could not load local IA from topology: %w", err)
+	}
+
+	brAddr, err := loadBRAddrFromTopology(scionConfig.ConfigDir)
+	if err != nil {
+		device.log.Errorf("SCION init failed: could not load BR address from topology: %w", err)
+		return fmt.Errorf("SCION init failed: could not load BR address from topology: %w", err)
+	}
+
+	retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir)
+	if err != nil {
+		device.log.Errorf("SCION init failed: %w", err)
+		return fmt.Errorf("SCION init failed: %w", err)
+	}
+
+	pathPool := pathcache.NewPathPool(retriever)
+
+	interfaceName := scionConfig.InterfaceName
+
+	pendingSCION := NewPendingSCIONQueue(64, 3*time.Second)
+	translator := header_parsing.NewTranslator(pathPool, localIA, brAddr, interfaceName)
+	device.log.Verbosef("SCION init: Created translator")
+
+	device.ipcMutex.Lock()
+	defer device.ipcMutex.Unlock()
+
+	if device.isClosed() {
+		device.log.Errorf("SCION init failed: device is closed")
+		return fmt.Errorf("SCION init failed: device is closed")
+	}
+
+	if device.translator != nil {
+		device.log.Errorf("SCION init failed: translator already initialized")
+		return fmt.Errorf("SCION init failed: translator already initialized")
+	}
+
+	device.pathPool = pathPool
+	device.pendingSCION = pendingSCION
+	pathPool.SetRefreshCallback(device.OnPathReady)
+	device.translator = translator
+
+	device.log.Verbosef(
+		"SCION init success: configDir=%s localIA=%s brAddr=%s",
+		scionConfig.ConfigDir,
+		localIA,
+		brAddr,
+	)
+
+	return nil
 }
 
 // BatchSize returns the BatchSize for the device as a whole which is the max of

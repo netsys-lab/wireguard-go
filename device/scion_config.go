@@ -11,8 +11,9 @@ import (
 )
 
 type ScionDeviceConfig struct {
-	Enabled   bool
-	ConfigDir string
+	Enabled       bool
+	ConfigDir     string
+	InterfaceName string
 }
 
 type scionTopologyFile struct {

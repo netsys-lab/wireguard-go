@@ -66,7 +66,7 @@ func BootstrapFetch(ctx context.Context, baseURL, configDir string) error {
 	// 1) topology.json
 	topoBytes, err := httpGet(ctx, client, base+"/topology", "application/json")
 	if err != nil {
-		return fmt.Errorf("fetch /topology: %w", err)
+		return fmt.Errorf("fetch /topology.json: %w", err)
 	}
 	if err := atomicWriteFile(filepath.Join(configDir, "topology.json"), topoBytes, 0o644); err != nil {
 		return fmt.Errorf("write topology.json: %w", err)

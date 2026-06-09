@@ -277,11 +277,22 @@ func (device *Device) RoutineReadFromTUN() {
 				peer = device.allowedips.Lookup(dst)
 
 				dstIP := net.IP(dst)
+
+				//Below code makes no sense as IsSCIONMapped only checks for IPv6 fc00 addresses.
+				//Flow should be:
+				// We need to decide if a given IPv4 adress should be Mapped to SCION
+				// If it should be mapped then:
+				// Wrap IPv4 adress into a IPv6 adress which is then translated like IPv6.
+				if device.translator != nil {
+
+				}
+
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 					srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len])
 					hostPort := 35000
 					start := time.Now()
 					device.log.Verbosef("[TUN-READER] before translation")
+					device.log.Verbosef("Hier muss schon srcIP die vom WG Interface sein")
 					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, false)
 					device.log.Verbosef("[TUN-READER] after translation duration=%s", time.Since(start))
 					if err != nil {
@@ -302,6 +313,12 @@ func (device *Device) RoutineReadFromTUN() {
 				// Check if destination is SCION-mapped (fc00::/8)
 				dstIP := net.IP(dst)
 				device.log.Verbosef("[CLIENT-1-CLASSIFY] IPv6 packet: dst=%s src=%s", dstIP.String(), net.IP(pkt[IPv6offsetSrc:IPv6offsetSrc+net.IPv6len]).String())
+				if device.translator != nil {
+					device.log.Verbosef("[CLIENT-1-CLASSIFY] Translator is not nil")
+				} else {
+					device.log.Errorf("[CLIENT-1-CLASSIFY] Translator is nil")
+				}
+
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 					// Translation needed - first translate, then lookup peer for translated packet
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])

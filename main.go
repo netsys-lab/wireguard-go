@@ -226,23 +226,26 @@ func main() {
 		return
 	}
 
+	//First SCION CONFIG
 	scionConfig := device.ScionDeviceConfigFromEnv()
 	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
+	scionConfig.InterfaceName = interfaceName
+
+	if os.Getenv("SCION_ENABLED") == "true" {
+		scionConfig.Enabled = true
+		logger.Verbosef("SCION_ENABLED == true")
+	} else {
+		logger.Verbosef("SCION_ENABLED == false")
+	}
 
 	if bootstrapURL != "" {
 		if scionConfig.ConfigDir == "" {
 			scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		defer cancel()
-
-		if err := bootstrap.BootstrapFetch(ctx, bootstrapURL, scionConfig.ConfigDir); err != nil {
-			logger.Errorf("SCION bootstrap failed: %v", err)
-			os.Exit(ExitSetupFailed)
-		}
-
 		scionConfig.Enabled = true
+	} else {
+		logger.Verbosef("No SCION_BOOTSTRAP_URL!")
 	}
 
 	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfig)
@@ -275,6 +278,52 @@ func main() {
 
 	logger.Verbosef("UAPI listener started")
 
+	//Tunnel Setup we fetch Bootstrap
+	if bootstrapURL != "" {
+		go func() {
+			if scionConfig.ConfigDir == "" {
+				scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
+			}
+
+			scionConfig.Enabled = true
+
+			for attempt := 1; ; attempt++ {
+				select {
+				case <-device.Wait():
+					logger.Verbosef("SCION bootstrap worker stopped: device closed")
+					return
+				default:
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				err := bootstrap.BootstrapFetch(ctx, bootstrapURL, scionConfig.ConfigDir)
+				cancel()
+
+				if err == nil {
+					logger.Verbosef("SCION bootstrap succeeded after %d attempts", attempt)
+
+					if err := device.InitSCION(scionConfig); err != nil {
+						logger.Errorf("SCION init after bootstrap failed: %v", err)
+						return
+					}
+
+					logger.Verbosef("SCION initialized after bootstrap")
+					return
+				}
+
+				logger.Verbosef("SCION bootstrap attempt %d failed, tunnel may not be ready yet: %v", attempt, err)
+
+				select {
+				case <-device.Wait():
+					logger.Verbosef("SCION bootstrap worker stopped: device closed")
+					return
+				case <-time.After(3 * time.Second):
+				}
+			}
+		}()
+	} else {
+		logger.Verbosef("No SCION_BOOTSTRAP_URL, skipping SCION bootstrap")
+	}
 	// wait for program to terminate
 
 	signal.Notify(term, unix.SIGTERM)
