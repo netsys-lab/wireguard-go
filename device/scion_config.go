@@ -11,8 +11,9 @@ import (
 )
 
 type ScionDeviceConfig struct {
-	Enabled   bool
-	ConfigDir string
+	Enabled    bool
+	ConfigDir  string
+	PolicyFile string
 }
 
 type scionTopologyFile struct {
@@ -29,9 +30,12 @@ func ScionDeviceConfigFromEnv() ScionDeviceConfig {
 
 	enabled := os.Getenv("SCION_ENABLED") == "true" || configDir != ""
 
+	policyFile := os.Getenv("SCION_POLICY_FILE")
+
 	return ScionDeviceConfig{
-		Enabled:   enabled,
-		ConfigDir: configDir,
+		Enabled:    enabled,
+		ConfigDir:  configDir,
+		PolicyFile: policyFile,
 	}
 }
 

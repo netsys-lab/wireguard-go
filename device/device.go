@@ -7,6 +7,7 @@ package device
 
 import (
 	"net"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"golang.zx2c4.com/wireguard/rwcancel"
 	daemon "golang.zx2c4.com/wireguard/translator/daemon"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
+	"golang.zx2c4.com/wireguard/translator/pathpolicy"
 	pathcache "golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -328,6 +330,23 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 		pathPool.SetRefreshCallback(device.OnPathReady)
 
 		translator := header_parsing.NewTranslator(pathPool, localIA, brAddr)
+
+		// Load path policy engine (optional).
+		// Try explicit SCION_POLICY_FILE first, then <configDir>/policy.json.
+		policyPaths := []string{}
+		if scionConfig.PolicyFile != "" {
+			policyPaths = append(policyPaths, scionConfig.PolicyFile)
+		}
+		policyPaths = append(policyPaths, filepath.Join(scionConfig.ConfigDir, "policy.json"))
+
+		policyEngine, err := pathpolicy.LoadEngineFromPaths(policyPaths...)
+		if err != nil {
+			logger.Errorf("SCION path policy load failed: %v", err)
+			// Non-fatal: translator will use first-valid path selection.
+		} else if policyEngine != nil {
+			translator.SetPolicyEngine(policyEngine)
+		}
+
 		device.translator = translator
 
 		logger.Verbosef(
