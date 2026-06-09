@@ -185,6 +185,7 @@ start_client_wg() {
         export LOG_LEVEL='$LOG_LEVEL'
         export SCION_ENABLED=true
         export SCION_CONFIG_DIR='$SCION_CONFIG_DIR'
+        export SCION_BOOTSTRAP_URL='$SCION_BOOTSTRAP_URL'
         export SCION_UNDERLAY_PORT='$SCION_UNDERLAY_PORT'
 
         cd '$SCRIPT_DIR/../'
