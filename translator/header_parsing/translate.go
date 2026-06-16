@@ -898,6 +898,8 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			l4Payload = []byte(pld)
 
 		case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
+			log.Printf("[TRANSLATE-INGRESS] SCMP received typeCode=%v payloadLen=%d", scmp.TypeCode, len(pld))
+			return nil, fmt.Errorf("SCMP received but SCMP->ICMPv6 not implemented: %v", scmp.TypeCode)
 
 			//l4Layer = nil
 			// icmp, err := scmpToICMP(&scmp)
@@ -1196,42 +1198,211 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 }
 
-// translateICMPv6ToSCMPTypeCode maps ICMPv6 TypeCode to SCMP TypeCode
+// translateICMPv6ToSCMPTypeCode maps ICMPv6 Type+Code to SCMP Type+Code.
 func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode) slayers.SCMPTypeCode {
-	switch uint8(icmp6TypeCode) {
-	case 128: // ICMPv6TypeEchoRequest
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, slayers.SCMPCode(0))
-	case 129: // ICMPv6TypeEchoReply
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, slayers.SCMPCode(0))
-	case 1: // ICMPv6TypeDestinationUnreachable
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCode(icmp6TypeCode.Code()))
-	case 2: // ICMPv6TypePacketTooBig
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, slayers.SCMPCode(0))
-	case 3: // ICMPv6TypeTimeExceeded
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCode(0))
-	case 4: // ICMPv6TypeParameterProblem
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCode(icmp6TypeCode.Code()))
+	log.Printf("[ICMP6->SCMP] enter raw=%v rawUint16=0x%04x type=%d code=%d string=%s",
+		icmp6TypeCode,
+		uint16(icmp6TypeCode),
+		icmp6TypeCode.Type(),
+		icmp6TypeCode.Code(),
+		icmp6TypeCode.String(),
+	)
+
+	var out slayers.SCMPTypeCode
+
+	switch icmp6TypeCode.Type() {
+	case layers.ICMPv6TypeDestinationUnreachable:
+		switch icmp6TypeCode.Code() {
+		case 0:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeNoRoute)
+		case 1:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeAdminDeny)
+		case 2:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeBeyondScopeOfSourceAddr)
+		case 3:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeAddressUnreachable)
+		case 4:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodePortUnreachable)
+		case 5:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeSourceAddressFailedPolicy)
+		case 6:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeRejectRouteToDest)
+		default:
+			log.Printf("[ICMP6->SCMP] warning: unsupported ICMPv6 DestinationUnreachable code=%d, fallback=NoRoute",
+				icmp6TypeCode.Code())
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeNoRoute)
+		}
+
+	case layers.ICMPv6TypePacketTooBig:
+		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0)
+
+	case layers.ICMPv6TypeTimeExceeded:
+		log.Printf("[ICMP6->SCMP] warning: ICMPv6 TimeExceeded has no direct SCMP equivalent, fallback=DestinationUnreachable(NoRoute)")
+		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeNoRoute)
+
+	case layers.ICMPv6TypeParameterProblem:
+		switch icmp6TypeCode.Code() {
+		case 0:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCodeErroneousHeaderField)
+		case 1:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCodeUnknownNextHdrType)
+		case 2:
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCodeUnknownHopByHopOption)
+		default:
+			log.Printf("[ICMP6->SCMP] warning: unsupported ICMPv6 ParameterProblem code=%d, fallback=ErroneousHeaderField",
+				icmp6TypeCode.Code())
+			out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, slayers.SCMPCodeErroneousHeaderField)
+		}
+
+	case layers.ICMPv6TypeEchoRequest:
+		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0)
+
+	case layers.ICMPv6TypeEchoReply:
+		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0)
+
 	default:
-		return slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCode(0))
+		log.Printf("[ICMP6->SCMP] warning: unsupported ICMPv6 type=%d code=%d string=%s, fallback=DestinationUnreachable(NoRoute)",
+			icmp6TypeCode.Type(),
+			icmp6TypeCode.Code(),
+			icmp6TypeCode.String(),
+		)
+		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeNoRoute)
 	}
+
+	log.Printf("[ICMP6->SCMP] exit in=%s(type=%d code=%d raw=0x%04x) -> out=%s(type=%d code=%d raw=0x%04x)",
+		icmp6TypeCode.String(),
+		icmp6TypeCode.Type(),
+		icmp6TypeCode.Code(),
+		uint16(icmp6TypeCode),
+		out.String(),
+		out.Type(),
+		out.Code(),
+		uint16(out),
+	)
+
+	return out
 }
 
-// translateSCMPTypeCodeToICMPv6 maps SCMP TypeCode to ICMPv6 TypeCode
+// translateSCMPTypeCodeToICMPv6 maps SCMP Type+Code back to ICMPv6 Type+Code.
 func translateSCMPTypeCodeToICMPv6(scmpTypeCode slayers.SCMPTypeCode) layers.ICMPv6TypeCode {
-	switch scmpTypeCode {
-	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0):
-		return layers.ICMPv6TypeEchoRequest
-	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0):
-		return layers.ICMPv6TypeEchoReply
-	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCode(0)):
-		return layers.ICMPv6TypeDestinationUnreachable
-	case slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0):
-		return layers.ICMPv6TypePacketTooBig
-	case slayers.CreateSCMPTypeCode(slayers.SCMPTypeParameterProblem, 0):
-		return layers.ICMPv6TypeParameterProblem
+	log.Printf("[SCMP->ICMP6] enter raw=%v rawUint16=0x%04x type=%d code=%d string=%s infoMsg=%v",
+		scmpTypeCode,
+		uint16(scmpTypeCode),
+		scmpTypeCode.Type(),
+		scmpTypeCode.Code(),
+		scmpTypeCode.String(),
+		scmpTypeCode.InfoMsg(),
+	)
+
+	var out layers.ICMPv6TypeCode
+
+	switch scmpTypeCode.Type() {
+	case slayers.SCMPTypeDestinationUnreachable:
+		switch scmpTypeCode.Code() {
+		case slayers.SCMPCodeNoRoute:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)
+		case slayers.SCMPCodeAdminDeny:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 1)
+		case slayers.SCMPCodeBeyondScopeOfSourceAddr:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 2)
+		case slayers.SCMPCodeAddressUnreachable:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 3)
+		case slayers.SCMPCodePortUnreachable:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 4)
+		case slayers.SCMPCodeSourceAddressFailedPolicy:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 5)
+		case slayers.SCMPCodeRejectRouteToDest:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 6)
+		default:
+			log.Printf("[SCMP->ICMP6] warning: unsupported SCMP DestinationUnreachable code=%d, fallback=ICMPv6 NoRoute",
+				scmpTypeCode.Code())
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)
+		}
+
+	case slayers.SCMPTypePacketTooBig:
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypePacketTooBig, 0)
+
+	case slayers.SCMPTypeParameterProblem:
+		switch scmpTypeCode.Code() {
+		case slayers.SCMPCodeErroneousHeaderField:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeParameterProblem, 0)
+		case slayers.SCMPCodeUnknownNextHdrType:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeParameterProblem, 1)
+		case slayers.SCMPCodeUnknownHopByHopOption:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeParameterProblem, 2)
+		case slayers.SCMPCodeUnknownEndToEndOption:
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeParameterProblem, 2)
+
+		case slayers.SCMPCodeInvalidCommonHeader,
+			slayers.SCMPCodeUnknownSCIONVersion,
+			slayers.SCMPCodeFlowIDRequired,
+			slayers.SCMPCodeInvalidPacketSize,
+			slayers.SCMPCodeUnknownPathType,
+			slayers.SCMPCodeUnknownAddressFormat,
+			slayers.SCMPCodeInvalidAddressHeader,
+			slayers.SCMPCodeInvalidSourceAddress,
+			slayers.SCMPCodeInvalidDestinationAddress,
+			slayers.SCMPCodeNonLocalDelivery,
+			slayers.SCMPCodeInvalidPath,
+			slayers.SCMPCodeUnknownHopFieldIngress,
+			slayers.SCMPCodeUnknownHopFieldEgress,
+			slayers.SCMPCodeInvalidHopFieldMAC,
+			slayers.SCMPCodePathExpired,
+			slayers.SCMPCodeInvalidSegmentChange,
+			slayers.SCMPCodeInvalidExtensionHeader:
+			log.Printf("[SCMP->ICMP6] info: SCION-specific ParameterProblem code=%d mapped to generic ICMPv6 ParameterProblem code=0",
+				scmpTypeCode.Code())
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeParameterProblem, 0)
+
+		default:
+			log.Printf("[SCMP->ICMP6] warning: unsupported SCMP ParameterProblem code=%d, fallback=ICMPv6 ParameterProblem code=0",
+				scmpTypeCode.Code())
+			out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeParameterProblem, 0)
+		}
+
+	case slayers.SCMPTypeExternalInterfaceDown:
+		log.Printf("[SCMP->ICMP6] info: ExternalInterfaceDown mapped to ICMPv6 DestinationUnreachable NoRoute")
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)
+
+	case slayers.SCMPTypeInternalConnectivityDown:
+		log.Printf("[SCMP->ICMP6] info: InternalConnectivityDown mapped to ICMPv6 DestinationUnreachable NoRoute")
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)
+
+	case slayers.SCMPTypeEchoRequest:
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)
+
+	case slayers.SCMPTypeEchoReply:
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoReply, 0)
+
+	case slayers.SCMPTypeTracerouteRequest:
+		log.Printf("[SCMP->ICMP6] info: TracerouteRequest mapped to ICMPv6 EchoRequest")
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)
+
+	case slayers.SCMPTypeTracerouteReply:
+		log.Printf("[SCMP->ICMP6] info: TracerouteReply mapped to ICMPv6 EchoReply")
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoReply, 0)
+
 	default:
-		return layers.ICMPv6TypeDestinationUnreachable
+		log.Printf("[SCMP->ICMP6] warning: unsupported SCMP type=%d code=%d string=%s, fallback=ICMPv6 DestinationUnreachable NoRoute",
+			scmpTypeCode.Type(),
+			scmpTypeCode.Code(),
+			scmpTypeCode.String(),
+		)
+		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)
 	}
+
+	log.Printf("[SCMP->ICMP6] exit in=%s(type=%d code=%d raw=0x%04x) -> out=%s(type=%d code=%d raw=0x%04x)",
+		scmpTypeCode.String(),
+		scmpTypeCode.Type(),
+		scmpTypeCode.Code(),
+		uint16(scmpTypeCode),
+		out.String(),
+		out.Type(),
+		out.Code(),
+		uint16(out),
+	)
+
+	return out
 }
 
 // SCMP -> ICMPv6 translation
