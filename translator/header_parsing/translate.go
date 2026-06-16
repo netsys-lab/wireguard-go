@@ -485,15 +485,22 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		dstHost = host.To4()
 		log.Printf("[TRANSLATE-EGRESS] dstHost from To4(): %v", dstHost)
 	} else {
-		dstHost = host.To16() // full IPv6 host inside SCION mapping
-		log.Printf("HIER muss aus der IPv6 die IPv4 Adresse von der dst dekodiert werden!!")
-		log.Printf("[TRANSLATE-EGRESS] dstHost from To16(): %v", dstHost)
+		//dstHost = host.To16() // full IPv6 host inside SCION mapping
+		log.Printf("[TRANSLATE-EGRESS] Adresse is IPv6 still, unmapping IPv4...")
+		//_, _, _, _, host, _, err := UnmapIPv6(host, 8)
+		if err != nil {
+			log.Printf("[TRANSLATE-EGRESS] UnmapIPv6 failed dstIP=%s err=%v", ipString(ip6.DstIP), err)
+			return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
+		}
+		log.Printf("[TRANSLATE-EGRESS] Extracted IPv4")
+		dstHost = host.To4()
+		log.Printf("[TRANSLATE-EGRESS] dstHost from To4(): %v", dstHost)
 	}
 
 	localISD := uint16(srcIA.ISD())
-	localASN := uint32(srcIA.AS())
+	localASN := uint64(srcIA.AS())
 	dstISD := uint16(dstIA.ISD())
-	dstASN := uint32(dstIA.AS())
+	dstASN := uint64(dstIA.AS())
 
 	// extract L4 layer and ensure supported protocols (UDP, TCP)
 	nextHeader := ip6.NextHeader
@@ -1341,9 +1348,9 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (
 // This only return scion bytes
 func BuildSCIONPacket(
 	localISD uint16,
-	localASN uint32,
+	localASN uint64,
 	dstISD uint16,
-	dstASN uint32,
+	dstASN uint64,
 	srcHost net.IP,
 	dstHost net.IP,
 	flowID uint32,
