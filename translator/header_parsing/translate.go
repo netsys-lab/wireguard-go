@@ -1062,6 +1062,24 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			)
 		case layers.LayerTypeTCP:
 
+			log.Printf("[TRANSLATE-INGRESS] inner TCP decoded srcPort=%d dstPort=%d seq=%d ack=%d SYN=%v ACK=%v FIN=%v RST=%v PSH=%v window=%d options=%d payloadLen=%d",
+				tcp.SrcPort,
+				tcp.DstPort,
+				tcp.Seq,
+				tcp.Ack,
+				tcp.SYN,
+				tcp.ACK,
+				tcp.FIN,
+				tcp.RST,
+				tcp.PSH,
+				tcp.Window,
+				len(tcp.Options),
+				len(tcp.Payload),
+			)
+
+			l4Layer = &tcp
+			l4Payload = append([]byte(nil), tcp.Payload...)
+
 		case gopacket.LayerTypePayload:
 			//This will be the leftover case - No UDP or SCMP -> Can we assume it is TCP then?
 			// L4 Layer Payload
@@ -1069,18 +1087,20 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		default:
 			return nil, fmt.Errorf("unknow layertype")
 		}
-		if l4Layer == nil {
-			//we assume no UDP or SCMP to TCP
-			raw := []byte(pld)
 
-			if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err != nil {
-				return nil, fmt.Errorf("failed to decode inner TCP: %w", err)
-			}
+	}
 
-			l4Layer = &tcp
-			l4Payload = tcp.Payload
+	if l4Layer == nil && scn.NextHdr == slayers.L4TCP {
+		raw := []byte(pld)
+
+		log.Printf("[TRANSLATE-INGRESS] fallback TCP decode rawLen=%d", len(raw))
+
+		if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err != nil {
+			return nil, fmt.Errorf("failed to decode fallback inner TCP: %w", err)
 		}
 
+		l4Layer = &tcp
+		l4Payload = append([]byte(nil), tcp.Payload...)
 	}
 
 	// ---------------------------- Map SCION dst/src host -> IP -----------------------
@@ -1285,13 +1305,44 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			return out, nil
 
 		case *layers.TCP:
-			//	l.SetNetworkLayerForChecksum(ip4)
 			ip4.Protocol = layers.IPProtocolTCP
+
 			inner := &layers.TCP{
 				SrcPort: layers.TCPPort(tcp.SrcPort),
 				DstPort: layers.TCPPort(tcp.DstPort),
+				Seq:     tcp.Seq,
+				Ack:     tcp.Ack,
+				SYN:     tcp.SYN,
+				ACK:     tcp.ACK,
+				FIN:     tcp.FIN,
+				RST:     tcp.RST,
+				PSH:     tcp.PSH,
+				URG:     tcp.URG,
+				ECE:     tcp.ECE,
+				CWR:     tcp.CWR,
+				NS:      tcp.NS,
+				Window:  tcp.Window,
+				Options: tcp.Options,
 			}
+
 			inner.SetNetworkLayerForChecksum(ip4)
+
+			log.Printf("[TRANSLATE-INGRESS] serializing IPv4/TCP src=%s dst=%s srcPort=%d dstPort=%d seq=%d ack=%d SYN=%v ACK=%v FIN=%v RST=%v PSH=%v window=%d options=%d payloadLen=%d",
+				ipString(ip4.SrcIP),
+				ipString(ip4.DstIP),
+				inner.SrcPort,
+				inner.DstPort,
+				inner.Seq,
+				inner.Ack,
+				inner.SYN,
+				inner.ACK,
+				inner.FIN,
+				inner.RST,
+				inner.PSH,
+				inner.Window,
+				len(inner.Options),
+				len(l4Payload),
+			)
 
 			if err := gopacket.SerializeLayers(
 				buf,
@@ -1300,9 +1351,11 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				inner,
 				gopacket.Payload(l4Payload),
 			); err != nil {
-				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
+				return nil, fmt.Errorf("failed to serialize IPv4/TCP: %w", err)
 			}
+
 			out := buf.Bytes()
+			log.Printf("[TRANSLATE-INGRESS] IPv4/TCP serialization success len=%d", len(out))
 			return out, nil
 
 		}
