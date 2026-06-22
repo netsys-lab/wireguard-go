@@ -178,6 +178,12 @@ type Translator struct {
 
 	wgSrcIPMu sync.RWMutex
 	wgSrcIP   net.IP
+
+	dispatchedPorts DispatchPortRange
+}
+
+func (t *Translator) SetDispatchedPorts(r DispatchPortRange) {
+	t.dispatchedPorts = r
 }
 
 func NewTranslator(cache PathPool, localIA addr.IA, brAddr *net.UDPAddr, ifaceName string) *Translator {
@@ -387,6 +393,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		ip6.Length,
 	)
 
+	var innerDstPort uint16
+	var hasInnerDstPort bool
+
 	// Preserve the IPv6 Flow Label as SCION FlowID
 	flowID := uint32(ip6.FlowLabel)
 
@@ -539,6 +548,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		//SrcPort = int(udp.SrcPort)
 		DstPort = int(udp.DstPort)
 
+		innerDstPort = uint16(udp.DstPort)
+		hasInnerDstPort = true
+
 		// --- FIX: Extract correct payload ---
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
@@ -585,6 +597,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 		//SrcPort = int(tcp.SrcPort)
 		DstPort = int(tcp.DstPort)
+
+		innerDstPort = uint16(tcp.DstPort)
+		hasInnerDstPort = true
 
 		innerTCP := &layers.TCP{
 			SrcPort: tcp.SrcPort,
@@ -693,9 +708,33 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	// return nextHop==nil — in that case we need to send to the Border Router
 	// for proper SCION delivery, not the tunnel peer address.
 	if nextHop == nil {
-		log.Printf("[TRANSLATE-EGRESS] nextHop is nil (empty path), using BR address for same-AS traffic")
-		// Use the BR address from Translator config
-		nextHop = t.brAddr
+		if srcIA == dstIA {
+			port := chooseSameASDispatchPort(
+				innerDstPort,
+				hasInnerDstPort,
+				uint16(hostPort),
+				t.dispatchedPorts,
+			)
+
+			nextHop = &net.UDPAddr{
+				IP:   dstHost,
+				Port: int(port),
+			}
+
+			log.Printf(
+				"[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v hostPort=%d dispatched=%d-%d valid=%v",
+				nextHop.String(),
+				port,
+				innerDstPort,
+				hasInnerDstPort,
+				uint16(hostPort),
+				t.dispatchedPorts.Start,
+				t.dispatchedPorts.End,
+				t.dispatchedPorts.Valid,
+			)
+		} else {
+			return nil, nil, fmt.Errorf("no nextHop for non-local path srcIA=%s dstIA=%s", srcIA, dstIA)
+		}
 	}
 	log.Printf("[TRANSLATE-EGRESS] preparing outer encapsulation nextHop=%s nextHopIPv4=%v scionLen=%d",
 		udpAddrString(nextHop),

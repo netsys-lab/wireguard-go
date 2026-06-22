@@ -366,6 +366,12 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 		return fmt.Errorf("SCION init failed: could not load BR address from topology: %w", err)
 	}
 
+	dispatchedPorts, err := loadDispatchedPortsFromTopology(scionConfig.ConfigDir)
+	if err != nil {
+		device.log.Errorf("SCION init failed: could not load dispatched_ports from topology: %w", err)
+		return fmt.Errorf("SCION init failed: could not load dispatched_ports from topology: %w", err)
+	}
+
 	retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir)
 	if err != nil {
 		device.log.Errorf("SCION init failed: %w", err)
@@ -378,7 +384,13 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 
 	pendingSCION := NewPendingSCIONQueue(64, 3*time.Second)
 	translator := header_parsing.NewTranslator(pathPool, localIA, brAddr, interfaceName)
-	device.log.Verbosef("SCION init: Created translator")
+	translator.SetDispatchedPorts(dispatchedPorts)
+	device.log.Verbosef(
+		"SCION init: Created translator dispatched_ports=%d-%d valid=%v",
+		dispatchedPorts.Start,
+		dispatchedPorts.End,
+		dispatchedPorts.Valid,
+	)
 
 	device.ipcMutex.Lock()
 	defer device.ipcMutex.Unlock()
