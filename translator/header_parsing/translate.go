@@ -480,21 +480,20 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	log.Printf("Und hier muss die hostIP eigentlich die IP von unserem WG Interface sein, oder?")
 	log.Printf("[TRANSLATE-EGRESS] hostIsIPv4: %v", hostIsIPv4)
 
+	// TODO: NEEDS CHECKING
 	var dstHost net.IP
 	if hostIsIPv4 {
 		dstHost = host.To4()
-		log.Printf("[TRANSLATE-EGRESS] dstHost from To4(): %v", dstHost)
-	} else {
-		//dstHost = host.To16() // full IPv6 host inside SCION mapping
-		log.Printf("[TRANSLATE-EGRESS] Adresse is IPv6 still, unmapping IPv4...")
-		//_, _, _, _, host, _, err := UnmapIPv6(host, 8)
-		if err != nil {
-			log.Printf("[TRANSLATE-EGRESS] UnmapIPv6 failed dstIP=%s err=%v", ipString(ip6.DstIP), err)
-			return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
+		if dstHost == nil {
+			return nil, nil, fmt.Errorf("decoded IPv4 host is invalid: %s", host)
 		}
-		log.Printf("[TRANSLATE-EGRESS] Extracted IPv4")
-		dstHost = host.To4()
-		log.Printf("[TRANSLATE-EGRESS] dstHost from To4(): %v", dstHost)
+		log.Printf("[TRANSLATE-EGRESS] decoded IPv4 dstHost=%s", dstHost)
+	} else {
+		dstHost = host.To16()
+		if dstHost == nil {
+			return nil, nil, fmt.Errorf("decoded IPv6/interface host is invalid: %s", host)
+		}
+		log.Printf("[TRANSLATE-EGRESS] decoded IPv6/interface dstHost=%s", dstHost)
 	}
 
 	localISD := uint16(srcIA.ISD())
@@ -956,18 +955,24 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			}
 		}
 	case slayers.T16Ip:
-		//dst = net.IP(scion.RawDstAddr)
-		mapped := net.IP(scn.RawDstAddr)
-		if IsSCIONMapped(mapped) {
-			// SCION-mapped IPv6 (fc00::/8) → unmap to original host
-			_, _, _, _, hostIP, _, err := UnmapIPv6(mapped, 8)
-			if err != nil {
-				return nil, fmt.Errorf("unmap dst SCION-mapped IPv6 failed: %w", err)
+		iface := net.IP(scn.RawDstAddr)
+
+		if islocal {
+			if IsSCIONMapped(iface) {
+				_, _, _, _, hostIP, _, err := UnmapIPv6(iface, 8)
+				if err != nil {
+					return nil, fmt.Errorf("unmap dst SCION-mapped IPv6 failed: %w", err)
+				}
+				dst = hostIP
+			} else {
+				dst = iface.To16()
 			}
-			dst = hostIP
 		} else {
-			// Normal IPv6 host
-			dst = mapped
+			var err error
+			dst, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
+			if err != nil {
+				return nil, fmt.Errorf("ScionToIP dst T16 failed: %w", err)
+			}
 		}
 	default:
 		return nil, errors.New("unsupported destination host type")
@@ -997,16 +1002,24 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		}
 
 	case slayers.T16Ip:
-		mapped := net.IP(scn.RawSrcAddr)
-		if IsSCIONMapped(mapped) {
-			_, _, _, _, hostIP, _, err := UnmapIPv6(mapped, 8)
-			if err != nil {
-				return nil, fmt.Errorf("unmap src SCION-mapped IPv6 failed: %w", err)
+		iface := net.IP(scn.RawSrcAddr)
+
+		if islocal {
+			if IsSCIONMapped(iface) {
+				_, _, _, _, hostIP, _, err := UnmapIPv6(iface, 8)
+				if err != nil {
+					return nil, fmt.Errorf("unmap src SCION-mapped IPv6 failed: %w", err)
+				}
+				src = hostIP
+			} else {
+				src = iface.To16()
 			}
-			src = hostIP
 		} else {
-			// Normal IPv6 host
-			src = mapped
+			var err error
+			src, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
+			if err != nil {
+				return nil, fmt.Errorf("ScionToIP src T16 failed: %w", err)
+			}
 		}
 	default:
 		return nil, errors.New("unsupported source host type")
@@ -1077,8 +1090,8 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			//	l.SetNetworkLayerForChecksum(ip4)
 			ip4.Protocol = layers.IPProtocolTCP
 			inner := &layers.TCP{
-				SrcPort: layers.TCPPort(udp.SrcPort),
-				DstPort: layers.TCPPort(udp.DstPort),
+				SrcPort: layers.TCPPort(tcp.SrcPort),
+				DstPort: layers.TCPPort(tcp.DstPort),
 			}
 			inner.SetNetworkLayerForChecksum(ip4)
 
@@ -1433,11 +1446,7 @@ func scmpToICMP(scmp *slayers.SCMP, scionPayload []byte) ([]byte, error) {
 
 // IsSCIONMapped returns true if ip is in fc00::/8
 func IsSCIONMapped(ip net.IP) bool {
-	ip = ip.To16()
-	if ip == nil {
-		return false // if invalid/non-ipv6 ip addr
-	}
-	return ip[0] == SCIONPrefixFirstByte // fc00::/8
+	return addr_translation.IsSCIONMapped(ip)
 }
 
 /*
@@ -1462,58 +1471,7 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (
 	bool,
 	error,
 ) {
-	ip = ip.To16()
-	if ip == nil || ip[0] != SCIONPrefixFirstByte {
-		return 0, 0, 0, 0, nil, false, errors.New("not a scion-mapped ipv6")
-	}
-
-	hi := binary.BigEndian.Uint64(ip[0:8])
-	lo := binary.BigEndian.Uint64(ip[8:16])
-
-	interface64 := lo // low 64 bits are interface identifier
-
-	// subnet = low 'subnetBits' of hi
-	if subnetBits > 24 {
-		return 0, 0, 0, 0, nil, false, errors.New("subnetBits must be <= 24")
-	}
-	subnetMask := uint64((1 << subnetBits) - 1)
-	subnet := uint32(hi & subnetMask)
-
-	localPrefixMask := uint64((1 << (24 - subnetBits)) - 1)
-	localPrefix := uint32((hi >> subnetBits) & localPrefixMask)
-
-	//asn := uint32((hi >> 24) & 0x000fffff)
-	encodedASN := uint64((hi >> 24) & 0x000fffff)
-
-	var asn uint64
-	if encodedASN&(1<<19) != 0 {
-		// colon-style AS encoded as 0x200000000 | low 19 bits
-		asn = 0x200000000 | (encodedASN & 0x7ffff)
-	} else {
-		// decimal/BGP-style AS
-		asn = encodedASN
-	}
-
-	isd := uint16((hi >> 44) & 0x0fff)
-
-	// check for IPv4-mapped host inside the 64-bit interface ID
-	high32 := uint32(interface64 >> 32)
-	var hostIP net.IP
-	hostIsIPv4 := false
-	if high32 == 0x0000ffff && localPrefix == 0 && subnet == 0 {
-		// IPv4 address stored in low 32 bits
-		ipv4 := make(net.IP, 4)
-		binary.BigEndian.PutUint32(ipv4, uint32(interface64&0xffffffff))
-		hostIP = net.IPv4(ipv4[0], ipv4[1], ipv4[2], ipv4[3])
-		hostIsIPv4 = true
-	} else {
-		// not IPv4-mapped host: the host ID is a 64-bit interface ID
-		hostIP = make(net.IP, net.IPv6len)
-		copy(hostIP, ip.To16())
-		hostIsIPv4 = false
-	}
-
-	return isd, asn, localPrefix, subnet, hostIP, hostIsIPv4, nil
+	return addr_translation.UnmapIPv6(ip, subnetBits)
 }
 
 // This only return scion bytes
@@ -1809,23 +1767,21 @@ func buildSCIONPseudoHeader(
 		copy(hostPart[16:32], src16)
 	}
 
-	// base: 2+4 + 2+4 + hostPart + 4 + 4
-	baseLen := 2 + 4 + 2 + 4 + len(hostPart) + 4 + 4
+	/// base: dstIA(8) + srcIA(8) + hostPart + upperLen(4) + zero(3)/nextHdr(1)
+	baseLen := 8 + 8 + len(hostPart) + 4 + 4
 	b := make([]byte, baseLen)
 
 	off := 0
 
-	// DstIA
 	binary.BigEndian.PutUint16(b[off:], uint16(dstIA.ISD()))
 	off += 2
-	binary.BigEndian.PutUint32(b[off:], uint32(dstIA.AS()))
-	off += 4
+	putAS48(b[off:off+6], dstIA.AS())
+	off += 6
 
-	// SrcIA
 	binary.BigEndian.PutUint16(b[off:], uint16(srcIA.ISD()))
 	off += 2
-	binary.BigEndian.PutUint32(b[off:], uint32(srcIA.AS()))
-	off += 4
+	putAS48(b[off:off+6], srcIA.AS())
+	off += 6
 
 	// Host addresses
 	copy(b[off:], hostPart)
@@ -1846,4 +1802,14 @@ func buildSCIONPseudoHeader(
 
 func computeMSS(ipMTU int) uint16 {
 	return uint16(ipMTU - 40 - 20) // IPv6(40) + TCP(20)
+}
+
+func putAS48(b []byte, as addr.AS) {
+	v := uint64(as)
+	b[0] = byte(v >> 40)
+	b[1] = byte(v >> 32)
+	b[2] = byte(v >> 24)
+	b[3] = byte(v >> 16)
+	b[4] = byte(v >> 8)
+	b[5] = byte(v)
 }
