@@ -78,6 +78,48 @@ func IPv4OfInterface(ifaceName string) (net.IP, error) {
 	return nil, fmt.Errorf("no IPv4 address found on interface %q", ifaceName)
 }
 
+func IPv6OfInterface(ifaceName string) (net.IP, error) {
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("interface %q not found: %w", ifaceName, err)
+	}
+
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("get addresses for interface %q: %w", ifaceName, err)
+	}
+
+	for _, addr := range addrs {
+		var ip net.IP
+
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		default:
+			continue
+		}
+
+		if ip.To4() != nil {
+			continue
+		}
+
+		ip16 := ip.To16()
+		if ip16 == nil {
+			continue
+		}
+
+		if ip.IsLinkLocalUnicast() {
+			continue
+		}
+
+		return ip16, nil
+	}
+
+	return nil, fmt.Errorf("no non-link-local IPv6 address found on interface %q", ifaceName)
+}
+
 func (t *Translator) WGSrcIPv4() (net.IP, error) {
 	t.wgSrcIPMu.RLock()
 	if t.wgSrcIP != nil && t.wgSrcIP.To4() != nil {
@@ -965,6 +1007,8 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	var l4Layer gopacket.SerializableLayer
 	var l4Payload []byte
 
+	var forceIPv6 bool
+
 	//Assiging layers Scion, UDP or TCP and Payload
 	for _, layerType := range decoded {
 		// Handle layers
@@ -976,16 +1020,29 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			l4Layer = &udp
 			l4Payload = []byte(pld)
 
-		case slayers.LayerTypeSCMP: //TODO: implement SCMP -> ICMPv6 translation
-			log.Printf("[TRANSLATE-INGRESS] SCMP received typeCode=%v payloadLen=%d", scmp.TypeCode, len(pld))
-			return nil, fmt.Errorf("SCMP received but SCMP->ICMPv6 not implemented: %v", scmp.TypeCode)
+		case slayers.LayerTypeSCMP:
+			log.Printf("[TRANSLATE-INGRESS] SCMP received typeCode=%v payloadLen=%d infoMsg=%v",
+				scmp.TypeCode,
+				len(pld),
+				scmp.TypeCode.InfoMsg(),
+			)
 
-			//l4Layer = nil
-			// icmp, err := scmpToICMP(&scmp)
-			// if err != nil {
-			// 	return nil, errors.New("failed to translate SCMP to ICMP")
-			// }
-			// l4Layer = icmp
+			icmpTypeCode := translateSCMPTypeCodeToICMPv6(scmp.TypeCode)
+
+			icmp := &layers.ICMPv6{
+				TypeCode: icmpTypeCode,
+			}
+
+			l4Layer = icmp
+			l4Payload = append([]byte(nil), []byte(pld)...)
+
+			forceIPv6 = true
+
+			log.Printf("[TRANSLATE-INGRESS] SCMP translated to ICMPv6 scmpTypeCode=%v icmpTypeCode=%v icmpPayloadLen=%d",
+				scmp.TypeCode,
+				icmpTypeCode,
+				len(l4Payload),
+			)
 		case layers.LayerTypeTCP:
 
 		case gopacket.LayerTypePayload:
@@ -1111,6 +1168,39 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		islocal,
 	)
 
+	// --- Force IPv6
+
+	if forceIPv6 {
+		srcMapped, err := addr_translation.ScionToIP(
+			int(scn.SrcIA.ISD()),
+			addr_translation.ASN{Value: uint64(scn.SrcIA.AS())},
+			0,
+			0,
+			net.IP(scn.RawSrcAddr),
+			8,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("SCMP ingress map src to SCION-mapped IPv6 failed: %w", err)
+		}
+
+		dstLocal := tunIP
+		if dstLocal == nil || dstLocal.To4() != nil || dstLocal.To16() == nil {
+			dstLocal, err = IPv6OfInterface(t.ifaceName)
+			if err != nil {
+				return nil, fmt.Errorf("SCMP ingress could not determine local tunnel IPv6: %w", err)
+			}
+		}
+
+		src = srcMapped
+		dst = dstLocal.To16()
+
+		log.Printf("[TRANSLATE-INGRESS] force IPv6 for SCMP/ICMP srcMapped=%s dstLocal=%s iface=%s",
+			ipString(src),
+			ipString(dst),
+			t.ifaceName,
+		)
+	}
+
 	// ---- Build IP Packet ----
 
 	buf := gopacket.NewSerializeBuffer()
@@ -1164,7 +1254,9 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			); err != nil {
 				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
 			}
-			return buf.Bytes(), nil
+			out := buf.Bytes()
+
+			return out, nil
 
 		case *layers.TCP:
 			//	l.SetNetworkLayerForChecksum(ip4)
@@ -1184,7 +1276,9 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			); err != nil {
 				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
 			}
-			return buf.Bytes(), nil
+			out := buf.Bytes()
+			return out, nil
+
 		}
 
 	} else {
@@ -1277,6 +1371,33 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
 			}
 			return buf.Bytes(), nil
+
+		case *layers.ICMPv6:
+			ip6.NextHeader = layers.IPProtocolICMPv6
+
+			innerICMP := l4Layer.(*layers.ICMPv6)
+			innerICMP.SetNetworkLayerForChecksum(ip6)
+
+			log.Printf("[TRANSLATE-INGRESS] serializing IPv6/ICMPv6 src=%s dst=%s typeCode=%v payloadLen=%d",
+				ipString(ip6.SrcIP),
+				ipString(ip6.DstIP),
+				innerICMP.TypeCode,
+				len(l4Payload),
+			)
+
+			if err := gopacket.SerializeLayers(
+				buf,
+				opts,
+				ip6,
+				innerICMP,
+				gopacket.Payload(l4Payload),
+			); err != nil {
+				return nil, fmt.Errorf("failed to serialize IPv6/ICMPv6: %w", err)
+			}
+
+			out := buf.Bytes()
+			log.Printf("[TRANSLATE-INGRESS] IPv6/ICMPv6 serialization success len=%d", len(out))
+			return out, nil
 		}
 
 	}
