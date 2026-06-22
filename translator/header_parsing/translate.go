@@ -1241,14 +1241,22 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 		// set checksum network layer for UDP/TCP
 		switch l4Layer.(type) {
-		case *layers.UDP:
-			//	l.SetNetworkLayerForChecksum(ip4)
+		case *slayers.UDP:
 			ip4.Protocol = layers.IPProtocolUDP
+
 			inner := &layers.UDP{
 				SrcPort: layers.UDPPort(udp.SrcPort),
 				DstPort: layers.UDPPort(udp.DstPort),
 			}
 			inner.SetNetworkLayerForChecksum(ip4)
+
+			log.Printf("[TRANSLATE-INGRESS] serializing IPv4/UDP src=%s dst=%s srcPort=%d dstPort=%d payloadLen=%d",
+				ipString(ip4.SrcIP),
+				ipString(ip4.DstIP),
+				udp.SrcPort,
+				udp.DstPort,
+				len(l4Payload),
+			)
 
 			if err := gopacket.SerializeLayers(
 				buf,
@@ -1257,10 +1265,11 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				inner,
 				gopacket.Payload(l4Payload),
 			); err != nil {
-				return nil, fmt.Errorf("failed to serialize IPv6: %w", err)
+				return nil, fmt.Errorf("failed to serialize IPv4/UDP: %w", err)
 			}
-			out := buf.Bytes()
 
+			out := buf.Bytes()
+			log.Printf("[TRANSLATE-INGRESS] IPv4/UDP serialization success len=%d", len(out))
 			return out, nil
 
 		case *layers.TCP:
@@ -1407,6 +1416,10 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	}
 	out := buf.Bytes()
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no packet serialized for l4Type=%T src=%s dst=%s", l4Layer, src, dst)
+	}
+
 	log.Printf("[TRANSLATE-INGRESS] exit success rebuiltLen=%d src=%s dst=%s l4Type=%T",
 		len(out),
 		ipString(src),
