@@ -209,6 +209,14 @@ func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, 
 		udpAddrString(t.brAddr),
 	)
 
+	if !isIPv6 {
+		log.Printf("[READ-OUTBOUND] bypass normal IPv4 packet dstIP=%s pktLen=%d",
+			ipString(dstIP),
+			len(pkt),
+		)
+		return pkt, nil
+	}
+
 	if !IsSCIONMapped(dstIP) {
 		log.Printf("[READ-OUTBOUND] bypass: dstIP is not SCION-mapped dstIP=%s pktLen=%d",
 			ipString(dstIP),
@@ -818,23 +826,59 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	}
 	//------------------------- Parse outer IP (v4 or v6) + UDP -----------------
 	firstNibble := pktData[0] >> 4
-	log.Printf("[TRANSLATE-INGRESS] outer firstNibble=%d", firstNibble)
 
 	var pkt gopacket.Packet
+
 	switch firstNibble {
 	case 4:
 		pkt = gopacket.NewPacket(pktData, layers.LayerTypeIPv4, gopacket.Default)
+
+		ip4Layer := pkt.Layer(layers.LayerTypeIPv4)
+		if ip4Layer == nil {
+			return pktData, nil
+		}
+
+		ip4 := ip4Layer.(*layers.IPv4)
+		if ip4.Protocol != layers.IPProtocolUDP {
+			return pktData, nil
+		}
+
 	case 6:
 		pkt = gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
+
+		ip6Layer := pkt.Layer(layers.LayerTypeIPv6)
+		if ip6Layer == nil {
+			return pktData, nil
+		}
+
+		ip6 := ip6Layer.(*layers.IPv6)
+
+		// Normal IPv6 should also bypass unless it is UDP carrying SCION.
+		if ip6.NextHeader != layers.IPProtocolUDP {
+			return pktData, nil
+		}
+
 	default:
-		return nil, fmt.Errorf("unsupported IP version nibble %d", firstNibble)
+		return pktData, nil
 	}
 
 	udpLayer := pkt.Layer(layers.LayerTypeUDP)
 	if udpLayer == nil {
-		return nil, fmt.Errorf("no outer UDP layer")
+		return pktData, nil
 	}
+
 	udpOuter := udpLayer.(*layers.UDP)
+
+	// Optional: only SCION/dispatcher/BR ports should be translated.
+	// Everything else should stay normal WG traffic.
+	if udpOuter.DstPort != 30041 && udpOuter.SrcPort != 30041 &&
+		udpOuter.DstPort != 50000 && udpOuter.SrcPort != 50000 {
+		log.Printf("[TRANSLATE-INGRESS] bypass UDP packet not recognized as SCION srcPort=%d dstPort=%d",
+			udpOuter.SrcPort,
+			udpOuter.DstPort,
+		)
+		return pktData, nil
+	}
 
 	log.Printf("[TRANSLATE-INGRESS] outer UDP srcPort=%d dstPort=%d payloadLen=%d",
 		udpOuter.SrcPort,
