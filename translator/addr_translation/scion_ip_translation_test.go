@@ -5,7 +5,153 @@ import (
 	"testing"
 )
 
-func TestScionToIP(t *testing.T) {
+func TestS2IPMatchesPythonExamples(t *testing.T) {
+	tests := []struct {
+		name        string
+		isdASN      string
+		localPrefix string
+		subnet      string
+		iface       string
+		subnetBits  uint
+		want        string
+	}{
+		{
+			name:        "ISD1 ASN64513 interface 0",
+			isdASN:      "1-64513",
+			localPrefix: "0",
+			subnet:      "0",
+			iface:       "0",
+			subnetBits:  8,
+			want:        "fc00:10fc:100::",
+		},
+		{
+			name:        "ISD1 ASN64513 interface 1",
+			isdASN:      "1-64513",
+			localPrefix: "0",
+			subnet:      "0",
+			iface:       "1",
+			subnetBits:  8,
+			want:        "fc00:10fc:100::1",
+		},
+		{
+			name:        "ISD1 ASN64513 interface ff00:1",
+			isdASN:      "1-64513",
+			localPrefix: "0",
+			subnet:      "0",
+			iface:       "ff00:1",
+			subnetBits:  8,
+			want:        "fc00:10fc:100::ff00:1",
+		},
+		{
+			name:        "IPv4 mapped host",
+			isdASN:      "1-64513",
+			localPrefix: "0",
+			subnet:      "0",
+			iface:       "141.44.25.150",
+			subnetBits:  8,
+			want:        "fc00:10fc:100::ffff:8d2c:1996",
+		},
+		{
+			name:        "SCION style ASN 2:0:4a",
+			isdASN:      "71-2:0:4a",
+			localPrefix: "0",
+			subnet:      "0",
+			iface:       "141.44.25.150",
+			subnetBits:  8,
+			want:        "fc04:7800:4a00::ffff:8d2c:1996",
+		},
+		{
+			name:        "local prefix and subnet",
+			isdASN:      "1-64513",
+			localPrefix: "12",
+			subnet:      "34",
+			iface:       "1",
+			subnetBits:  8,
+			want:        "fc00:10fc:100:1234::1",
+		},
+		{
+			name:        "different ISD and ASN",
+			isdASN:      "2-1000",
+			localPrefix: "0",
+			subnet:      "0",
+			iface:       "1",
+			subnetBits:  8,
+			want:        "fc00:2003:e800::1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := S2IP(tt.isdASN, tt.localPrefix, tt.subnet, tt.iface, tt.subnetBits)
+			if err != nil {
+				t.Fatalf("S2IP() error = %v", err)
+			}
+			if got.String() != tt.want {
+				t.Fatalf("S2IP() = %s, want %s", got.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestIP2SMatchesPythonExamples(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		subnetBits uint
+		want       string
+	}{
+		{
+			name:       "interface 0",
+			input:      "fc00:10fc:100::",
+			subnetBits: 8,
+			want:       "1-64513 0 0 0",
+		},
+		{
+			name:       "interface 1",
+			input:      "fc00:10fc:100::1",
+			subnetBits: 8,
+			want:       "1-64513 0 0 1",
+		},
+		{
+			name:       "interface ff00:1",
+			input:      "fc00:10fc:100::ff00:1",
+			subnetBits: 8,
+			want:       "1-64513 0 0 ff00:1",
+		},
+		{
+			name:       "IPv4 mapped host",
+			input:      "fc00:10fc:100::ffff:8d2c:1996",
+			subnetBits: 8,
+			want:       "1-64513 0 0 141.44.25.150",
+		},
+		{
+			name:       "SCION style ASN 2:0:4a",
+			input:      "fc04:7800:4a00::ffff:8d2c:1996",
+			subnetBits: 8,
+			want:       "71-2:0:4a 0 0 141.44.25.150",
+		},
+		{
+			name:       "local prefix and subnet",
+			input:      "fc00:10fc:100:1234::1",
+			subnetBits: 8,
+			want:       "1-64513 12 34 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := IP2S(net.ParseIP(tt.input), tt.subnetBits)
+			if err != nil {
+				t.Fatalf("IP2S() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("IP2S() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScionToIPOldAPI(t *testing.T) {
 	tests := []struct {
 		name       string
 		isd        int
@@ -17,17 +163,17 @@ func TestScionToIP(t *testing.T) {
 		want       string
 	}{
 		{
-			name:       "ISD1-ASN64513 interface 0",
+			name:       "ISD1 ASN64513 interface 0",
 			isd:        1,
 			asn:        64513,
 			localPref:  0,
 			subnet:     0,
-			iface:      net.ParseIP("::0"),
+			iface:      net.ParseIP("::"),
 			subnetBits: 8,
 			want:       "fc00:10fc:100::",
 		},
 		{
-			name:       "ISD1-ASN64513 interface 1",
+			name:       "ISD1 ASN64513 interface 1",
 			isd:        1,
 			asn:        64513,
 			localPref:  0,
@@ -37,206 +183,159 @@ func TestScionToIP(t *testing.T) {
 			want:       "fc00:10fc:100::1",
 		},
 		{
-			name:       "ISD1-ASN64513 interface ff00:1",
-			isd:        1,
-			asn:        64513,
+			name:       "IPv4 mapped host",
+			isd:        71,
+			asn:        0x2_0000_004a,
 			localPref:  0,
 			subnet:     0,
-			iface:      net.ParseIP("::ff00:1"),
+			iface:      net.ParseIP("141.44.25.150"),
 			subnetBits: 8,
-			want:       "fc00:10fc:100::ff00:1",
-		},
-		{
-			name:       "Different ISD and ASN",
-			isd:        2,
-			asn:        1000,
-			localPref:  0,
-			subnet:     0,
-			iface:      net.ParseIP("::1"),
-			subnetBits: 8,
-			want:       "fc00:2003:e800::1",
+			want:       "fc04:7800:4a00::ffff:8d2c:1996",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			asn := ASN{Value: tt.asn}
-			got, err := ScionToIP(tt.isd, asn, tt.localPref, tt.subnet, tt.iface, tt.subnetBits)
+			got, err := ScionToIP(
+				tt.isd,
+				ASN{Value: tt.asn},
+				tt.localPref,
+				tt.subnet,
+				tt.iface,
+				tt.subnetBits,
+			)
 			if err != nil {
 				t.Fatalf("ScionToIP() error = %v", err)
 			}
 			if got.String() != tt.want {
-				t.Errorf("ScionToIP() = %v, want %v", got.String(), tt.want)
+				t.Fatalf("ScionToIP() = %s, want %s", got.String(), tt.want)
 			}
 		})
 	}
 }
 
-func TestIPToScion(t *testing.T) {
-	tests := []struct {
-		name       string
-		input      string
-		subnetBits int
-		wantISD    int
-		wantASN    uint64
-	}{
-		{
-			name:       "ISD1-ASN64513 interface 0",
-			input:      "fc00:10fc:100::",
-			subnetBits: 8,
-			wantISD:    1,
-			wantASN:    64513,
-		},
-		{
-			name:       "ISD1-ASN64513 interface 1",
-			input:      "fc00:10fc:100::1",
-			subnetBits: 8,
-			wantISD:    1,
-			wantASN:    64513,
-		},
-		{
-			name:       "ISD1-ASN64513 interface ff00:1",
-			input:      "fc00:10fc:100::ff00:1",
-			subnetBits: 8,
-			wantISD:    1,
-			wantASN:    64513,
-		},
-		{
-			name:       "Different ISD and ASN",
-			input:      "fc00:2003:e800::1",
-			subnetBits: 8,
-			wantISD:    2,
-			wantASN:    1000,
-		},
+func TestUnmapIPv6ForTranslator(t *testing.T) {
+	isd, asn, localPrefix, subnet, host, hostIsIPv4, err :=
+		UnmapIPv6(net.ParseIP("fc04:7800:4a00::ffff:8d2c:1996"), 8)
+
+	if err != nil {
+		t.Fatalf("UnmapIPv6() error = %v", err)
+	}
+	if isd != 71 {
+		t.Fatalf("ISD = %d, want 71", isd)
+	}
+	if asn != 0x2_0000_004a {
+		t.Fatalf("ASN = %#x, want %#x", asn, uint64(0x2_0000_004a))
+	}
+	if localPrefix != 0 || subnet != 0 {
+		t.Fatalf("localPrefix/subnet = %x/%x, want 0/0", localPrefix, subnet)
+	}
+	if !hostIsIPv4 {
+		t.Fatalf("hostIsIPv4 = false, want true")
+	}
+	if got := host.To4().String(); got != "141.44.25.150" {
+		t.Fatalf("host = %s, want 141.44.25.150", got)
+	}
+}
+
+func TestRoundTripPythonStyle(t *testing.T) {
+	inputs := []string{
+		"1-64513 0 0 0",
+		"1-64513 0 0 1",
+		"1-64513 0 0 ff00:1",
+		"1-64513 0 0 141.44.25.150",
+		"71-2:0:4a 0 0 141.44.25.150",
+		"1-64513 12 34 1",
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inputIP := net.ParseIP(tt.input)
-			gotISD, gotASN, _, _, _, err := IPToScion(inputIP, tt.subnetBits)
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			parts := stringsFields(input)
+			ip, err := S2IP(parts[0], parts[1], parts[2], parts[3], 8)
 			if err != nil {
-				t.Fatalf("IPToScion() error = %v", err)
+				t.Fatalf("S2IP() error = %v", err)
 			}
-			if gotISD != tt.wantISD {
-				t.Errorf("IPToScion() ISD = %d, want %d", gotISD, tt.wantISD)
+
+			got, err := IP2S(ip, 8)
+			if err != nil {
+				t.Fatalf("IP2S() error = %v", err)
 			}
-			if gotASN.Value != tt.wantASN {
-				t.Errorf("IPToScion() ASN = %d, want %d", gotASN.Value, tt.wantASN)
+
+			if got != input {
+				t.Fatalf("round trip = %q, want %q", got, input)
 			}
 		})
 	}
 }
 
-func TestRoundTrip(t *testing.T) {
-	testCases := []struct {
-		isd   int
-		asn   uint64
-		iface string
-	}{
-		{isd: 1, asn: 64513, iface: "::0"},
-		{isd: 1, asn: 64513, iface: "::1"},
-		{isd: 1, asn: 64513, iface: "::ff00:1"},
-		{isd: 2, asn: 1000, iface: "::1"},
-		{isd: 1, asn: 1, iface: "::1"},
+func stringsFields(s string) []string {
+	var out []string
+	start := -1
+
+	for i, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' {
+			if start >= 0 {
+				out = append(out, s[start:i])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
 	}
-
-	for _, tc := range testCases {
-		t.Run("", func(t *testing.T) {
-			// Encode
-			asn := ASN{Value: tc.asn}
-			ip, err := ScionToIP(tc.isd, asn, 0, 0, net.ParseIP(tc.iface), 8)
-			if err != nil {
-				t.Fatalf("ScionToIP() error = %v", err)
-			}
-
-			// Decode
-			gotISD, gotASN, _, _, _, err := IPToScion(ip, 8)
-			if err != nil {
-				t.Fatalf("IPToScion() error = %v", err)
-			}
-
-			// Verify
-			if gotISD != tc.isd {
-				t.Errorf("RoundTrip ISD: got %d, want %d", gotISD, tc.isd)
-			}
-			if gotASN.Value != tc.asn {
-				t.Errorf("RoundTrip ASN: got %d, want %d", gotASN.Value, tc.asn)
-			}
-		})
+	if start >= 0 {
+		out = append(out, s[start:])
 	}
-}
-
-func TestASNEncoding(t *testing.T) {
-	tests := []struct {
-		asn     uint64
-		wantEnc uint64
-	}{
-		{0, 0},
-		{1, 1},
-		{1000, 1000},
-		{64513, 64513},
-		{0x1FFFF, 0x1FFFF},
-		{0x200000000, (1 << 19) | 0},       // Large ASN starts encoding differently
-		{0x20007FFFF, (1 << 19) | 0x7FFFF}, // Max large ASN
-	}
-
-	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
-			asn := ASN{Value: tt.asn}
-			var encoded uint64
-			if asn.Value < (1 << 19) {
-				encoded = asn.Value
-			} else if asn.Value >= 0x200000000 && asn.Value <= 0x20007ffff {
-				encoded = (1 << 19) | (asn.Value & 0x7ffff)
-			}
-			if encoded != tt.wantEnc {
-				t.Errorf("ASN %d encoding = %d, want %d", tt.asn, encoded, tt.wantEnc)
-			}
-		})
-	}
+	return out
 }
 
 func TestInvalidInput(t *testing.T) {
 	tests := []struct {
-		name       string
-		isd        int
-		asn        uint64
-		iface      net.IP
-		subnetBits int
-		wantErr    bool
+		name string
+		fn   func() error
 	}{
 		{
-			name:       "ISD out of range",
-			isd:        -1,
-			asn:        64513,
-			iface:      net.ParseIP("::1"),
-			subnetBits: 8,
-			wantErr:    true,
+			name: "IPv4 with nonzero prefix is invalid",
+			fn: func() error {
+				_, err := S2IP("1-64513", "1", "0", "141.44.25.150", 8)
+				return err
+			},
 		},
 		{
-			name:       "ISD too large",
-			isd:        1 << 12,
-			asn:        64513,
-			iface:      net.ParseIP("::1"),
-			subnetBits: 8,
-			wantErr:    true,
+			name: "subnetBits too large",
+			fn: func() error {
+				_, err := S2IP("1-64513", "0", "0", "1", 25)
+				return err
+			},
 		},
 		{
-			name:       "ASN cannot be encoded",
-			isd:        1,
-			asn:        0x300000000, // Invalid range
-			iface:      net.ParseIP("::1"),
-			subnetBits: 8,
-			wantErr:    true,
+			name: "ASN cannot be encoded",
+			fn: func() error {
+				_, err := S2IP("1-999999999", "0", "0", "1", 8)
+				return err
+			},
+		},
+		{
+			name: "full IPv6 iface rejected by old API",
+			fn: func() error {
+				_, err := ScionToIP(1, ASN{Value: 64513}, 0, 0, net.ParseIP("2001:db8::1"), 8)
+				return err
+			},
+		},
+		{
+			name: "non mapped IPv6 rejected",
+			fn: func() error {
+				_, err := IP2S(net.ParseIP("2001:db8::1"), 8)
+				return err
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			asn := ASN{Value: tt.asn}
-			_, err := ScionToIP(tt.isd, asn, 0, 0, tt.iface, tt.subnetBits)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ScionToIP() error = %v, wantErr %v", err, tt.wantErr)
+			if err := tt.fn(); err == nil {
+				t.Fatalf("expected error, got nil")
 			}
 		})
 	}
