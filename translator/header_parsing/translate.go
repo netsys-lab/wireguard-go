@@ -985,12 +985,14 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		&scmp,
 		&pld,
 	)
+	parser.IgnoreUnsupported = true
 	var decoded []gopacket.LayerType
 	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
-		log.Printf("[TRANSLATE-INGRESS] not SCION payload, bypassing UDP packet srcPort=%d dstPort=%d payloadLen=%d err=%v",
+		log.Printf("[TRANSLATE-INGRESS] SCION decode failed or unsupported sublayer srcPort=%d dstPort=%d payloadLen=%d decoded=%v err=%v",
 			udpOuter.SrcPort,
 			udpOuter.DstPort,
 			len(scionPayload),
+			decoded,
 			err,
 		)
 		return pktData, nil
@@ -1026,10 +1028,21 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			l4Payload = []byte(pld)
 
 		case slayers.LayerTypeSCMP:
-			log.Printf("[TRANSLATE-INGRESS] SCMP received typeCode=%v payloadLen=%d infoMsg=%v",
+			// For SCMP Echo, the bytes after the SCMP header are basically the echo-info:
+			// identifier + sequence + echo data
+			// We can reuse SCMP payload as ICMP payload: SCION / SCMP / SCMPEcho / data -> IPv6 / ICMPv6 / echo-info / data
+			scmpPayload := append([]byte(nil), scmp.LayerPayload()...)
+
+			// Fallback, in case gopacket put something into pld.
+			if len(scmpPayload) == 0 && len(pld) > 0 {
+				scmpPayload = append([]byte(nil), []byte(pld)...)
+			}
+
+			log.Printf("[TRANSLATE-INGRESS] SCMP received typeCode=%v infoMsg=%v scmpPayloadLen=%d rawPayloadLen=%d",
 				scmp.TypeCode,
-				len(pld),
 				scmp.TypeCode.InfoMsg(),
+				len(scmpPayload),
+				len(pld),
 			)
 
 			icmpTypeCode := translateSCMPTypeCodeToICMPv6(scmp.TypeCode)
@@ -1039,8 +1052,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			}
 
 			l4Layer = icmp
-			l4Payload = append([]byte(nil), []byte(pld)...)
-
+			l4Payload = scmpPayload
 			forceIPv6 = true
 
 			log.Printf("[TRANSLATE-INGRESS] SCMP translated to ICMPv6 scmpTypeCode=%v icmpTypeCode=%v icmpPayloadLen=%d",
