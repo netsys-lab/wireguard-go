@@ -528,6 +528,33 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				continue
 			}
 
+			if device.translator != nil {
+				oldLen := len(elem.packet)
+
+				translated, err := device.translator.TranslateIngress(elem.packet, nil)
+				if err != nil {
+					device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+					continue
+				}
+
+				if translated == nil {
+					device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+					continue
+				}
+
+				if !bytes.Equal(translated, elem.packet) {
+					if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+						device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+						continue
+					}
+
+					copy(elem.buffer[MessageTransportOffsetContent:], translated)
+					elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+
+					device.log.Verbosef("[TRANSLATE-INGRESS] translated inbound packet oldLen=%d newLen=%d", oldLen, len(translated))
+				}
+			}
+
 			bufs = append(bufs, elem.buffer[:MessageTransportOffsetContent+len(elem.packet)])
 		}
 

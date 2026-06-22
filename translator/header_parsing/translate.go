@@ -987,8 +987,13 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	)
 	var decoded []gopacket.LayerType
 	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
-		log.Printf("[TRANSLATE-INGRESS] SCION parse failed payloadLen=%d err=%v", len(scionPayload), err)
-		return nil, fmt.Errorf("failed to parse SCION: %w", err)
+		log.Printf("[TRANSLATE-INGRESS] not SCION payload, bypassing UDP packet srcPort=%d dstPort=%d payloadLen=%d err=%v",
+			udpOuter.SrcPort,
+			udpOuter.DstPort,
+			len(scionPayload),
+			err,
+		)
+		return pktData, nil
 	}
 
 	log.Printf("[TRANSLATE-INGRESS] SCION decoded layers=%v srcIA=%s dstIA=%s srcAddrType=%v dstAddrType=%v flowID=%d trafficClass=%d nextHdr=%v rawSrc=%v rawDst=%v",
