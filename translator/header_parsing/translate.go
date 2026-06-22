@@ -662,10 +662,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		)
 		l4nextHeader = slayers.L4SCMP
 
-		var scmpPayload []byte
-		if app := packet.ApplicationLayer(); app != nil {
-			scmpPayload = append([]byte(nil), app.Payload()...)
-		}
+		scmpPayload := append([]byte(nil), icmp.Payload...)
 
 		scmpTypeCode := translateICMPv6ToSCMPTypeCode(icmp.TypeCode)
 		log.Printf("[TRANSLATE-EGRESS] ICMPv6 translated to SCMP icmpTypeCode=%v scmpTypeCode=%v scmpPayloadLen=%d",
@@ -908,16 +905,16 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	udpOuter := udpLayer.(*layers.UDP)
 
-	// Optional: only SCION/dispatcher/BR ports should be translated.
-	// Everything else should stay normal WG traffic.
-	if udpOuter.DstPort != 30041 && udpOuter.SrcPort != 30041 &&
-		udpOuter.DstPort != 50000 && udpOuter.SrcPort != 50000 {
-		log.Printf("[TRANSLATE-INGRESS] bypass UDP packet not recognized as SCION srcPort=%d dstPort=%d",
-			udpOuter.SrcPort,
-			udpOuter.DstPort,
-		)
-		return pktData, nil
-	}
+	/* 	// Optional: only SCION/dispatcher/BR ports should be translated.
+	   	// Everything else should stay normal WG traffic.
+	   	if udpOuter.DstPort != 30041 && udpOuter.SrcPort != 30041 &&
+	   		udpOuter.DstPort != 50000 && udpOuter.SrcPort != 50000 {
+	   		log.Printf("[TRANSLATE-INGRESS] bypass UDP packet not recognized as SCION srcPort=%d dstPort=%d",
+	   			udpOuter.SrcPort,
+	   			udpOuter.DstPort,
+	   		)
+	   		return pktData, nil
+	   	} */
 
 	log.Printf("[TRANSLATE-INGRESS] outer UDP srcPort=%d dstPort=%d payloadLen=%d",
 		udpOuter.SrcPort,
