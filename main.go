@@ -15,13 +15,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"time"
 
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
-	bootstrap "golang.zx2c4.com/wireguard/translator/bootstrap"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -247,7 +245,7 @@ func main() {
 	} else {
 		logger.Verbosef("No SCION_BOOTSTRAP_URL!")
 	}
-
+	scionRetryOptions := device.InfiniteSCIONInitRetryOptions()
 	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfig)
 	if device == nil {
 		logger.Errorf("Failed to create device")
@@ -279,47 +277,27 @@ func main() {
 	logger.Verbosef("UAPI listener started")
 
 	//Tunnel Setup we fetch Bootstrap
+	// Tunnel Setup: fetch SCION bootstrap data through the tunnel and initialize SCION.
 	if bootstrapURL != "" {
 		go func() {
+			scionConfig.Enabled = true
+
 			if scionConfig.ConfigDir == "" {
 				scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
 			}
 
-			scionConfig.Enabled = true
-
-			for attempt := 1; ; attempt++ {
-				select {
-				case <-device.Wait():
-					logger.Verbosef("SCION bootstrap worker stopped: device closed")
-					return
-				default:
-				}
-
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				err := bootstrap.BootstrapFetch(ctx, bootstrapURL, scionConfig.ConfigDir)
-				cancel()
-
-				if err == nil {
-					logger.Verbosef("SCION bootstrap succeeded after %d attempts", attempt)
-
-					if err := device.InitSCION(scionConfig); err != nil {
-						logger.Errorf("SCION init after bootstrap failed: %v", err)
-						return
-					}
-
-					logger.Verbosef("SCION initialized after bootstrap")
-					return
-				}
-
-				logger.Verbosef("SCION bootstrap attempt %d failed, tunnel may not be ready yet: %v", attempt, err)
-
-				select {
-				case <-device.Wait():
-					logger.Verbosef("SCION bootstrap worker stopped: device closed")
-					return
-				case <-time.After(3 * time.Second):
-				}
+			err := device.InitSCIONWithBootstrapRetry(
+				context.Background(),
+				scionConfig,
+				bootstrapURL,
+				scionRetryOptions,
+			)
+			if err != nil {
+				logger.Errorf("SCION bootstrap/init worker stopped: %v", err)
+				return
 			}
+
+			logger.Verbosef("SCION bootstrap/init worker finished successfully")
 		}()
 	} else {
 		logger.Verbosef("No SCION_BOOTSTRAP_URL, skipping SCION bootstrap")
