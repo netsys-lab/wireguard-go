@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -628,7 +629,7 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -677,7 +678,7 @@ func TestTranslateScion4ToIpUdp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::ffff:a00:1")
@@ -719,7 +720,7 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -768,7 +769,7 @@ func TestTranslateScion6ToIpUdp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -813,7 +814,7 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -861,7 +862,7 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -928,7 +929,7 @@ func TestTranslateScion6ToIpUdpLocal(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP - local SCION-mapped address
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -967,7 +968,7 @@ func TestTranslateIcmpToScmp(t *testing.T) {
 	}
 
 	srcIA := mustIA(t, 1, 64513)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	hostIP := mustParseIP(t, "10.0.0.1")
 
@@ -1043,7 +1044,7 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -1092,7 +1093,7 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:20fb:f100::ffff:a00:2")
@@ -1291,7 +1292,7 @@ func TestUnmapIPv6_SCIONMapped(t *testing.T) {
 // ---------------- ICMP Translation Tests ----------------
 
 func TestICMPv6ToSCMP(t *testing.T) {
-	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 	if len(pkts) < 1 {
@@ -1325,7 +1326,7 @@ func TestICMPv6ToSCMP(t *testing.T) {
 }
 
 func TestSCMPToICMPv6(t *testing.T) {
-	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 	if len(pkts) < 2 {
@@ -1397,7 +1398,7 @@ func TestMTU_Translation(t *testing.T) {
 	// Test that translation handles different packet sizes correctly
 	// Using existing test data
 
-	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
 
 	// Load test packets
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
@@ -1452,7 +1453,7 @@ func TestTranslateIPv4ToSCION(t *testing.T) {
 	// Test that IPv4 packets with SCION-mapped destination are handled
 	// Note: The actual IPv4→SCION requires the IPv4 to be wrapped in SCION-mapped IPv6
 
-	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002})
+	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
 
 	// Load test packets - IPv6 packet is at index 0
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
@@ -1531,6 +1532,496 @@ func TestPacketClassification(t *testing.T) {
 				}
 			} else {
 				t.Logf("Skipping SCION check for non-IPv6 or short packet")
+			}
+		})
+	}
+}
+
+// =====================================================================
+// Android-specific tests: configured addresses bypass net.InterfaceByName
+// =====================================================================
+
+func TestConfiguredIPv4BypassesInterfaceLookup(t *testing.T) {
+	srcIA := mustIA(t, 71, 74)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+
+	// Set a configured IPv4 — this should be used without calling net.InterfaceByName.
+	configuredIPv4 := netip.MustParseAddr("10.44.25.72")
+	translator.SetConfiguredIPv4(configuredIPv4)
+
+	ip, err := translator.WGSrcIPv4()
+	if err != nil {
+		t.Fatalf("WGSrcIPv4 failed: %v", err)
+	}
+
+	expected := net.IPv4(10, 44, 25, 72)
+	if !ip.Equal(expected) {
+		t.Fatalf("WGSrcIPv4 = %s, expected %s", ip, expected)
+	}
+
+	// Verify the cached value is returned on second call.
+	ip2, err := translator.WGSrcIPv4()
+	if err != nil {
+		t.Fatalf("WGSrcIPv4 (cached) failed: %v", err)
+	}
+	if !ip2.Equal(expected) {
+		t.Fatalf("WGSrcIPv4 (cached) = %s, expected %s", ip2, expected)
+	}
+}
+
+func TestConfiguredIPv6BypassesInterfaceLookup(t *testing.T) {
+	srcIA := mustIA(t, 71, 74)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+
+	// Set a configured IPv6 — this should be used without calling net.InterfaceByName.
+	configuredIPv6 := netip.MustParseAddr("fd42:42:42::72")
+	translator.SetConfiguredIPv6(configuredIPv6)
+
+	ip, err := translator.WGSrcIPv6()
+	if err != nil {
+		t.Fatalf("WGSrcIPv6 failed: %v", err)
+	}
+
+	expected := net.ParseIP("fd42:42:42::72")
+	if !ip.Equal(expected) {
+		t.Fatalf("WGSrcIPv6 = %s, expected %s", ip, expected)
+	}
+}
+
+func TestConfiguredAddressesWithPrefix32and128(t *testing.T) {
+	srcIA := mustIA(t, 71, 74)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+
+	// netip.ParseAddr does NOT accept CIDR notation — prefix must be stripped before passing to Go.
+	// This mirrors what Java does: InetNetwork.getAddress().getHostAddress() returns the bare address.
+	ipv4 := netip.MustParseAddr("10.44.25.72")
+	ipv6 := netip.MustParseAddr("fd42:42:42::72")
+
+	if !ipv4.IsValid() {
+		t.Fatal("IPv4 should be valid")
+	}
+	if !ipv6.IsValid() {
+		t.Fatal("IPv6 should be valid")
+	}
+
+	translator.SetConfiguredIPv4(ipv4)
+	translator.SetConfiguredIPv6(ipv6)
+
+	ip4, err := translator.WGSrcIPv4()
+	if err != nil {
+		t.Fatalf("WGSrcIPv4 failed: %v", err)
+	}
+	if !ip4.Equal(net.IPv4(10, 44, 25, 72)) {
+		t.Fatalf("WGSrcIPv4 = %s, expected 10.44.25.72", ip4)
+	}
+
+	ip6, err := translator.WGSrcIPv6()
+	if err != nil {
+		t.Fatalf("WGSrcIPv6 failed: %v", err)
+	}
+	expectedIPv6 := net.ParseIP("fd42:42:42::72")
+	if !ip6.Equal(expectedIPv6) {
+		t.Fatalf("WGSrcIPv6 = %s, expected %s", ip6, expectedIPv6)
+	}
+}
+
+func TestAndroidPathUsesConfiguredAddress(t *testing.T) {
+	// Simulate the Android path: configured addresses available, interface lookup not needed.
+	srcIA := mustIA(t, 71, 74)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "nonexistent-interface")
+	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+
+	// WGSrcIPv4 should succeed via configured address, not via net.InterfaceByName.
+	ip4, err := translator.WGSrcIPv4()
+	if err != nil {
+		t.Fatalf("WGSrcIPv4 should succeed with configured address: %v", err)
+	}
+	if !ip4.Equal(net.IPv4(10, 44, 25, 72)) {
+		t.Fatalf("WGSrcIPv4 = %s, expected 10.44.25.72", ip4)
+	}
+
+	// WGSrcIPv6 should succeed via configured address.
+	ip6, err := translator.WGSrcIPv6()
+	if err != nil {
+		t.Fatalf("WGSrcIPv6 should succeed with configured address: %v", err)
+	}
+	if !ip6.Equal(net.ParseIP("fd42:42:42::72")) {
+		t.Fatalf("WGSrcIPv6 = %s, expected fd42:42:42::72", ip6)
+	}
+}
+
+func TestSCIONSourceHostIsConfiguredIPv4(t *testing.T) {
+	// Verify that the SCION source host in the inner header is the WG IPv4,
+	// NOT replaced by outer IPv4 source. Use same-AS with IPv6 dest.
+	srcIA := mustIA(t, 2, 64497)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+
+	pkts := LoadPackets(t, "../data/translate_udp_ipv6.bin")
+	input := pkts[0]
+
+	srcHost := mustParseIP(t, "fd42:42:42::72")
+
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
+		return path.Path{}, nil // empty path = same AS
+	}
+
+	scionBytes, _, err := translator.TranslateEgress(input, srcHost, 35000, GetPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress failed: %v", err)
+	}
+
+	// Decode the SCION packet to verify the source host.
+	firstNibble := scionBytes[0] >> 4
+	if firstNibble != 4 && firstNibble != 6 {
+		t.Fatalf("unexpected outer IP version: %d", firstNibble)
+	}
+
+	var pkt gopacket.Packet
+	if firstNibble == 4 {
+		pkt = gopacket.NewPacket(scionBytes, layers.LayerTypeIPv4, gopacket.Default)
+	} else {
+		pkt = gopacket.NewPacket(scionBytes, layers.LayerTypeIPv6, gopacket.Default)
+	}
+
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		t.Fatal("no outer UDP layer")
+	}
+	udp := udpLayer.(*layers.UDP)
+
+	sc := &slayers.SCION{}
+	if err := sc.DecodeFromBytes(udp.Payload, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("SCION decode failed: %v", err)
+	}
+
+	// The SCION source host should be the WG IPv4 (10.44.25.72), not the
+	// outer local source (fd42:42:42::72) nor the original inner src.
+	scionSrcIP := net.IP(sc.RawSrcAddr)
+	t.Logf("SCION src host: %s", scionSrcIP)
+
+	expectedIPv4 := net.IPv4(10, 44, 25, 72)
+	if !scionSrcIP.Equal(expectedIPv4) {
+		t.Errorf("SCION source host = %s, expected 10.44.25.72", scionSrcIP)
+	}
+}
+
+func TestInnerUDPPortPreserved(t *testing.T) {
+	// Verify that inner UDP destination port is preserved in SCION.
+	// Use same-AS (srcIA == dstIA) so empty path works without a BR nextHop.
+	// Destination is IPv6 (::2) so outer encapsulation needs IPv6 source.
+	srcIA := mustIA(t, 2, 64497)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+
+	pkts := LoadPackets(t, "../data/translate_udp_ipv6.bin")
+	input := pkts[0]
+
+	srcHost := mustParseIP(t, "fd42:42:42::72")
+
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
+		return path.Path{}, nil
+	}
+
+	scionBytes, _, err := translator.TranslateEgress(input, srcHost, 35000, GetPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress failed: %v", err)
+	}
+
+	// Decode to check inner UDP.
+	firstNibble := scionBytes[0] >> 4
+	var pkt gopacket.Packet
+	if firstNibble == 4 {
+		pkt = gopacket.NewPacket(scionBytes, layers.LayerTypeIPv4, gopacket.Default)
+	} else {
+		pkt = gopacket.NewPacket(scionBytes, layers.LayerTypeIPv6, gopacket.Default)
+	}
+
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		t.Fatal("no outer UDP layer")
+	}
+	udp := udpLayer.(*layers.UDP)
+
+	sc := &slayers.SCION{}
+	if err := sc.DecodeFromBytes(udp.Payload, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("SCION decode failed: %v", err)
+	}
+
+	// Check inner UDP destination port.
+	var innerUDP slayers.UDP
+	if err := innerUDP.DecodeFromBytes(sc.Payload, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("inner UDP decode failed: %v", err)
+	}
+
+	dstPort := uint16(32767) // from the test data
+	if uint16(innerUDP.DstPort) != dstPort {
+		t.Errorf("inner UDP DstPort = %d, expected %d", innerUDP.DstPort, dstPort)
+	}
+	t.Logf("inner UDP DstPort = %d (correct)", innerUDP.DstPort)
+}
+
+func TestOuterSrcPortSeparateFromInner(t *testing.T) {
+	// Verify that outer UDP source port (35000) is separate from inner.
+	// Use same-AS (2-64497) and configure IPv6 source for IPv6 destination.
+	srcIA := mustIA(t, 2, 64497)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+
+	pkts := LoadPackets(t, "../data/translate_udp_ipv6.bin")
+	input := pkts[0]
+
+	srcHost := mustParseIP(t, "fd42:42:42::72")
+	outerSrcPort := 35000
+
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
+		return path.Path{}, nil
+	}
+
+	scionBytes, _, err := translator.TranslateEgress(input, srcHost, outerSrcPort, GetPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress failed: %v", err)
+	}
+
+	// Parse outer packet.
+	firstNibble := scionBytes[0] >> 4
+	var outerUDP layers.UDP
+	if firstNibble == 4 {
+		pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv4, gopacket.Default)
+		if l := pkt.Layer(layers.LayerTypeUDP); l != nil {
+			outerUDP = *l.(*layers.UDP)
+		}
+	} else {
+		pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv6, gopacket.Default)
+		if l := pkt.Layer(layers.LayerTypeUDP); l != nil {
+			outerUDP = *l.(*layers.UDP)
+		}
+	}
+
+	if outerUDP.SrcPort != layers.UDPPort(outerSrcPort) {
+		t.Errorf("outer UDP SrcPort = %d, expected %d", outerUDP.SrcPort, outerSrcPort)
+	}
+	t.Logf("outer UDP SrcPort = %d (correct)", outerUDP.SrcPort)
+}
+
+func TestUnderlayDstPortSeparate(t *testing.T) {
+	// Verify that underlay destination port (30001 from BR) is used correctly.
+	// Use same-AS (2-64497) and configure IPv6 source for IPv6 destination.
+	srcIA := mustIA(t, 2, 64497)
+	brAddr := &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}
+	translator := NewTranslator(nil, srcIA, brAddr, "wg3-scion")
+	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+
+	pkts := LoadPackets(t, "../data/translate_udp_ipv6.bin")
+	input := pkts[0]
+
+	srcHost := mustParseIP(t, "fd42:42:42::72")
+
+	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
+		return path.Path{}, nil
+	}
+
+	scionBytes, nextHop, err := translator.TranslateEgress(input, srcHost, 35000, GetPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress failed: %v", err)
+	}
+
+	if nextHop == nil {
+		t.Fatal("nextHop is nil")
+	}
+
+	// For same-AS, nextHop should be the dst host directly, not the BR.
+	// For cross-AS, nextHop should be the BR address.
+	t.Logf("nextHop = %s:%d", nextHop.IP, nextHop.Port)
+	t.Logf("scionBytes len = %d", len(scionBytes))
+
+	// Parse outer to verify destination port.
+	firstNibble := scionBytes[0] >> 4
+	var outerUDP layers.UDP
+	if firstNibble == 4 {
+		pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv4, gopacket.Default)
+		if l := pkt.Layer(layers.LayerTypeUDP); l != nil {
+			outerUDP = *l.(*layers.UDP)
+		}
+	} else {
+		pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv6, gopacket.Default)
+		if l := pkt.Layer(layers.LayerTypeUDP); l != nil {
+			outerUDP = *l.(*layers.UDP)
+		}
+	}
+
+	// The outer DstPort should match nextHop.Port.
+	if outerUDP.DstPort != layers.UDPPort(nextHop.Port) {
+		t.Errorf("outer UDP DstPort = %d, nextHop.Port = %d", outerUDP.DstPort, nextHop.Port)
+	}
+	t.Logf("outer UDP DstPort = %d (matches nextHop)", outerUDP.DstPort)
+}
+
+func TestMissingIPv4ReturnsClearError(t *testing.T) {
+	// When neither configured nor interface-derived IPv4 is available,
+	// WGSrcIPv4 should return a clear error.
+	srcIA := mustIA(t, 71, 74)
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "nonexistent-interface")
+
+	_, err := translator.WGSrcIPv4()
+	if err == nil {
+		t.Fatal("WGSrcIPv4 should fail without configured or interface address")
+	}
+
+	errMsg := err.Error()
+	if !bytes.Contains([]byte(errMsg), []byte("missing_outer_ipv4_source")) {
+		t.Errorf("error should mention missing_outer_ipv4_source, got: %s", errMsg)
+	}
+	t.Logf("WGSrcIPv4 error: %s (correct structured error)", errMsg)
+}
+
+func TestTranslateIngressPassThrough(t *testing.T) {
+	translator := &Translator{}
+	translator.localIA = mustIA(t, 71, 2)
+
+	tests := []struct {
+		name       string
+		pkt        []byte
+		wantNil    bool
+		wantErr    bool
+		wantSame   bool // result should be the same slice as input
+	}{
+		{
+			name: "ipv6-tcp-pass-through",
+			pkt: func() []byte {
+				pkt := make([]byte, 60)
+				pkt[0] = 0x60            // IPv6
+				pkt[6] = 6               // TCP protocol
+				binary.BigEndian.PutUint16(pkt[40:42], 80) // dst port
+				return pkt
+			}(),
+			wantSame: true,
+		},
+		{
+			name: "truncated-packet-no-panic",
+			pkt:  []byte{0x45, 0x00, 0x01},
+			// gopacket is lenient: 3-byte packet with version nibble 4
+			// still returns pktData, nil (pass-through, no panic)
+			wantSame: true,
+		},
+		{
+			name: "unknown-ip-version-pass-through",
+			pkt: func() []byte {
+				pkt := make([]byte, 40)
+				pkt[0] = 0x50           // version 5
+				return pkt
+			}(),
+			wantSame: true,
+		},
+		{
+			name: "ipv4-non-udp-pass-through",
+			pkt: func() []byte {
+				pkt := make([]byte, 40)
+				pkt[0] = 0x45           // IPv4, IHL=5
+				pkt[9] = 6              // TCP protocol
+				return pkt
+			}(),
+			wantSame: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := translator.TranslateIngress(tt.pkt, nil)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantNil {
+				if result != nil {
+					t.Errorf("expected nil result, got %d bytes", len(result))
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+
+			if tt.wantSame {
+				// For pass-through, TranslateIngress returns the original slice
+				if &result[0] != &tt.pkt[0] {
+					t.Errorf("expected same slice for pass-through, got different backing array")
+				}
+				if !bytes.Equal(result, tt.pkt) {
+					t.Errorf("result content does not match input")
+				}
+			}
+		})
+	}
+}
+
+// TestTranslateIngressUDPNonSCIONDocumentsAmbiguity documents that TranslateIngress
+// returns errors for non-SCION UDP packets when the UDP payload is empty, but passes
+// through random/short payloads (SCION decode fails gracefully → pktData, nil).
+//
+// The expected behavior after this work package:
+//   - Non-SCION TCP/ICMPv6/unknown-version → pass-through (pktData, nil)
+//   - Non-SCION UDP with empty payload → error → packet dropped in receive.go
+//   - Non-SCION UDP with non-SCION payload → pass-through (pktData, nil)
+//
+// This ambiguity will be resolved in Work Package 10 (TranslateIngress disposition refactor).
+func TestTranslateIngressUDPNonSCIONDocumentsAmbiguity(t *testing.T) {
+	translator := &Translator{}
+	translator.localIA = mustIA(t, 71, 2)
+
+	tests := []struct {
+		name    string
+		pkt     []byte
+		wantErr bool
+	}{
+		{
+			name: "ipv4-udp-empty-payload-returns-error",
+			pkt: func() []byte {
+				pkt := make([]byte, 28)
+				pkt[0] = 0x45            // IPv4, IHL=5
+				pkt[9] = 17              // UDP protocol
+				binary.BigEndian.PutUint16(pkt[2:4], 28)   // total length
+				binary.BigEndian.PutUint16(pkt[22:24], 443) // dst port
+				return pkt
+			}(),
+			wantErr: true, // "no SCION payload in outer UDP"
+		},
+		{
+			name: "ipv4-udp-random-payload-passes-through",
+			pkt: func() []byte {
+				pkt := make([]byte, 40)
+				pkt[0] = 0x45            // IPv4, IHL=5
+				pkt[9] = 17              // UDP protocol
+				binary.BigEndian.PutUint16(pkt[2:4], 40)    // total length
+				binary.BigEndian.PutUint16(pkt[22:24], 12345) // random dst port
+				// fill payload with random bytes
+				for i := 28; i < 40; i++ {
+					pkt[i] = byte(i)
+				}
+				return pkt
+			}(),
+			wantErr: false, // SCION decode fails gracefully → pktData, nil
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := translator.TranslateIngress(tt.pkt, nil)
+			if tt.wantErr && err == nil {
+				t.Errorf("expected error for non-SCION UDP, got nil")
 			}
 		})
 	}

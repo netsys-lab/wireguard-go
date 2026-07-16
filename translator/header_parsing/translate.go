@@ -120,6 +120,30 @@ func IPv6OfInterface(ifaceName string) (net.IP, error) {
 	return nil, fmt.Errorf("no non-link-local IPv6 address found on interface %q", ifaceName)
 }
 
+// WGSrcIPv6 returns the local IPv6 address for the tunnel interface.
+// Priority: configured address (Android) > interface lookup (Linux).
+func (t *Translator) WGSrcIPv6() (net.IP, error) {
+	// Priority 1: Use explicitly configured address (Android path).
+	if t.configuredIPv6 != nil {
+		ip := append(net.IP(nil), t.configuredIPv6...)
+		log.Printf("[WG-ADDR] using configured WG IPv6 sourceMode=android-config ip=%s", ip)
+		return ip, nil
+	}
+
+	// Priority 2: Fall back to interface lookup (Linux path).
+	if t.ifaceName == "" {
+		return nil, fmt.Errorf("no IPv6 source: configuredIPv6=<none> interfaceName=empty")
+	}
+
+	ip, err := IPv6OfInterface(t.ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("no IPv6 source: configuredIPv6=<none> interfaceLookup=failed iface=%s err=%w", t.ifaceName, err)
+	}
+
+	log.Printf("[WG-ADDR] interface IPv6 lookup success iface=%s ip=%s", t.ifaceName, ip)
+	return ip, nil
+}
+
 func (t *Translator) WGSrcIPv4() (net.IP, error) {
 	t.wgSrcIPMu.RLock()
 	if t.wgSrcIP != nil && t.wgSrcIP.To4() != nil {
@@ -141,14 +165,23 @@ func (t *Translator) WGSrcIPv4() (net.IP, error) {
 		return ip, nil
 	}
 
+	// Priority 1: Use explicitly configured address (Android path).
+	if t.configuredIPv4 != nil {
+		ip := append(net.IP(nil), t.configuredIPv4...)
+		t.wgSrcIP = append(net.IP(nil), ip...)
+		log.Printf("[WG-ADDR] using configured WG IPv4 sourceMode=android-config ip=%s", ip)
+		return ip, nil
+	}
+
+	// Priority 2: Fall back to interface lookup (Linux path).
 	if t.ifaceName == "" {
-		return nil, fmt.Errorf("translator ifaceName is empty")
+		return nil, fmt.Errorf("SCION-EGRESS-ERROR reason=missing_outer_ipv4_source configuredIPv4=<none> interfaceName=empty")
 	}
 
 	ip, err := IPv4OfInterface(t.ifaceName)
 	if err != nil {
-		log.Printf("[WG-ADDR] lazy WG IPv4 lookup failed iface=%s err=%v", t.ifaceName, err)
-		return nil, err
+		log.Printf("[WG-ADDR] interface lookup failed iface=%s err=%v", t.ifaceName, err)
+		return nil, fmt.Errorf("SCION-EGRESS-ERROR reason=missing_outer_ipv4_source configuredIPv4=<none> interfaceLookup=failed iface=%s err=%w", t.ifaceName, err)
 	}
 
 	t.wgSrcIP = append(net.IP(nil), ip...)
@@ -218,6 +251,11 @@ type Translator struct {
 
 	ifaceName string
 
+	// Explicitly configured local addresses (Android path).
+	// When set, these bypass net.InterfaceByName which is unavailable on Android.
+	configuredIPv4 net.IP
+	configuredIPv6 net.IP
+
 	wgSrcIPMu sync.RWMutex
 	wgSrcIP   net.IP
 
@@ -226,6 +264,20 @@ type Translator struct {
 
 func (t *Translator) SetDispatchedPorts(r DispatchPortRange) {
 	t.dispatchedPorts = r
+}
+
+// SetConfiguredIPv4 sets the local IPv4 address for outer encapsulation.
+// Used on Android where net.InterfaceByName is unavailable.
+func (t *Translator) SetConfiguredIPv4(addr netip.Addr) {
+	a4 := addr.As4()
+	t.configuredIPv4 = net.IP(a4[:])
+}
+
+// SetConfiguredIPv6 sets the local IPv6 address for the tunnel interface.
+// Used on Android where net.InterfaceByName is unavailable.
+func (t *Translator) SetConfiguredIPv6(addr netip.Addr) {
+	a16 := addr.As16()
+	t.configuredIPv6 = net.IP(a16[:])
 }
 
 func NewTranslator(cache PathPool, localIA addr.IA, brAddr *net.UDPAddr, ifaceName string) *Translator {
@@ -775,25 +827,18 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			return nil, nil, fmt.Errorf("no nextHop for non-local path srcIA=%s dstIA=%s", srcIA, dstIA)
 		}
 	}
-	log.Printf("[TRANSLATE-EGRESS] preparing outer encapsulation nextHop=%s nextHopIPv4=%v scionLen=%d",
-		udpAddrString(nextHop),
-		nextHop != nil && nextHop.IP.To4() != nil,
-		len(scionBytes),
-	)
 	// hostIsIPv4 - check nextHop's address family since that's what we're sending to
 	// For IPv4 underlay, we need an IPv4 source (underlay IP), not the TUN IP
 	if nextHop.IP.To4() != nil {
-		// Use underlay IPv4 address as source (e.g., 10.0.0.2 for client side)
-		// When sending to nextHop (127.0.0.x loopback), use loopback or underlay IP
+		// Use underlay IPv4 address as source for the outer IPv4 header.
+		// Priority: configured IPv4 (Android) > interface lookup (Linux).
 		srcIP := srcHost
 		if srcHost.To4() == nil {
-			// hostIP is IPv6 (e.g., fd00::2), use the underlay IP for IPv4 packet
-			// In test env, client's underlay is 10.0.0.2
-			srcIP = net.ParseIP("10.0.0.2")
-			log.Printf("[TRANSLATE-EGRESS] srcHost is not IPv4, falling back to hardcoded IPv4 srcIP=%s originalHostIP=%s",
-				ipString(srcIP),
-				ipString(srcHost),
-			)
+			ipv4, err := t.WGSrcIPv4()
+			if err != nil {
+				return nil, nil, fmt.Errorf("[SCION-EGRESS-ERROR] reason=missing_outer_ipv4_source %w", err)
+			}
+			srcIP = ipv4
 		}
 		// -------- IPv4 underlay --------
 		ip4 := &layers.IPv4{
@@ -829,15 +874,14 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		); err != nil {
 			return nil, nil, fmt.Errorf("failed to serialize IPv4/UDP+SCION: %w", err)
 		}
-		log.Printf("[TRANSLATE-EGRESS] outer IPv4/UDP serialization success outerLen=%d", len(buf.Bytes()))
 	} else {
-
-		srcIP := net.ParseIP("10.0.0.2")
-		log.Printf("[TRANSLATE-EGRESS] Falling back to hardcoded IPv4 srcIP=%s originalHostIP=%s",
-			ipString(srcIP),
-			ipString(hostIP),
-		)
 		// -------- IPv6 underlay --------
+		// Use configured or interface IPv6 address as source.
+		srcIP, err := t.WGSrcIPv6()
+		if err != nil {
+			return nil, nil, fmt.Errorf("[SCION-EGRESS-ERROR] reason=missing_outer_ipv6_source %w", err)
+		}
+
 		ip6Under := &layers.IPv6{
 			Version:      6,
 			TrafficClass: tc,
