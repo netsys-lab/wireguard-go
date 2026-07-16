@@ -21,88 +21,95 @@ arrived during a cache miss.
 */
 
 func (device *Device) OnPathReady(src, dst addr.IA) {
-	device.log.Verbosef("[SCION-PENDING] OnPathReady: src=%s dst=%s", src, dst)
+	flushStart := time.Now()
 
 	if device.pendingSCION == nil {
-		device.log.Errorf("[SCION-PENDING] OnPathReady but pending queue nil")
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] event=flushing reason=nil-queue src=%s dst=%s", src, dst)
 		return
 	}
 
 	packets := device.pendingSCION.Pop(src, dst)
 	if len(packets) == 0 {
-		device.log.Verbosef("[SCION-PENDING] OnPathReady: no packets to flush src=%s dst=%s", src, dst)
+		device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] event=flushing reason=no-packets src=%s dst=%s", src, dst)
 		return
 	}
 
-	device.log.Verbosef("[SCION-PENDING] OnPathReady: flushing count=%d src=%s dst=%s", len(packets), src, dst)
+	device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] event=flushing count=%d src=%s dst=%s", len(packets), src, dst)
 
 	for _, p := range packets {
 		device.flushOnePendingSCION(p)
 	}
+
+	flushDur := time.Since(flushStart)
+	device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] event=flush-complete count=%d src=%s dst=%s elapsedMs=%d",
+		len(packets), src, dst, flushDur.Milliseconds())
 }
 
 func (device *Device) flushOnePendingSCION(p pendingSCIONPacket) {
-	device.log.Verbosef("[SCION-PENDING] retry packet: len=%d age=%s", len(p.packet), time.Since(p.created))
+	device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=flushing age=%s", p.packetID, time.Since(p.created))
 
 	if device.translator == nil {
-		device.log.Errorf("[SCION-PENDING] translator nil while flushing")
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=translator-nil", p.packetID)
 		return
 	}
 
 	if len(p.packet) < 1 {
-		device.log.Errorf("[SCION-PENDING] empty queued packet")
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=empty-packet", p.packetID)
 		return
 	}
 
 	switch p.packet[0] >> 4 {
 	case 6:
 		if len(p.packet) < ipv6.HeaderLen {
-			device.log.Errorf("[SCION-PENDING] queued IPv6 packet too short len=%d", len(p.packet))
+			device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=packet-too-short len=%d", p.packetID, len(p.packet))
 			return
 		}
 
 		dstIP := net.IP(p.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len])
 		srcIP := net.IP(p.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 
+		start := time.Now()
 		newpkt, err := device.translator.ReadOutboundPacket(p.packet, dstIP, srcIP, p.hostPort, true)
+		translateDur := time.Since(start)
 		if err != nil {
-			device.log.Errorf("[SCION-PENDING] retry translation failed: %v", err)
+			device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed duration=%v err=%v", p.packetID, translateDur, err)
 			return
 		}
 
-		device.log.Verbosef("[SCION-PENDING] retry translation success: outLen=%d", len(newpkt))
+		device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", p.packetID, len(newpkt), translateDur)
 
 		peer := device.lookupPeerForPacket(newpkt)
 		if peer == nil {
-			device.log.Errorf("[SCION-PENDING] retry peer lookup failed")
+			device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed reason=no-route", p.packetID)
 			return
 		}
 
-		device.log.Verbosef("[SCION-PENDING] retry peer lookup success: peer=%v", peer)
+		device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-selected peer=%s", p.packetID, peer)
+		device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-for-encryption", p.packetID)
 
-		device.QueueOutboundPacket(peer, newpkt)
+		device.QueueOutboundPacket(peer, newpkt, p.packetID)
 
 	default:
-		device.log.Errorf("[SCION-PENDING] unsupported queued packet IP version=%d", p.packet[0]>>4)
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=unsupported-ip-version version=%d", p.packetID, p.packet[0]>>4)
 	}
 }
 
-func (device *Device) QueueOutboundPacket(peer *Peer, pkt []byte) {
+func (device *Device) QueueOutboundPacket(peer *Peer, pkt []byte, packetID uint64) {
 	if peer == nil {
-		device.log.Errorf("[SCION-PENDING] QueueOutboundPacket called with nil peer")
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed reason=nil-peer", packetID)
 		return
 	}
 
 	if !peer.isRunning.Load() {
-		device.log.Errorf("[SCION-PENDING] peer not running while queueing packet")
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed reason=peer-not-running", packetID)
 		return
 	}
 
 	elem := device.NewOutboundElement()
 
 	if len(pkt) > len(elem.buffer)-MessageTransportHeaderSize {
-		device.log.Errorf("[SCION-PENDING] packet too large to queue: len=%d max=%d",
-			len(pkt), len(elem.buffer)-MessageTransportHeaderSize)
+		device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-for-encryption-failed reason=packet-too-large len=%d max=%d",
+			packetID, len(pkt), len(elem.buffer)-MessageTransportHeaderSize)
 		device.PutMessageBuffer(elem.buffer)
 		device.PutOutboundElement(elem)
 		return
@@ -110,14 +117,11 @@ func (device *Device) QueueOutboundPacket(peer *Peer, pkt []byte) {
 
 	copy(elem.buffer[MessageTransportHeaderSize:], pkt)
 	elem.packet = elem.buffer[MessageTransportHeaderSize : MessageTransportHeaderSize+len(pkt)]
+	elem.PacketID = packetID
 
 	elemsContainer := device.GetOutboundElementsContainer()
 	elemsContainer.elems = append(elemsContainer.elems, elem)
 
-	device.log.Verbosef("[SCION-PENDING] queueing retry packet into WG outbound: len=%d", len(pkt))
-
 	peer.StagePackets(elemsContainer)
 	peer.SendStagedPackets()
-
-	device.log.Verbosef("[SCION-PENDING] retry packet queued into WG outbound")
 }

@@ -2,6 +2,7 @@ package pathpool
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -38,7 +39,8 @@ func (pp *PathPool) PrefetchAsync(pairs []IAPair) {
 // RefreshAsync schedules a non-blocking path refresh for a src/dst IA pair.
 // It remembers the IA pair, prevents duplicate in-flight refreshes, and starts
 // a background worker if no refresh is currently running.
-func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) {
+// Returns RefreshStatus indicating whether a new refresh was started and its ID.
+func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) RefreshStatus {
 	k := key{src: src, dst: dst}
 
 	pp.mu.Lock()
@@ -48,33 +50,55 @@ func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) {
 	if pp.retriever == nil {
 		log.Printf("[PATHPOOL] RefreshAsync skipped: retriever nil src=%s dst=%s reason=%s", src, dst, reason)
 		pp.mu.Unlock()
-		return
+		return RefreshStatus{}
 	}
 
-	if pp.inflight[k] {
-		log.Printf("[PATHPOOL] RefreshAsync skipped: already inflight src=%s dst=%s reason=%s", src, dst, reason)
+	if inflight, ok := pp.inflight[k]; ok {
+		log.Printf("[PATHPOOL] RefreshAsync skipped: already inflight id=%d src=%s dst=%s reason=%s", inflight.id, src, dst, reason)
 		pp.mu.Unlock()
-		return
+		return RefreshStatus{ID: inflight.id, Started: false}
 	}
 
-	pp.inflight[k] = true
+	pp.refreshIDCounter++
+	id := pp.refreshIDCounter
+	pp.inflight[k] = &inflightRefresh{
+		id:        id,
+		startedAt: time.Now(),
+	}
 	pp.mu.Unlock()
 
-	go pp.refreshWorker(src, dst, reason)
+	log.Printf("[SCION-PATH] refreshId=%d event=refresh-async src=%s dst=%s reason=%s started=%v", id, src, dst, reason, true)
+
+	go pp.refreshWorker(src, dst, reason, id)
+
+	return RefreshStatus{ID: id, Started: true}
 }
 
 // refreshWorker performs the actual path fetch in the background.
 // It calls the retriever, updates the cache or lastError state, clears the
-// in-flight flag, and calls the refresh callback after a successful update.
-func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string) {
+// in-flight entry, and calls the refresh callback after a successful update.
+// The inflight entry is deleted on every exit path (success, error, no paths).
+func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string, refreshID uint64) {
 	k := key{src: src, dst: dst}
+	refreshStart := time.Now()
 
-	log.Printf("[PATHPOOL] Refresh start: src=%s dst=%s reason=%s", src, dst, reason)
+	log.Printf("[SCION-PATH] refreshId=%d event=refresh-started src=%s dst=%s reason=%s", refreshID, src, dst, reason)
 
 	ctx, cancel := context.WithTimeout(context.Background(), pp.queryTimeout)
 	defer cancel()
 
+	// Pass refreshId through context so sub-phases can log correlated events.
+	ctx = ContextWithRefreshID(ctx, refreshID)
+
+	// Deferred cleanup: always remove the inflight entry when done.
+	defer func() {
+		pp.mu.Lock()
+		delete(pp.inflight, k)
+		pp.mu.Unlock()
+	}()
+
 	paths, err := pp.retriever.RetrievePaths(ctx, src, dst)
+	retrieveElapsed := time.Since(refreshStart)
 
 	var cb RefreshCallback
 	var shouldCallCallback bool
@@ -90,19 +114,35 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string) {
 
 	if err != nil {
 		entry.lastError = err
-		pp.inflight[k] = false
 		pp.mu.Unlock()
 
-		log.Printf("[PATHPOOL] Refresh failed: src=%s dst=%s reason=%s err=%v", src, dst, reason, err)
+		// Categorize the error for diagnostics
+		errorCategory := "connector-error"
+		cause := err.Error()
+		if errors.Is(err, context.DeadlineExceeded) {
+			errorCategory = "context-deadline"
+		}
+
+		// Compute remaining deadline
+		remainingMs := 0
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining > 0 {
+				remainingMs = int(remaining.Milliseconds())
+			}
+		}
+
+		log.Printf("[SCION-PATH] refreshId=%d event=refresh-failed src=%s dst=%s elapsedMs=%d remainingDeadlineMs=%d errorCategory=%s cause=%q reason=%s",
+			refreshID, src, dst, retrieveElapsed.Milliseconds(), remainingMs, errorCategory, cause, reason)
 		return
 	}
 
 	if len(paths) == 0 {
 		entry.lastError = ErrNoPaths
-		pp.inflight[k] = false
 		pp.mu.Unlock()
 
-		log.Printf("[PATHPOOL] Refresh returned no paths: src=%s dst=%s reason=%s", src, dst, reason)
+		log.Printf("[SCION-PATH] refreshId=%d event=refresh-failed src=%s dst=%s elapsedMs=%d errorCategory=no-paths reason=%s",
+			refreshID, src, dst, retrieveElapsed.Milliseconds(), reason)
 		return
 	}
 
@@ -119,7 +159,6 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string) {
 
 	entry.lastRefresh = time.Now()
 	entry.lastError = nil
-	pp.inflight[k] = false
 
 	cb = pp.onRefresh
 	shouldCallCallback = cb != nil
@@ -127,7 +166,8 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string) {
 
 	pp.mu.Unlock()
 
-	log.Printf("[PATHPOOL] Refresh success: src=%s dst=%s paths=%d reason=%s", src, dst, pathCount, reason)
+	log.Printf("[SCION-PATH] refreshId=%d event=refresh-success src=%s dst=%s paths=%d elapsedMs=%d reason=%s",
+		refreshID, src, dst, pathCount, retrieveElapsed.Milliseconds(), reason)
 
 	if shouldCallCallback {
 		cb(src, dst)

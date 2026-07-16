@@ -13,6 +13,23 @@ import (
 	"github.com/scionproto/scion/pkg/snet"
 )
 
+// contextKeyRefreshID is the context key for carrying refreshId through the
+// path resolution pipeline so that sub-phases (LocalIA, Interfaces, Paths)
+// can log correlated events.
+type contextKeyRefreshID struct{}
+
+// ContextWithRefreshID returns a context carrying the given refresh ID.
+func ContextWithRefreshID(ctx context.Context, id uint64) context.Context {
+	return context.WithValue(ctx, contextKeyRefreshID{}, id)
+}
+
+// RefreshIDFromContext extracts the refresh ID from a context.
+// Returns 0, false if no refresh ID is present.
+func RefreshIDFromContext(ctx context.Context) (uint64, bool) {
+	id, ok := ctx.Value(contextKeyRefreshID{}).(uint64)
+	return id, ok
+}
+
 var (
 	// ErrPathPending means no valid cached path is currently available,
 	// but an async refresh has been scheduled.
@@ -25,7 +42,7 @@ var (
 const (
 	defaultRefreshInterval     = 2 * time.Minute
 	defaultRefreshBeforeExpiry = 30 * time.Second
-	defaultQueryTimeout        = 10 * time.Second
+	defaultQueryTimeout        = 30 * time.Second
 )
 
 // PathRetriever defines the interface for fetching paths from a daemon/network.
@@ -44,6 +61,18 @@ type IAPair struct {
 // RefreshCallback is called after a successful async path refresh.
 // The Device uses this to flush queued packets for the refreshed IA pair.
 type RefreshCallback func(src, dst addr.IA)
+
+// RefreshStatus reports the state of an async path refresh.
+type RefreshStatus struct {
+	ID      uint64 // monotonic refresh ID assigned to this refresh
+	Started bool   // true if a new refresh was started; false if already inflight
+}
+
+// inflightRefresh tracks an in-progress path refresh for one IA pair.
+type inflightRefresh struct {
+	id        uint64
+	startedAt time.Time
+}
 
 // key identifies a path pool entry by source/destination IA pair.
 type key struct {
@@ -74,7 +103,7 @@ type pathsEntry struct {
 type PathPool struct {
 	mu       sync.Mutex
 	cache    map[key]*pathsEntry
-	inflight map[key]bool
+	inflight map[key]*inflightRefresh
 	known    map[key]struct{}
 
 	closed    chan struct{}
@@ -82,7 +111,8 @@ type PathPool struct {
 
 	onRefresh RefreshCallback
 
-	refreshInterval     time.Duration
+	refreshIDCounter uint64
+	refreshInterval  time.Duration
 	refreshBeforeExpiry time.Duration
 	queryTimeout        time.Duration
 }
@@ -93,7 +123,7 @@ type PathPool struct {
 func NewPathPool(retriever PathRetriever) *PathPool {
 	pp := &PathPool{
 		cache:               make(map[key]*pathsEntry),
-		inflight:            make(map[key]bool),
+		inflight:            make(map[key]*inflightRefresh),
 		known:               make(map[key]struct{}),
 		closed:              make(chan struct{}),
 		retriever:           retriever,
@@ -174,9 +204,11 @@ func (pp *PathPool) GetCached(src, dst addr.IA) []CachedPath {
 func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
 	_ = ctx
 
-	log.Printf("[PATHPOOL] Get: src=%s dst=%s", src, dst)
-
 	k := key{src: src, dst: dst}
+
+	log.Printf("[SCION-PATH] event=cache-lookup src=%s dst=%s", src, dst)
+
+	lookupStart := time.Now()
 
 	pp.mu.Lock()
 
@@ -198,14 +230,11 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 
 	pp.mu.Unlock()
 
+	lookupDur := time.Since(lookupStart)
+
 	if len(valid) > 0 {
-		log.Printf(
-			"[PATHPOOL] Cache hit: src=%s dst=%s valid=%d refreshSoon=%v",
-			src,
-			dst,
-			len(valid),
-			refreshSoon,
-		)
+		log.Printf("[SCION-PATH] event=cache-hit src=%s dst=%s valid=%d refreshSoon=%v elapsedMs=%d",
+			src, dst, len(valid), refreshSoon, lookupDur.Milliseconds())
 
 		if refreshSoon {
 			pp.RefreshAsync(src, dst, "expiry-soon")
@@ -216,7 +245,8 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 		return result, nil
 	}
 
-	log.Printf("[PATHPOOL] Cache miss: src=%s dst=%s trigger async refresh", src, dst)
+	log.Printf("[SCION-PATH] event=cache-miss src=%s dst=%s elapsedMs=%d",
+		src, dst, lookupDur.Milliseconds())
 
 	pp.RefreshAsync(src, dst, "cache-miss")
 

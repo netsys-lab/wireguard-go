@@ -1,7 +1,6 @@
 package device
 
 import (
-	"log"
 	"sync"
 	"time"
 
@@ -27,6 +26,7 @@ type pendingSCIONPacket struct {
 	isIPv6   bool
 	hostPort int
 	created  time.Time
+	packetID uint64 // SCION packet correlation ID
 }
 
 type PendingSCIONQueue struct {
@@ -37,8 +37,6 @@ type PendingSCIONQueue struct {
 }
 
 func NewPendingSCIONQueue(maxPerKey int, maxAge time.Duration) *PendingSCIONQueue {
-	log.Printf("[SCION-PENDING] queue created maxPerKey=%d maxAge=%s", maxPerKey, maxAge)
-
 	return &PendingSCIONQueue{
 		packets:   make(map[pendingSCIONKey][]pendingSCIONPacket),
 		maxPerKey: maxPerKey,
@@ -46,7 +44,7 @@ func NewPendingSCIONQueue(maxPerKey int, maxAge time.Duration) *PendingSCIONQueu
 	}
 }
 
-func (q *PendingSCIONQueue) Enqueue(src, dst addr.IA, pkt []byte, isIPv6 bool, hostPort int) {
+func (q *PendingSCIONQueue) Enqueue(src, dst addr.IA, pkt []byte, isIPv6 bool, hostPort int, packetID uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -56,20 +54,15 @@ func (q *PendingSCIONQueue) Enqueue(src, dst addr.IA, pkt []byte, isIPv6 bool, h
 	list := q.packets[k]
 
 	filtered := list[:0]
-	droppedExpired := 0
 	for _, p := range list {
 		if now.Sub(p.created) <= q.maxAge {
 			filtered = append(filtered, p)
-		} else {
-			droppedExpired++
 		}
 	}
 	list = filtered
 
-	droppedOldest := false
 	if len(list) >= q.maxPerKey {
 		list = list[1:]
-		droppedOldest = true
 	}
 
 	pktCopy := append([]byte(nil), pkt...)
@@ -78,12 +71,10 @@ func (q *PendingSCIONQueue) Enqueue(src, dst addr.IA, pkt []byte, isIPv6 bool, h
 		isIPv6:   isIPv6,
 		hostPort: hostPort,
 		created:  now,
+		packetID: packetID,
 	})
 
 	q.packets[k] = list
-
-	log.Printf("[SCION-PENDING] enqueue: src=%s dst=%s len=%d queued=%d droppedExpired=%d droppedOldest=%v",
-		src, dst, len(pktCopy), len(list), droppedExpired, droppedOldest)
 }
 
 func (q *PendingSCIONQueue) Pop(src, dst addr.IA) []pendingSCIONPacket {
@@ -96,18 +87,12 @@ func (q *PendingSCIONQueue) Pop(src, dst addr.IA) []pendingSCIONPacket {
 
 	now := time.Now()
 	valid := make([]pendingSCIONPacket, 0, len(list))
-	droppedExpired := 0
 
 	for _, p := range list {
 		if now.Sub(p.created) <= q.maxAge {
 			valid = append(valid, p)
-		} else {
-			droppedExpired++
 		}
 	}
-
-	log.Printf("[SCION-PENDING] pop: src=%s dst=%s returned=%d droppedExpired=%d",
-		src, dst, len(valid), droppedExpired)
 
 	return valid
 }

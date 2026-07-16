@@ -54,6 +54,7 @@ type QueueOutboundElement struct {
 	nonce   uint64                // nonce for encryption
 	keypair *Keypair              // keypair for encryption
 	peer    *Peer                 // related peer
+	PacketID uint64               // SCION packet correlation ID (0 = not traced)
 }
 
 type QueueOutboundElementsContainer struct {
@@ -78,6 +79,7 @@ func (elem *QueueOutboundElement) clearPointers() {
 	elem.packet = nil
 	elem.keypair = nil
 	elem.peer = nil
+	elem.PacketID = 0
 }
 
 /* Queues a keepalive if no packets are queued for peer
@@ -249,10 +251,6 @@ func (device *Device) RoutineReadFromTUN() {
 		// read packets from TUN
 		count, readErr = device.tun.device.Read(bufs, sizes, offset)
 
-		if count > 0 {
-			device.log.Verbosef("[TUN-IN] Read %d packets from TUN", count)
-		}
-
 		//write byte length into sizes[i]
 		for i := 0; i < count; i++ {
 			if sizes[i] < 1 {
@@ -263,11 +261,12 @@ func (device *Device) RoutineReadFromTUN() {
 			//create a window elem.packet over just the valid bytes
 			pkt := bufs[i][offset : offset+sizes[i]]
 
-			//Hier schreiben wir die Valid pkt bytes in elem.packet
 			elem.packet = pkt
 
 			// lookup peer
 			var peer *Peer
+			packetID := device.NextPacketID()
+			device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=accepted bytes=%d", packetID, len(pkt))
 			switch elem.packet[0] >> 4 {
 			case 4:
 				if len(elem.packet) < ipv4.HeaderLen {
@@ -278,30 +277,20 @@ func (device *Device) RoutineReadFromTUN() {
 
 				dstIP := net.IP(dst)
 
-				//Below code makes no sense as IsSCIONMapped only checks for IPv6 fc00 addresses.
-				//Flow should be:
-				// We need to decide if a given IPv4 adress should be Mapped to SCION
-				// If it should be mapped then:
-				// Wrap IPv4 adress into a IPv6 adress which is then translated like IPv6.
-				if device.translator != nil {
-
-				}
-
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 					srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len])
 					hostPort := 35000
 					start := time.Now()
-					device.log.Verbosef("[TUN-READER] before translation")
-					device.log.Verbosef("Hier muss schon srcIP die vom WG Interface sein")
 					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, false)
-					device.log.Verbosef("[TUN-READER] after translation duration=%s", time.Since(start))
+					translateDur := time.Since(start)
 					if err != nil {
-						device.log.Errorf("[WG-OUT] IPv4 SCION translation error: %v", err)
+						device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed duration=%v err=%v", packetID, translateDur, err)
 						continue
 					}
-					device.log.Verbosef("[WG-OUT] IPv4 SCION translation successful: %d bytes", len(newpkt))
+					elem.PacketID = packetID
 					elem.packet = newpkt
 					sizes[i] = len(newpkt)
+					device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", packetID, len(newpkt), translateDur)
 				}
 
 			case 6:
@@ -310,96 +299,65 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
 
-				// Check if destination is SCION-mapped (fc00::/8)
 				dstIP := net.IP(dst)
-				device.log.Verbosef("[CLIENT-1-CLASSIFY] IPv6 packet: dst=%s src=%s", dstIP.String(), net.IP(pkt[IPv6offsetSrc:IPv6offsetSrc+net.IPv6len]).String())
-				if device.translator != nil {
-					device.log.Verbosef("[CLIENT-1-CLASSIFY] Translator is not nil")
-				} else {
-					device.log.Errorf("[CLIENT-1-CLASSIFY] Translator is nil")
-				}
-
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
-					// Translation needed - first translate, then lookup peer for translated packet
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 					hostPort := 35000
-					device.log.Verbosef("[CLIENT-2-SCIPN-DETECTED] SCION-mapped: dst=%s src=%s port=%d", dstIP.String(), srcIP.String(), hostPort)
-
-					device.log.Verbosef("[CLIENT-3-TRANSLATE-EGRESS] Converting IP->SCION...")
+					start := time.Now()
 					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, true)
+					translateDur := time.Since(start)
 					if err != nil {
 						if errors.Is(err, pathpool.ErrPathPending) {
 							srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP)
 							if iaErr != nil {
-								device.log.Errorf("[SCION-PENDING] IA extraction failed: %v", iaErr)
+								device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=ia-extract err=%v", packetID, iaErr)
 								continue
 							}
 
 							if device.pendingSCION == nil {
-								device.log.Errorf("[SCION-PENDING] pending queue nil; dropping packet src=%s dst=%s", srcIA, dstIA)
+								device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=pending-nil src=%s dst=%s", packetID, srcIA, dstIA)
 								continue
 							}
 
-							device.pendingSCION.Enqueue(srcIA, dstIA, pkt, true, hostPort)
-							device.log.Verbosef("[SCION-PENDING] queued packet after path miss: src=%s dst=%s len=%d",
-								srcIA, dstIA, len(pkt))
+							device.pendingSCION.Enqueue(srcIA, dstIA, pkt, true, hostPort, packetID)
+							device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-pending src=%s dst=%s bytes=%d", packetID, srcIA, dstIA, len(pkt))
 							continue
 						}
 
-						device.log.Errorf("[CLIENT-3-TRANSLATE-EGRESS] ERROR: %v", err)
+						device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed duration=%v err=%v", packetID, translateDur, err)
 						continue
 					}
-					device.log.Verbosef("[CLIENT-3-TRANSLATE-EGRESS] SUCCESS: %d bytes", len(newpkt))
+					elem.PacketID = packetID
 
-					// Debug: Log outer IP of translated packet
+					// Lookup peer based on translated packet's outer destination
 					if len(newpkt) > 4 {
 						if newpkt[0]>>4 == 4 {
-							outerIP := net.IP(newpkt[16:20])
-							device.log.Verbosef("[TRANSLATE-EGRESS] Outer IPv4: %s", outerIP.String())
-						} else if newpkt[0]>>4 == 6 {
-							outerIP := net.IP(newpkt[24:40])
-							device.log.Verbosef("[TRANSLATE-EGRESS] Outer IPv6: %s", outerIP.String())
-						}
-					}
-
-					// Now lookup peer based on translated packet's outer destination
-					// The translated packet has outer IP header - extract destination from it
-					if len(newpkt) > 4 {
-						// Check if IPv4 (first nibble == 4) or IPv6 (first nibble == 6)
-						if newpkt[0]>>4 == 4 {
-							// IPv4 outer - dst is at offset 16
 							translatedDst := newpkt[16:20]
 							peer = device.allowedips.Lookup(translatedDst)
-							device.log.Verbosef("[CLIENT-4-PEER-LOOKUP] IPv4: peer=%v", peer)
 						} else if newpkt[0]>>4 == 6 {
-							// IPv6 outer - dst is at offset 24
 							translatedDst := newpkt[24:40]
 							peer = device.allowedips.Lookup(translatedDst)
-							device.log.Verbosef("[CLIENT-4-PEER-LOOKUP] IPv6: peer=%v", peer)
 						}
-					}
-
-					if peer != nil {
-						device.log.Verbosef("[CLIENT-5-WG-ENCRYPT] Queuing %d bytes for wireguard send", len(newpkt))
 					}
 
 					elem.packet = newpkt
 					sizes[i] = len(newpkt)
+					device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", packetID, len(newpkt), translateDur)
 				} else {
 					// Not SCION-mapped - normal lookup
-					device.log.Verbosef("[CLASSIFY] Non-SCIPN packet, using normal peer lookup")
 					peer = device.allowedips.Lookup(dst)
 				}
 
 			default:
-				device.log.Verbosef("Received packet with unknown IP version")
-				//Müsste hier erkennen das es ein SCION Paket ist.
-				//TODO: Test if this hits if we send SCION packet.
+				device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=accepted proto=%d", packetID, elem.packet[0]>>4)
+				continue
 			}
 
 			if peer == nil {
+				device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed", packetID)
 				continue
 			}
+			device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-selected", packetID)
 			elemsForPeer, ok := elemsByPeer[peer]
 			if !ok {
 				elemsForPeer = device.GetOutboundElementsContainer()
@@ -412,6 +370,11 @@ func (device *Device) RoutineReadFromTUN() {
 
 		for peer, elemsForPeer := range elemsByPeer {
 			if peer.isRunning.Load() {
+				for _, elem := range elemsForPeer.elems {
+					if elem.PacketID != 0 {
+						device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-for-encryption", elem.PacketID)
+					}
+				}
 				peer.StagePackets(elemsForPeer)
 				peer.SendStagedPackets()
 			} else {
@@ -629,6 +592,24 @@ func (device *Device) RoutineEncryption(id int) {
 				nil,
 			)
 		}
+		// Log encrypted event for traced packets
+		var encFirstID, encLastID uint64
+		var encTracedCount int
+		for _, elem := range elemsContainer.elems {
+			if elem.PacketID != 0 {
+				encTracedCount++
+				if encFirstID == 0 {
+					encFirstID = elem.PacketID
+				}
+				encLastID = elem.PacketID
+			}
+		}
+		if encFirstID != 0 {
+			device.scionLog.Tracef(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=encrypted tracedPackets=%d", encFirstID, encTracedCount)
+			if encLastID != encFirstID {
+				device.scionLog.Tracef(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=encrypted tracedPackets=%d", encLastID, encTracedCount)
+			}
+		}
 		elemsContainer.Unlock()
 	}
 }
@@ -672,12 +653,50 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 			bufs = append(bufs, elem.packet)
 		}
 
+		// Log batch with bounded packet IDs for traced packets
+		var firstID, lastID uint64
+		var tracedCount int
+		for _, elem := range elemsContainer.elems {
+			if elem.PacketID != 0 {
+				tracedCount++
+				if firstID == 0 {
+					firstID = elem.PacketID
+				}
+				lastID = elem.PacketID
+			}
+		}
+		if firstID != 0 {
+			totalBytes := 0
+			for _, b := range bufs {
+				totalBytes += len(b)
+			}
+			device.scionLog.Debugf(ComponentEgressLifecycle,
+				"[SCION-EGRESS] event=socket-write-start peer=%s firstPacketId=%d lastPacketId=%d tracedPackets=%d buffers=%d totalBytes=%d",
+				peer, firstID, lastID, tracedCount, len(bufs), totalBytes)
+		}
+
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
 
 		err := peer.SendBuffers(bufs)
 		if dataSent {
 			peer.timersDataSent()
+		}
+		// Log socket success/failure
+		if firstID != 0 {
+			if err != nil {
+				device.scionLog.Errorf(ComponentEgressLifecycle,
+					"[SCION-EGRESS] event=socket-write-failed peer=%s firstPacketId=%d tracedPackets=%d err=%v",
+					peer, firstID, tracedCount, err)
+			} else {
+				totalBytes := 0
+				for _, b := range bufs {
+					totalBytes += len(b)
+				}
+				device.scionLog.Tracef(ComponentEgressLifecycle,
+					"[SCION-EGRESS] event=socket-write-success peer=%s firstPacketId=%d lastPacketId=%d tracedPackets=%d buffers=%d totalBytes=%d",
+					peer, firstID, lastID, tracedCount, len(bufs), totalBytes)
+			}
 		}
 		for _, elem := range elemsContainer.elems {
 			device.PutMessageBuffer(elem.buffer)

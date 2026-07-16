@@ -421,3 +421,219 @@ func TestPathPoolPrefetchAsync(t *testing.T) {
 		return err == nil && len(paths) == 1
 	})
 }
+
+// --- Refresh correlation ID tests ---
+
+func TestRefreshAsync_FirstRequestStartsRefreshIDX(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	status := pp.RefreshAsync(src, dst, "test")
+
+	if !status.Started {
+		t.Error("expected first RefreshAsync to start a new refresh")
+	}
+	if status.ID == 0 {
+		t.Error("expected non-zero refresh ID")
+	}
+}
+
+func TestRefreshAsync_SecondRequestJoinsSameRefreshID(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{},
+		Delay:         200 * time.Millisecond,
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	status1 := pp.RefreshAsync(src, dst, "test")
+	status2 := pp.RefreshAsync(src, dst, "test")
+
+	if !status1.Started {
+		t.Error("expected first to start")
+	}
+	if status2.Started {
+		t.Error("expected second to join (not start)")
+	}
+	if status1.ID != status2.ID {
+		t.Errorf("expected same refresh ID: status1.ID=%d status2.ID=%d", status1.ID, status2.ID)
+	}
+}
+
+func TestRefreshAsync_DifferentIAPairGetsDifferentID(t *testing.T) {
+	src1, _ := addr.ParseIA("1-ff00:0:110")
+	dst1, _ := addr.ParseIA("1-ff00:0:111")
+	src2, _ := addr.ParseIA("1-ff00:0:220")
+	dst2, _ := addr.ParseIA("1-ff00:0:221")
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{},
+		Delay:         200 * time.Millisecond,
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	status1 := pp.RefreshAsync(src1, dst1, "test")
+	status2 := pp.RefreshAsync(src2, dst2, "test")
+
+	if !status1.Started || !status2.Started {
+		t.Error("both should start since they are different IA pairs")
+	}
+	if status1.ID == status2.ID {
+		t.Errorf("different IA pairs should get different refresh IDs: both got %d", status1.ID)
+	}
+}
+
+func TestRefreshAsync_InflightDeletedOnSuccess(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	expiry := time.Now().Add(1 * time.Hour)
+	retrievedPath := createPath(src, dst, 1, expiry, "127.0.0.1", 30041)
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{retrievedPath},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	pp.RefreshAsync(src, dst, "test")
+
+	// Wait for refresh to complete.
+	waitUntil(t, time.Second, func() bool {
+		pair := pp.SnapshotFor(src, dst)
+		return pair.AvailablePaths > 0
+	})
+
+	// Inflight entry should be cleaned up.
+	pp.mu.Lock()
+	inflight := pp.inflight[key{src: src, dst: dst}]
+	pp.mu.Unlock()
+
+	if inflight != nil {
+		t.Error("inflight entry should be deleted after successful refresh")
+	}
+}
+
+func TestRefreshAsync_InflightDeletedOnError(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mock := &MockRetriever{
+		ErrToReturn: errors.New("mock error"),
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	pp.RefreshAsync(src, dst, "test")
+
+	// Wait for refresh to complete.
+	waitUntil(t, time.Second, func() bool {
+		pair := pp.SnapshotFor(src, dst)
+		return pair.LastError != ""
+	})
+
+	// Inflight entry should be cleaned up.
+	pp.mu.Lock()
+	inflight := pp.inflight[key{src: src, dst: dst}]
+	pp.mu.Unlock()
+
+	if inflight != nil {
+		t.Error("inflight entry should be deleted after error")
+	}
+}
+
+func TestRefreshAsync_InflightDeletedOnNoPaths(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{},
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	pp.RefreshAsync(src, dst, "test")
+
+	// Wait for refresh to complete.
+	waitUntil(t, time.Second, func() bool {
+		pair := pp.SnapshotFor(src, dst)
+		return pair.LastError == ErrNoPaths.Error()
+	})
+
+	// Inflight entry should be cleaned up.
+	pp.mu.Lock()
+	inflight := pp.inflight[key{src: src, dst: dst}]
+	pp.mu.Unlock()
+
+	if inflight != nil {
+		t.Error("inflight entry should be deleted after no-paths result")
+	}
+}
+
+func TestRefreshAsync_InflightDeletedOnTimeout(t *testing.T) {
+	src, _ := addr.ParseIA("1-ff00:0:110")
+	dst, _ := addr.ParseIA("1-ff00:0:111")
+
+	mock := &MockRetriever{
+		Delay: 5 * time.Second,
+	}
+
+	pp := NewPathPool(mock)
+	pp.queryTimeout = 50 * time.Millisecond
+	defer pp.Close()
+
+	pp.RefreshAsync(src, dst, "test")
+
+	// Wait for timeout to trigger.
+	waitUntil(t, time.Second, func() bool {
+		pair := pp.SnapshotFor(src, dst)
+		return pair.LastError != ""
+	})
+
+	// Inflight entry should be cleaned up after timeout.
+	pp.mu.Lock()
+	inflight := pp.inflight[key{src: src, dst: dst}]
+	pp.mu.Unlock()
+
+	if inflight != nil {
+		t.Error("inflight entry should be deleted after timeout")
+	}
+}
+
+func TestRefreshAsync_RefreshIDMonotonicallyIncreases(t *testing.T) {
+	src1, _ := addr.ParseIA("1-ff00:0:110")
+	dst1, _ := addr.ParseIA("1-ff00:0:111")
+	src2, _ := addr.ParseIA("1-ff00:0:220")
+	dst2, _ := addr.ParseIA("1-ff00:0:221")
+
+	mock := &MockRetriever{
+		PathsToReturn: []snet.Path{},
+		Delay:         200 * time.Millisecond,
+	}
+
+	pp := NewPathPool(mock)
+	defer pp.Close()
+
+	s1 := pp.RefreshAsync(src1, dst1, "test")
+	s2 := pp.RefreshAsync(src2, dst2, "test")
+
+	if s2.ID <= s1.ID {
+		t.Errorf("refresh IDs should increase: s1.ID=%d s2.ID=%d", s1.ID, s2.ID)
+	}
+}

@@ -68,7 +68,7 @@ func (pp *PathPool) Snapshot() PathSnapshot {
 			DstIA:          k.dst.String(),
 			AvailablePaths: len(valid),
 			LastRefresh:    formatTime(entry.lastRefresh),
-			InFlight:       pp.inflight[k],
+			InFlight:       pp.inflight[k] != nil,
 			Paths:          make([]PathInfo, 0, len(valid)),
 		}
 
@@ -158,7 +158,7 @@ func (pp *PathPool) SnapshotFor(src, dst addr.IA) PathPairInfo {
 
 	pair.AvailablePaths = len(valid)
 	pair.LastRefresh = formatTime(entry.lastRefresh)
-	pair.InFlight = pp.inflight[k]
+	pair.InFlight = pp.inflight[k] != nil
 
 	if entry.lastError != nil {
 		pair.LastError = entry.lastError.Error()

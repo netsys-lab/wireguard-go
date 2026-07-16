@@ -99,6 +99,11 @@ type Device struct {
 	log          *Logger
 	scionLog     *SCIONLogger
 	pendingSCION *PendingSCIONQueue
+
+	// packetIDCounter is a monotonic counter for SCION packet correlation.
+	// It is assigned only to SCION-mapped egress packets accepted from TUN
+	// and is preserved through pending queue, flush, and WireGuard outbound.
+	packetIDCounter atomic.Uint64
 }
 
 // deviceState represents the state of a Device.

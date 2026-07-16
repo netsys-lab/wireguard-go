@@ -14,6 +14,7 @@ import (
 	"github.com/scionproto/scion/pkg/daemon"
 	"github.com/scionproto/scion/pkg/daemon/types"
 	"github.com/scionproto/scion/pkg/snet"
+	"golang.zx2c4.com/wireguard/translator/pathpool"
 )
 
 type SciondRetriever struct {
@@ -188,44 +189,60 @@ func NewSciondRetriever(configDir string) (*SciondRetriever, error) {
 }
 
 func (r *SciondRetriever) RetrievePaths(ctx context.Context, src, dst addr.IA) ([]snet.Path, error) {
-	log.Printf("[PATHSRV-QUERY] RetrievePaths called")
-	log.Printf("[PATHSRV-QUERY] requested src=%s dst=%s", src, dst)
+	refreshID, hasRefreshID := pathpool.RefreshIDFromContext(ctx)
+rid := ""
+	if hasRefreshID {
+		rid = fmt.Sprintf("refreshId=%d ", refreshID)
+	}
 
-	// Test: Get local IA first
+	log.Printf("[SCION-PATH-TRACE] %sphase=RetrievePaths event=start src=%s dst=%s", rid, src, dst)
+	retrieveStart := time.Now()
+
+	// Phase: LocalIA probe
+	log.Printf("[SCION-PATH-TRACE] %sphase=local-ia event=start", rid)
+	localIAStart := time.Now()
 	localIA, err := r.connector.LocalIA(ctx)
+	localIAElapsed := time.Since(localIAStart)
 	if err != nil {
-		log.Printf("[PATHSRV] ERROR: Cannot get local IA: %v", err)
+		log.Printf("[SCION-PATH-TRACE] %sphase=local-ia event=complete elapsedMs=%d err=%v", rid, localIAElapsed.Milliseconds(), err)
 	} else {
-		log.Printf("[PATHSRV] Local IA is: %s", localIA)
+		log.Printf("[SCION-PATH-TRACE] %sphase=local-ia event=complete elapsedMs=%d localIA=%s", rid, localIAElapsed.Milliseconds(), localIA)
 	}
 
-	// Test: Get interfaces
+	// Phase: Interfaces probe
+	log.Printf("[SCION-PATH-TRACE] %sphase=interfaces event=start", rid)
+	ifacesStart := time.Now()
 	ifaces, err := r.connector.Interfaces(ctx)
+	ifacesElapsed := time.Since(ifacesStart)
 	if err != nil {
-		log.Printf("[PATHSRV] ERROR: Cannot get interfaces: %v", err)
+		log.Printf("[SCION-PATH-TRACE] %sphase=interfaces event=complete elapsedMs=%d err=%v", rid, ifacesElapsed.Milliseconds(), err)
 	} else {
-		log.Printf("[PATHSRV] Got %d interfaces: %v", len(ifaces), ifaces)
+		log.Printf("[SCION-PATH-TRACE] %sphase=interfaces event=complete elapsedMs=%d count=%d", rid, ifacesElapsed.Milliseconds(), len(ifaces))
 	}
 
-	log.Printf("[PATHSRV] Querying connector.Paths(dst=%s, src=%s)", dst, src)
-	// Fetch paths directly from the internal engine
+	// Phase: connector.Paths
+	log.Printf("[SCION-PATH-TRACE] %sphase=connector.Paths event=start dst=%s src=%s", rid, dst, src)
+	pathsStart := time.Now()
 	paths, err := r.connector.Paths(ctx, dst, src, types.PathReqFlags{})
+	pathsElapsed := time.Since(pathsStart)
 	if err != nil {
-		log.Printf("[PATHSRV] ERROR: connector.Paths failed: %v", err)
+		log.Printf("[SCION-PATH-TRACE] %sphase=connector.Paths event=complete elapsedMs=%d err=%v", rid, pathsElapsed.Milliseconds(), err)
 		return nil, fmt.Errorf("embedded engine failed to fetch paths: %w", err)
 	}
+	log.Printf("[SCION-PATH-TRACE] %sphase=connector.Paths event=complete elapsedMs=%d pathCount=%d", rid, pathsElapsed.Milliseconds(), len(paths))
 
-	log.Printf("[PATHSRV] Got %d paths from connector", len(paths))
-
+	// Phase: result processing
+	log.Printf("[SCION-PATH-TRACE] %sphase=result-processing event=start pathCount=%d", rid, len(paths))
+	processingStart := time.Now()
 	for i, p := range paths {
 		meta := p.Metadata()
-		log.Printf("[PATHSRV] Path %d nextHop=%v meta=%+v", i, p.UnderlayNextHop(), meta)
+		log.Printf("[SCION-PATH-TRACE] %spath[%d] nextHop=%v expiry=%v", rid, i, p.UnderlayNextHop(), meta.Expiry)
 	}
+	processingElapsed := time.Since(processingStart)
+	log.Printf("[SCION-PATH-TRACE] %sphase=result-processing event=complete elapsedMs=%d", rid, processingElapsed.Milliseconds())
 
-	// Log path details for debugging
-	for i := range paths {
-		log.Printf("[PATHSRV] Path %d: available", i)
-	}
+	totalElapsed := time.Since(retrieveStart)
+	log.Printf("[SCION-PATH-TRACE] %sphase=RetrievePaths event=complete elapsedMs=%d pathCount=%d", rid, totalElapsed.Milliseconds(), len(paths))
 
 	return paths, nil
 }
