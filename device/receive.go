@@ -485,9 +485,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				}
 				elem.packet = elem.packet[:length]
 
-				outerDst := net.IP(elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len])
-				device.log.Verbosef("%v - RX outer IPv4 dst=%s src=%s", peer, outerDst.String(), net.IP(elem.packet[IPv4offsetSrc:IPv4offsetSrc+net.IPv4len]).String())
-
 				src := elem.packet[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len]
 				if device.allowedips.Lookup(src) != peer {
 					device.log.Verbosef("IPv4 packet with disallowed source address from %v", peer)
@@ -496,32 +493,21 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 
 			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
-					device.log.Verbosef("%v - RX: IPv6 packet too short (%d bytes)", peer, len(elem.packet))
 					continue
 				}
 				field := elem.packet[IPv6offsetPayloadLength : IPv6offsetPayloadLength+2]
 				length := binary.BigEndian.Uint16(field)
 				length += ipv6.HeaderLen
 				if int(length) > len(elem.packet) {
-					device.log.Verbosef("%v - RX: IPv6 payload length exceeds packet size", peer)
 					continue
 				}
 				elem.packet = elem.packet[:length]
-
-				outerDst := net.IP(elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len])
-				outerSrc := net.IP(elem.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
-				device.log.Verbosef("[CLIENT-WG-DECRYPT] RX: outer IPv6 dst=%s src=%s len=%d", outerDst.String(), outerSrc.String(), len(elem.packet))
-
-				// NOTE: Server runs VANILLA wireguard-go - NO custom SCION code
-				// All packets are written to TUN normally. No brConn forwarding.
-				// The kernel handles routing - packets to BR via regular IP routing.
 
 				src := elem.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len]
 				if device.allowedips.Lookup(src) != peer {
 					device.log.Verbosef("IPv6 packet with disallowed source address from %v", peer)
 					continue
 				}
-				device.log.Verbosef("[CLIENT-TUN-WRITE] Writing %d bytes to TUN", len(elem.packet))
 
 			default:
 				device.log.Verbosef("Packet with invalid IP version from %v", peer)
@@ -558,12 +544,8 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			bufs = append(bufs, elem.buffer[:MessageTransportOffsetContent+len(elem.packet)])
 		}
 
-		// DEBUG: Log packet info
-		device.log.Verbosef("[CLIENT-RECV] Total packets to write: %d, total bytes: %d", len(bufs), rxBytesLen)
-
 		peer.rxBytes.Add(rxBytesLen)
 		if validTailPacket >= 0 {
-			device.log.Verbosef("[CLIENT-RECV] validTailPacket >= 0")
 			peer.SetEndpointFromPacket(elemsContainer.elems[validTailPacket].endpoint)
 			peer.keepKeyFreshReceiving()
 			peer.timersAnyAuthenticatedPacketTraversal()
@@ -577,8 +559,6 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			_, err := device.tun.device.Write(bufs, MessageTransportOffsetContent)
 			if err != nil && !device.isClosed() {
 				device.log.Errorf("Failed to write packets to TUN device: %v", err)
-			} else {
-				device.log.Verbosef("Successfully wrote packets to TUN device! (normal WG)")
 			}
 		}
 

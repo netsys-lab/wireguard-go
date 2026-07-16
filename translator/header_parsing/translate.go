@@ -439,7 +439,7 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 		len(CachedPaths),
 	)
 
-	log.Printf("[TRANSLATE-EGRESS] selected cached path: srcIA=%s dstIA=%s fp=%s nextHop=%v",
+	log.Printf("[PATHPOOL] selected cached path: srcIA=%s dstIA=%s fp=%s nextHop=%v",
 		srcIA, dstIA, selectedcachedpath.Fingerprint, selectedcachedpath.NextHop)
 
 	//Extract snet path.Path including type assertion
@@ -460,32 +460,16 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 // IPv6 -> SCION
 // returns SCION packet bytes and the UDP next-hop to send to if successful
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
-	log.Printf("[TRANSLATE-EGRESS] enter pkt=%s hostIP=%s hostPort=%d localIA=%s brAddr=%s customGetPath=%v",
-		packetSummary(pktData),
-		ipString(hostIP),
-		hostPort,
-		t.localIA,
-		udpAddrString(t.brAddr),
-		getPath != nil,
-	)
+	if len(pktData) < 40 {
+		return nil, nil, errors.New("packet too short for IPv6")
+	}
 
 	packet := gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
 	ip6Layer := packet.Layer(layers.LayerTypeIPv6)
 	if ip6Layer == nil {
-		log.Printf("[TRANSLATE-EGRESS] error: not an IPv6 packet pkt=%s", packetSummary(pktData))
 		return nil, nil, errors.New("not an IPv6 packet")
 	}
 	ip6 := ip6Layer.(*layers.IPv6)
-
-	log.Printf("[TRANSLATE-EGRESS] parsed IPv6 src=%s dst=%s nextHeader=%s trafficClass=%d flowLabel=%d hopLimit=%d payloadLen=%d",
-		ipString(ip6.SrcIP),
-		ipString(ip6.DstIP),
-		ip6.NextHeader,
-		ip6.TrafficClass,
-		ip6.FlowLabel,
-		ip6.HopLimit,
-		ip6.Length,
-	)
 
 	var innerDstPort uint16
 	var hasInnerDstPort bool
@@ -510,86 +494,34 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 	isd, asn, _, _, host, hostIsIPv4, err := UnmapIPv6(ip6.DstIP, 8) // subnetBits = 8
 
-	log.Printf(("[TRANSLATE-EGRESS] unmapped host:=%s"), host)
-
 	if err != nil {
-		log.Printf("[TRANSLATE-EGRESS] UnmapIPv6 failed dstIP=%s err=%v", ipString(ip6.DstIP), err)
 		return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
 	}
-
-	log.Printf("[TRANSLATE-EGRESS] unmapped destination mappedDst=%s dstISD=%d dstASN=%d dstHost=%s dstHostIsIPv4=%v",
-		ipString(ip6.DstIP),
-		isd,
-		asn,
-		ipString(host),
-		hostIsIPv4,
-	)
 
 	srcHost := hostIP
 
 	if ip4, err := t.WGSrcIPv4(); err == nil {
 		srcHost = ip4
-		log.Printf("[TRANSLATE-EGRESS] selected SCION srcHost from WG interface iface=%s srcHost=%s originalPacketSrc=%s",
-			t.ifaceName,
-			srcHost,
-			hostIP,
-		)
-	} else {
-		log.Printf("[TRANSLATE-EGRESS] failed to get WG IPv4, falling back to packet source originalPacketSrc=%s err=%v",
-			hostIP,
-			err,
-		)
 	}
 
-	//srcisd, srcasn, _, _, _, _, err := UnmapIPv6(ip6.SrcIP, 8)
-	//if err != nil {
-	//	return nil, nil, fmt.Errorf("src unmap IPv6 failed: %w", err)
-	//}
-
-	//pathBytes, nextHop, ok := pathCache.Lookup(dstIA)
-	//if !ok || len(pathBytes) == 0 {
-	// return nil, nil, errors.New("no path available for dst IA")
-	//fmt.Println("PathCache miss for dst IA, falling back to direct host+port")
-
 	dstIA := addr.IA(addr.MustIAFrom(addr.ISD(isd), addr.AS(asn)))
-	//srcIA := addr.IA(addr.MustIAFrom(addr.ISD(srcisd), addr.AS(srcasn)))
 	srcIA := t.localIA
 	if srcIA == 0 {
 		return nil, nil, fmt.Errorf("localIA not configured (t.localIA=%v)", t.localIA)
 	}
 
-	log.Printf("[TRANSLATE] srcIA=%s, dstIA=%s\n", srcIA, dstIA)
-
-	//Using the Callback function
 	var selectedPath path.Path
 	if getPath != nil {
-		log.Printf("[TRANSLATE-EGRESS] resolving path using custom getPath srcIA=%s dstIA=%s", srcIA, dstIA)
 		selectedPath, err = getPath(srcIA, dstIA)
 	} else {
-		log.Printf("[TRANSLATE-EGRESS] resolving path using translator cache srcIA=%s dstIA=%s", srcIA, dstIA)
 		selectedPath, err = t.getPathFromCache(srcIA, dstIA)
 	}
 
 	if err != nil {
-		log.Printf("[TRANSLATE-EGRESS] path resolution failed srcIA=%s dstIA=%s err=%v", srcIA, dstIA, err)
 		return nil, nil, fmt.Errorf("path unavailable for dst IA: %w", err)
 	}
 
-	log.Printf("[TRANSLATE-EGRESS] path resolved srcIA=%s dstIA=%s pathType=%T underlayNextHop=%s dataplaneNil=%v",
-		srcIA,
-		dstIA,
-		selectedPath,
-		udpAddrString(selectedPath.UnderlayNextHop()),
-		selectedPath.Dataplane() == nil,
-	)
-	//Return a snet.path.Scion and nexthopfield
 	nextHop := selectedPath.UnderlayNextHop()
-
-	log.Printf("[TRANSLATE-EGRESS] Path nextHop: %v", nextHop)
-	log.Printf("[TRANSLATE-EGRESS] Host IP from original packet: %v", hostIP)
-	log.Printf("[TRANSLATE-EGRESS] srcHost IP from WG Interface, that will be used: %v", srcHost)
-	log.Printf("Und hier muss die hostIP eigentlich die IP von unserem WG Interface sein, oder?")
-	log.Printf("[TRANSLATE-EGRESS] hostIsIPv4: %v", hostIsIPv4)
 
 	// TODO: NEEDS CHECKING
 	var dstHost net.IP
@@ -598,13 +530,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		if dstHost == nil {
 			return nil, nil, fmt.Errorf("decoded IPv4 host is invalid: %s", host)
 		}
-		log.Printf("[TRANSLATE-EGRESS] decoded IPv4 dstHost=%s", dstHost)
 	} else {
 		dstHost = host.To16()
 		if dstHost == nil {
 			return nil, nil, fmt.Errorf("decoded IPv6/interface host is invalid: %s", host)
 		}
-		log.Printf("[TRANSLATE-EGRESS] decoded IPv6/interface dstHost=%s", dstHost)
 	}
 
 	localISD := uint16(srcIA.ISD())
@@ -625,12 +555,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			return nil, nil, errors.New("udp layer missing")
 		}
 		udp := udpLayer.(*layers.UDP)
-		log.Printf("[TRANSLATE-EGRESS] L4 UDP detected srcPort=%d dstPort=%d udpPayloadLen=%d appLayerPresent=%v",
-			udp.SrcPort,
-			udp.DstPort,
-			len(udp.Payload),
-			packet.ApplicationLayer() != nil,
-		)
 		l4nextHeader = slayers.L4UDP
 
 		// Build a *fresh* UDP for the inner packet (to avoid sharing state)
@@ -650,9 +574,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		if app := packet.ApplicationLayer(); app != nil {
 			l4Payload = append([]byte(nil), app.Payload()...) // copy
 		}
-		log.Printf("[TRANSLATE-EGRESS] UDP payload extracted len=%d", len(l4Payload))
 
-		//innerUDP.Payload = appPayload // payload is "TEST"
 		scionBytes, err = BuildSCIONPacket(
 			localISD, localASN, dstISD, dstASN,
 			srcHost, dstHost,
@@ -663,7 +585,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		if err != nil {
 			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 		}
-		log.Printf("[TRANSLATE-EGRESS] UDP BuildSCIONPacket success scionLen=%d", len(scionBytes))
 
 	case layers.IPProtocolTCP:
 		tcpLayer := packet.Layer(layers.LayerTypeTCP)
@@ -672,21 +593,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		tcp := tcpLayer.(*layers.TCP)
-		log.Printf("[TRANSLATE-EGRESS] L4 TCP detected srcPort=%d dstPort=%d seq=%d ack=%d flags=SYN:%v ACK:%v FIN:%v RST:%v PSH:%v window=%d options=%d payloadLen=%d appLayerPresent=%v",
-			tcp.SrcPort,
-			tcp.DstPort,
-			tcp.Seq,
-			tcp.Ack,
-			tcp.SYN,
-			tcp.ACK,
-			tcp.FIN,
-			tcp.RST,
-			tcp.PSH,
-			tcp.Window,
-			len(tcp.Options),
-			len(tcp.Payload),
-			packet.ApplicationLayer() != nil,
-		)
 		l4nextHeader = slayers.L4TCP
 
 		//SrcPort = int(tcp.SrcPort)
@@ -718,16 +624,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		newMSS := 1100
 		for i, opt := range innerTCP.Options {
 			if opt.OptionType == layers.TCPOptionKindMSS && len(opt.OptionData) >= 2 {
-				oldMSS := binary.BigEndian.Uint16(opt.OptionData[:2])
 				opt.OptionData[0] = byte(newMSS >> 8)
 				opt.OptionData[1] = byte(newMSS & 0xff)
 				innerTCP.Options[i] = opt
-
-				log.Printf("[TRANSLATE-EGRESS] TCP MSS clamped oldMSS=%d newMSS=%d optionIndex=%d",
-					oldMSS,
-					newMSS,
-					i,
-				)
 			}
 		}
 
@@ -735,13 +634,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		if app := packet.ApplicationLayer(); app != nil {
 			l4Payload = append([]byte(nil), app.Payload()...) // copy
 		}
-		log.Printf("[TRANSLATE-EGRESS] TCP payload extracted len=%d", len(l4Payload))
 
 		scionBytes, err = BuildSCIONPacket(localISD, localASN, dstISD, dstASN, srcHost, dstHost, flowID, tc, l4nextHeader, innerTCP, l4Payload, selectedPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 		}
-		log.Printf("[TRANSLATE-EGRESS] TCP BuildSCIONPacket success scionLen=%d", len(scionBytes))
 
 	case layers.IPProtocolICMPv6: // 58
 		icmpLayer := packet.Layer(layers.LayerTypeICMPv6)
@@ -749,21 +646,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			return nil, nil, errors.New("ICMPv6 layer missing")
 		}
 		icmp := icmpLayer.(*layers.ICMPv6)
-		log.Printf("[TRANSLATE-EGRESS] L4 ICMPv6 detected typeCode=%v payloadLen=%d appLayerPresent=%v",
-			icmp.TypeCode,
-			len(icmp.Payload),
-			packet.ApplicationLayer() != nil,
-		)
 		l4nextHeader = slayers.L4SCMP
 
 		scmpPayload := append([]byte(nil), icmp.Payload...)
 
 		scmpTypeCode := translateICMPv6ToSCMPTypeCode(icmp.TypeCode)
-		log.Printf("[TRANSLATE-EGRESS] ICMPv6 translated to SCMP icmpTypeCode=%v scmpTypeCode=%v scmpPayloadLen=%d",
-			icmp.TypeCode,
-			scmpTypeCode,
-			len(scmpPayload),
-		)
 
 		scmp := &slayers.SCMP{
 			TypeCode: scmpTypeCode,
@@ -779,7 +666,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		if err != nil {
 			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 		}
-		log.Printf("[TRANSLATE-EGRESS] SCMP BuildSCIONPacket success scionLen=%d", len(scionBytes))
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", nextHeader)
@@ -857,16 +743,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip4)
-		log.Printf("[TRANSLATE-EGRESS] outer IPv4/UDP src=%s:%d dst=%s:%d tos=0x%02x ttl=%d df=%v payloadLen=%d",
-			ipString(srcIP.To4()),
-			hostPort,
-			ipString(nextHop.IP.To4()),
-			nextHop.Port,
-			ip4.TOS,
-			ip4.TTL,
-			ip4.Flags&layers.IPv4DontFragment != 0,
-			len(scionBytes),
-		)
 		if err := gopacket.SerializeLayers(buf, opts,
 			ip4,
 			udp,
@@ -898,16 +774,6 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip6Under)
-		log.Printf("[TRANSLATE-EGRESS] outer IPv6/UDP src=%s:%d dst=%s:%d trafficClass=%d flowLabel=%d hopLimit=%d payloadLen=%d",
-			ipString(ip6Under.SrcIP),
-			hostPort,
-			ipString(ip6Under.DstIP),
-			nextHop.Port,
-			ip6Under.TrafficClass,
-			ip6Under.FlowLabel,
-			ip6Under.HopLimit,
-			len(scionBytes),
-		)
 		if err := gopacket.SerializeLayers(buf, opts,
 			ip6Under,
 			udp,
@@ -915,20 +781,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		); err != nil {
 			return nil, nil, fmt.Errorf("failed to serialize IPv6/UDP+SCION: %w", err)
 		}
-		log.Printf("[TRANSLATE-EGRESS] outer IPv6/UDP serialization success outerLen=%d", len(buf.Bytes()))
 	}
 
 	//Outer = [ IPv4 header | UDP header | SCION header | SCION L4 payload ]
 	//We need TCP Out the same
 	outer := buf.Bytes()
-
-	log.Printf("[TRANSLATE-EGRESS] exit success outerLen=%d nextHop=%s dstIA=%s hostDst=%s l4=%v",
-		len(outer),
-		udpAddrString(nextHop),
-		dstIA,
-		ipString(dstHost),
-		nextHeader,
-	)
 
 	return outer, nextHop, nil
 
@@ -936,14 +793,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 // SCION -> IPv6
 func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, error) {
-	log.Printf("[TRANSLATE-INGRESS] enter pkt=%s tunIP=%s localIA=%s",
-		packetSummary(pktData),
-		ipString(tunIP),
-		t.localIA,
-	)
-
 	if len(pktData) == 0 {
-		log.Printf("[TRANSLATE-INGRESS] error: empty packet")
 		return nil, fmt.Errorf("empty packet")
 	}
 	//------------------------- Parse outer IP (v4 or v6) + UDP -----------------
@@ -991,17 +841,6 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	udpOuter := udpLayer.(*layers.UDP)
 
-	/* 	// Optional: only SCION/dispatcher/BR ports should be translated.
-	   	// Everything else should stay normal WG traffic.
-	   	if udpOuter.DstPort != 30041 && udpOuter.SrcPort != 30041 &&
-	   		udpOuter.DstPort != 50000 && udpOuter.SrcPort != 50000 {
-	   		log.Printf("[TRANSLATE-INGRESS] bypass UDP packet not recognized as SCION srcPort=%d dstPort=%d",
-	   			udpOuter.SrcPort,
-	   			udpOuter.DstPort,
-	   		)
-	   		return pktData, nil
-	   	} */
-
 	log.Printf("[TRANSLATE-INGRESS] outer UDP srcPort=%d dstPort=%d payloadLen=%d",
 		udpOuter.SrcPort,
 		udpOuter.DstPort,
@@ -1042,17 +881,10 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		return pktData, nil
 	}
 
-	log.Printf("[TRANSLATE-INGRESS] SCION decoded layers=%v srcIA=%s dstIA=%s srcAddrType=%v dstAddrType=%v flowID=%d trafficClass=%d nextHdr=%v rawSrc=%v rawDst=%v",
-		decoded,
+	log.Printf("[TRANSLATE-INGRESS] SCION decoded srcIA=%s dstIA=%s nextHdr=%v",
 		scn.SrcIA,
 		scn.DstIA,
-		scn.SrcAddrType,
-		scn.DstAddrType,
-		scn.FlowID,
-		scn.TrafficClass,
 		scn.NextHdr,
-		net.IP(scn.RawSrcAddr),
-		net.IP(scn.RawDstAddr),
 	)
 
 	var l4Layer gopacket.SerializableLayer
@@ -1082,11 +914,9 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				scmpPayload = append([]byte(nil), []byte(pld)...)
 			}
 
-			log.Printf("[TRANSLATE-INGRESS] SCMP received typeCode=%v infoMsg=%v scmpPayloadLen=%d rawPayloadLen=%d",
+			log.Printf("[TRANSLATE-INGRESS] SCMP typeCode=%v payloadLen=%d",
 				scmp.TypeCode,
-				scmp.TypeCode.InfoMsg(),
 				len(scmpPayload),
-				len(pld),
 			)
 
 			icmpTypeCode := translateSCMPTypeCodeToICMPv6(scmp.TypeCode)
@@ -1098,29 +928,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			l4Layer = icmp
 			l4Payload = scmpPayload
 			forceIPv6 = true
-
-			log.Printf("[TRANSLATE-INGRESS] SCMP translated to ICMPv6 scmpTypeCode=%v icmpTypeCode=%v icmpPayloadLen=%d",
-				scmp.TypeCode,
-				icmpTypeCode,
-				len(l4Payload),
-			)
 		case layers.LayerTypeTCP:
-
-			log.Printf("[TRANSLATE-INGRESS] inner TCP decoded srcPort=%d dstPort=%d seq=%d ack=%d SYN=%v ACK=%v FIN=%v RST=%v PSH=%v window=%d options=%d payloadLen=%d",
-				tcp.SrcPort,
-				tcp.DstPort,
-				tcp.Seq,
-				tcp.Ack,
-				tcp.SYN,
-				tcp.ACK,
-				tcp.FIN,
-				tcp.RST,
-				tcp.PSH,
-				tcp.Window,
-				len(tcp.Options),
-				len(tcp.Payload),
-			)
-
 			l4Layer = &tcp
 			l4Payload = append([]byte(nil), tcp.Payload...)
 
@@ -1541,13 +1349,6 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 // translateICMPv6ToSCMPTypeCode maps ICMPv6 Type+Code to SCMP Type+Code.
 func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode) slayers.SCMPTypeCode {
-	log.Printf("[ICMP6->SCMP] enter raw=%v rawUint16=0x%04x type=%d code=%d string=%s",
-		icmp6TypeCode,
-		uint16(icmp6TypeCode),
-		icmp6TypeCode.Type(),
-		icmp6TypeCode.Code(),
-		icmp6TypeCode.String(),
-	)
 
 	var out slayers.SCMPTypeCode
 
@@ -1610,31 +1411,11 @@ func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode) slayers.
 		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeNoRoute)
 	}
 
-	log.Printf("[ICMP6->SCMP] exit in=%s(type=%d code=%d raw=0x%04x) -> out=%s(type=%d code=%d raw=0x%04x)",
-		icmp6TypeCode.String(),
-		icmp6TypeCode.Type(),
-		icmp6TypeCode.Code(),
-		uint16(icmp6TypeCode),
-		out.String(),
-		out.Type(),
-		out.Code(),
-		uint16(out),
-	)
-
 	return out
 }
 
 // translateSCMPTypeCodeToICMPv6 maps SCMP Type+Code back to ICMPv6 Type+Code.
 func translateSCMPTypeCodeToICMPv6(scmpTypeCode slayers.SCMPTypeCode) layers.ICMPv6TypeCode {
-	log.Printf("[SCMP->ICMP6] enter raw=%v rawUint16=0x%04x type=%d code=%d string=%s infoMsg=%v",
-		scmpTypeCode,
-		uint16(scmpTypeCode),
-		scmpTypeCode.Type(),
-		scmpTypeCode.Code(),
-		scmpTypeCode.String(),
-		scmpTypeCode.InfoMsg(),
-	)
-
 	var out layers.ICMPv6TypeCode
 
 	switch scmpTypeCode.Type() {
@@ -1731,17 +1512,6 @@ func translateSCMPTypeCodeToICMPv6(scmpTypeCode slayers.SCMPTypeCode) layers.ICM
 		)
 		out = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)
 	}
-
-	log.Printf("[SCMP->ICMP6] exit in=%s(type=%d code=%d raw=0x%04x) -> out=%s(type=%d code=%d raw=0x%04x)",
-		scmpTypeCode.String(),
-		scmpTypeCode.Type(),
-		scmpTypeCode.Code(),
-		uint16(scmpTypeCode),
-		out.String(),
-		out.Type(),
-		out.Code(),
-		uint16(out),
-	)
 
 	return out
 }
@@ -1849,26 +1619,17 @@ func BuildSCIONPacket(
 		DstIA:        dstIA,
 	}
 
-	log.Printf("[TRANSLATE-EGRESS] SrcIA: %v", srcIA)
-	log.Printf("[TRANSLATE-EGRESS] DstIA: %v", dstIA)
+	log.Printf("[BUILD-SCION] SrcIA=%v DstIA=%v", srcIA, dstIA)
 
 	// Convert net.IP to netip.Addr
 	srcAddr, err := ipToNetip(srcHost)
 	if err != nil {
 		return nil, fmt.Errorf("convert srcHost: %w", err)
-	} else {
-		log.Printf("srcAddr %s", srcAddr)
-		log.Printf("srcAddr %v", srcAddr)
-		log.Printf("srcAddr %w", srcAddr)
 	}
 
 	dstAddr, err := ipToNetip(dstHost)
 	if err != nil {
 		return nil, fmt.Errorf("convert dstHost: %w", err)
-	} else {
-		log.Printf("dstAddr %s", dstAddr)
-		log.Printf("dstAddr %v", dstAddr)
-		log.Printf("dstAddr %w", dstAddr)
 	}
 
 	pkt.SetSrcAddr(addr.HostIP(srcAddr))
@@ -1882,20 +1643,14 @@ func BuildSCIONPacket(
 	)
 
 	dp := selectedpath.Dataplane()
-	log.Printf("[TRANSLATE-EGRESS] Dataplane: %v", dp)
 	if dp != nil {
-		log.Printf("[TRANSLATE-EGRESS] Calling dp.SetPath()")
 		if err := dp.SetPath(pkt); err != nil {
-			log.Printf("[TRANSLATE-EGRESS] dp.SetPath error: %v", err)
 			return nil, fmt.Errorf("set dataplane selectedpath: %w", err)
 		}
-		log.Printf("[TRANSLATE-EGRESS] dp.SetPath() succeeded")
 	} else {
-		log.Printf("[TRANSLATE-EGRESS] No dataplane, using empty path")
 		pkt.PathType = empty.PathType
 		pkt.Path = empty.Path{}
 	}
-	log.Printf("[TRANSLATE-EGRESS] Path PathType: %v", pkt.PathType)
 
 	//pkt.RawSrcAddr = srcHost
 	//pkt.RawDstAddr = dstHost
@@ -1928,12 +1683,6 @@ func BuildSCIONPacket(
 		); err != nil {
 			return nil, fmt.Errorf("failed to serialize SCION+L4: %w", err)
 		}
-		log.Printf("[BUILD-SCION] serialized SCION/UDP success len=%d srcIA=%s dstIA=%s payloadLen=%d",
-			len(buf.Bytes()),
-			srcIA,
-			dstIA,
-			len(l4Payload),
-		)
 
 	case *layers.TCP:
 
@@ -1971,14 +1720,6 @@ func BuildSCIONPacket(
 
 		l.Checksum = checksum16(bufForCksum)
 
-		log.Printf("[BUILD-SCION] TCP checksum computed checksum=0x%04x tcpHeaderLen=%d payloadLen=%d pseudoLen=%d upperLen=%d",
-			l.Checksum,
-			len(tcpBytes),
-			len(l4Payload),
-			len(pseudo),
-			upperLen,
-		)
-
 		// 4) NOW build the actual SCION packet: [SCION header | TCP | payload]
 		//scionBuf := gopacket.NewSerializeBuffer()
 		if err := gopacket.SerializeLayers(
@@ -1993,12 +1734,6 @@ func BuildSCIONPacket(
 		); err != nil {
 			return nil, fmt.Errorf("serialize SCION/TCP: %w", err)
 		}
-		log.Printf("[BUILD-SCION] serialized SCION/TCP success len=%d srcIA=%s dstIA=%s payloadLen=%d",
-			len(buf.Bytes()),
-			srcIA,
-			dstIA,
-			len(l4Payload),
-		)
 
 	case *slayers.SCMP:
 		opts := gopacket.SerializeOptions{
@@ -2015,12 +1750,6 @@ func BuildSCIONPacket(
 		); err != nil {
 			return nil, fmt.Errorf("failed to serialize SCION+SCMP: %w", err)
 		}
-		log.Printf("[BUILD-SCION] serialized SCION/SCMP success len=%d srcIA=%s dstIA=%s payloadLen=%d",
-			len(buf.Bytes()),
-			srcIA,
-			dstIA,
-			len(l4Payload),
-		)
 
 	default:
 		// If you ever pass something else, checksums won’t be computed correctly.
@@ -2032,13 +1761,6 @@ func BuildSCIONPacket(
 	//---------------------------------------------------------------------------------------------------------
 
 	out := buf.Bytes()
-	log.Printf("[BUILD-SCION] exit success scionLen=%d srcIA=%s dstIA=%s pathType=%v nextHeader=%v",
-		len(out),
-		srcIA,
-		dstIA,
-		pkt.PathType,
-		nextHeader,
-	)
 	return out, nil
 }
 
