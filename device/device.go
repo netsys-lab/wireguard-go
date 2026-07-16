@@ -97,6 +97,7 @@ type Device struct {
 	ipcMutex     sync.RWMutex
 	closed       chan struct{}
 	log          *Logger
+	scionLog     *SCIONLogger
 	pendingSCION *PendingSCIONQueue
 }
 
@@ -132,6 +133,12 @@ func (device *Device) isClosed() bool {
 // See device.state.state comments for how to interpret this value.
 func (device *Device) isUp() bool {
 	return device.deviceState() == deviceStateUp
+}
+
+// NextPacketID returns the next monotonic packet ID for SCION correlation.
+// It is safe for concurrent use.
+func (device *Device) NextPacketID() uint64 {
+	return device.packetIDCounter.Add(1)
 }
 
 // Must hold device.peers.Lock()
@@ -298,6 +305,17 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.net.bind = bind
 	device.tun.device = tunDevice
 
+	// Initialize SCION logger before any SCION work so that init
+	// messages can be routed through it.
+	device.scionLog = NewSCIONLogger(logger)
+	if scionConfig.LogConfig != nil {
+		device.scionLog.SetConfig(*scionConfig.LogConfig)
+	}
+
+	// Emit effective configuration log once at startup.
+	// Android-specific log config is applied later in InitSCION().
+	LogEffectiveConfig(device.scionLog, "default", true)
+
 	if scionConfig.Enabled {
 		logger.Verbosef("SCION requested, deferred init")
 	} else {
@@ -354,6 +372,14 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 		return fmt.Errorf("SCION init failed: enabled but no config dir")
 	}
 
+	// Apply Android-provided log configuration if present.
+	// This is called later than NewDevice(); the device already owns the TUN,
+	// peers, translator, PathPool, and egress pipeline.
+	if scionConfig.LogConfig != nil {
+		device.scionLog.SetConfig(*scionConfig.LogConfig)
+		LogEffectiveConfig(device.scionLog, "android-build-config", true)
+	}
+
 	localIA, err := loadLocalIAFromTopology(scionConfig.ConfigDir)
 	if err != nil {
 		device.log.Errorf("SCION init failed: could not load local IA from topology: %v", err)
@@ -382,14 +408,38 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 
 	interfaceName := scionConfig.InterfaceName
 
-	pendingSCION := NewPendingSCIONQueue(64, 3*time.Second)
+	pendingSCION := NewPendingSCIONQueue(64, 40*time.Second)
 	translator := header_parsing.NewTranslator(pathPool, localIA, brAddr, interfaceName)
 	translator.SetDispatchedPorts(dispatchedPorts)
+
+	// Set explicitly configured addresses (Android path).
+	// These bypass net.InterfaceByName which is unavailable on Android.
+	if scionConfig.LocalIPv4.IsValid() {
+		translator.SetConfiguredIPv4(scionConfig.LocalIPv4)
+	}
+	if scionConfig.LocalIPv6.IsValid() {
+		translator.SetConfiguredIPv6(scionConfig.LocalIPv6)
+	}
+
+	// Determine address source for structured logging.
+	addressSource := "interface-lookup"
+	if scionConfig.LocalIPv4.IsValid() || scionConfig.LocalIPv6.IsValid() {
+		addressSource = "android-config"
+	}
 	device.log.Verbosef(
-		"SCION init: Created translator dispatched_ports=%d-%d valid=%v",
+		"[SCION-INIT-CONFIG] interfaceName=%s localIPv4=%s localIPv6=%s addressSource=%s",
+		interfaceName,
+		scionConfig.LocalIPv4,
+		scionConfig.LocalIPv6,
+		addressSource,
+	)
+	device.log.Verbosef(
+		"[SCION-INIT-CONFIG] dispatched_ports=%d-%d valid=%v localIA=%s brAddr=%s",
 		dispatchedPorts.Start,
 		dispatchedPorts.End,
 		dispatchedPorts.Valid,
+		localIA,
+		brAddr,
 	)
 
 	device.ipcMutex.Lock()

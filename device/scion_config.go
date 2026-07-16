@@ -17,6 +17,7 @@ type ScionDeviceConfig struct {
 	Enabled       bool
 	ConfigDir     string
 	InterfaceName string
+	LogConfig     *SCIONLogConfig // nil = use defaults (INFO, all components)
 }
 
 type scionTopologyFile struct {
@@ -90,9 +91,12 @@ func ScionDeviceConfigFromEnv() ScionDeviceConfig {
 
 	enabled := os.Getenv("SCION_ENABLED") == "true" || configDir != ""
 
+	logCfg := SCIONLogConfigFromEnv()
+
 	return ScionDeviceConfig{
 		Enabled:   enabled,
 		ConfigDir: configDir,
+		LogConfig: &logCfg,
 	}
 }
 
