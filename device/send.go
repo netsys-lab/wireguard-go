@@ -19,6 +19,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
 	"golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
@@ -262,6 +263,24 @@ func (device *Device) RoutineReadFromTUN() {
 			pkt := bufs[i][offset : offset+sizes[i]]
 
 			elem.packet = pkt
+
+			// Flow tracking: read-only inspection of the original packet.
+			// Packet buffer references are never retained; only value types
+			// (netip.Addr, uint8, uint16) are copied into the flow system.
+			// A parse failure does not interrupt the WireGuard pipeline.
+			if device.flowManager != nil {
+				if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+					if snap, created := device.flowManager.ObserveTx(md, len(pkt)); created {
+						device.log.Verbosef(
+							"Flow created: id=%d ip_version=%d protocol=%s endpoint_a=%s endpoint_b=%s status=%s tx_packets=%d tx_bytes=%d rx_packets=%d rx_bytes=%d",
+							snap.ID, snap.IPVersion, snap.ProtocolName(),
+							snap.EndpointA, snap.EndpointB,
+							snap.Status, snap.TxPackets, snap.TxBytes,
+							snap.RxPackets, snap.RxBytes,
+						)
+					}
+				}
+			}
 
 			// lookup peer
 			var peer *Peer

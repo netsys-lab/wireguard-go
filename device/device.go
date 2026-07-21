@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
 	daemon "golang.zx2c4.com/wireguard/translator/daemon"
@@ -98,6 +99,7 @@ type Device struct {
 	closed       chan struct{}
 	log          *Logger
 	scionLog     *SCIONLogger
+	flowManager  *flow.Manager
 	pendingSCION *PendingSCIONQueue
 
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
@@ -307,6 +309,7 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
 	device.log = logger
+	device.flowManager = flow.NewManager()
 	device.net.bind = bind
 	device.tun.device = tunDevice
 

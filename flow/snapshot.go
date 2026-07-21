@@ -1,0 +1,34 @@
+package flow
+
+import "time"
+
+type Snapshot struct {
+	ID ID
+
+	IPVersion uint8
+	Protocol  uint8
+
+	EndpointA Endpoint
+	EndpointB Endpoint
+
+	Status Status
+
+	TxPackets uint64
+	TxBytes   uint64
+	RxPackets uint64
+	RxBytes   uint64
+
+	CreatedAt time.Time
+	LastSeen  time.Time
+}
+
+func (s Snapshot) ProtocolName() string {
+	switch s.Protocol {
+	case ProtocolTCP:
+		return "TCP"
+	case ProtocolUDP:
+		return "UDP"
+	default:
+		return "unknown"
+	}
+}
