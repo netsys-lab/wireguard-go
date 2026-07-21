@@ -14,7 +14,7 @@ check_root
 log_step "Starting Bootstrap Server"
 
 # Bootstrap configuration
-export BOOTSTRAP_AS="${BOOTSTRAP_AS:-AS64513}"
+export BOOTSTRAP_AS="${BOOTSTRAP_AS:-AS64512}"
 export BOOTSTRAP_BIND="${BOOTSTRAP_BIND:-10.0.0.1}"
 export BOOTSTRAP_PORT="${BOOTSTRAP_PORT:-8042}"
 export BOOTSTRAP_PY="${BOOTSTRAP_PY:-bootstrap-server.py}"

@@ -186,6 +186,7 @@ start_client_wg() {
         export SCION_ENABLED=true
         export SCION_CONFIG_DIR='$SCION_CONFIG_DIR'
         export SCION_UNDERLAY_PORT='$SCION_UNDERLAY_PORT'
+        export SCION_POLICY_FILE='$SCION_POLICY_FILE'
 
         cd '$SCRIPT_DIR/../'
         '$BIN_DIR/wireguard-go' --foreground '$WG_CLIENT_IFACE' >> '$LOGS_DIR/wg-client.log' 2>&1

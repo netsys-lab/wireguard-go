@@ -168,8 +168,10 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	var selectedcachedpath pathpool.CachedPath
 	if t.policyEngine != nil {
 		selectedcachedpath = t.selectPathWithPolicy(CachedPaths, srcIA, dstIA)
+		log.Print("[PATHPOOL] using path policy")
 	} else {
 		selectedcachedpath = selectPath(CachedPaths)
+		log.Print("[PATHPOOL] NOT using path policy")
 	}
 
 	meta := selectedcachedpath.Path.Metadata()

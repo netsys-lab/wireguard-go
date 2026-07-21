@@ -7,11 +7,11 @@
 set -euo pipefail
 
 # Configuration - these can be overridden via environment
-export TESTENV_DIR="${TESTENV_DIR:-/home/paul/Scintra/test/wireguard-go/testenv}"
+export TESTENV_DIR="${TESTENV_DIR:-/home/jonas/wg-go-app/wireguard-go/testenv}"
 export LOG_DIR="${LOG_DIR:-$TESTENV_DIR/logs}"
-export SCION_DIR="${SCION_DIR:-/home/paul/Scintra/scion}"
-
-export SCION_TOPOLOGY="${SCION_TOPOLOGY:-topology/tiny-bgp.topo}"
+export SCION_DIR="${SCION_DIR:-/home/jonas/scion}"
+export SCION_POLICY_FILE="${SCION_POLICY_FILE:-/home/jonas/scion/policies/policy-v0.json}" # also add/change env variable in wireguard.sh
+export SCION_TOPOLOGY="${SCION_TOPOLOGY:-topology/scion-ring-3isd.topo}" # changed topo
 
 # Network Configuration
 export SERVER_NS="${SERVER_NS:-Server}"
@@ -25,7 +25,6 @@ export CLIENT_VETH_IP="10.10.10.2/24"
 export SERVER_65413_sciond_addr="10.0.0.3/8"
 # export SERVER_64513_BR_bind_addr"10.0.0.1/24" # Equal to SERVER_VETH_IP
 
-
 # WireGuard Configuration
 export WG_SERVER_IFACE="wg-server"
 export WG_CLIENT_IFACE="wg-client"
@@ -36,7 +35,7 @@ export WG_ENDPOINT="10.10.10.1:51820"
 export WG_IP_V6="fc00:10fc:100::1/7" #fc00::/7
 
 # SCION Configuration
-export SCION_LOCAL_IA="${SCION_LOCAL_IA:-1-64513}" # Not needed for wg startup anymore loaded from topology.json but still here for config dir etc
+export SCION_LOCAL_IA="${SCION_LOCAL_IA:-64512}" # Not needed for wg startup anymore loaded from topology.json but still here for config dir etc
 export SCION_UNDERLAY_PORT="${SCION_UNDERLAY_PORT:-30041}"
 export SCION_LISTENER_PORT=$((SCION_UNDERLAY_PORT + 1))
 
@@ -47,7 +46,7 @@ export SCION_LISTENER_PORT=$((SCION_UNDERLAY_PORT + 1))
 
 # Lets test 31006 - Outer dst port is 31006
 export SCION_BR_PORT="${SCION_BR_PORT:-31006}"
-export SCION_BR64513_IP="${SCION_BR64513_IP:-127.0.0.25}"
+export SCION_BR64513_IP="${SCION_BR64513_IP:-127.0.0.41}"
 export SCION_BR64514_IP="${SCION_BR64514_IP:-127.0.0.33}"
 
 export SCION_ENABLED=true

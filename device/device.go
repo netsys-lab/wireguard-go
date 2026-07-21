@@ -7,7 +7,6 @@ package device
 
 import (
 	"net"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -333,11 +332,13 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 
 		// Load path policy engine (optional).
 		// Try explicit SCION_POLICY_FILE first, then <configDir>/policy.json.
+		logger.Verbosef("SCION path policy file: %v", scionConfig.PolicyFile)
 		policyPaths := []string{}
 		if scionConfig.PolicyFile != "" {
 			policyPaths = append(policyPaths, scionConfig.PolicyFile)
 		}
-		policyPaths = append(policyPaths, filepath.Join(scionConfig.ConfigDir, "policy.json"))
+		// policyPaths = append(policyPaths, filepath.Join(scionConfig.ConfigDir, "policy.json"))
+		logger.Verbosef("SCION path policy load paths: %v", policyPaths)
 
 		policyEngine, err := pathpolicy.LoadEngineFromPaths(policyPaths...)
 		if err != nil {

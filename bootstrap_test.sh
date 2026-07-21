@@ -29,7 +29,7 @@ WG_LOG="${WG_LOG:-debug}"
 
 # SCION + Bootstrap
 SCION_DIR="${SCION_DIR:-../scion}"
-TOPO_FILE="${TOPO_FILE:-topology/tiny.topo}" # relative to SCION_DIR
+TOPO_FILE="${TOPO_FILE:-topology/scion-ring-3isd.topo}" # relative to SCION_DIR
 RUN_LOG="${RUN_LOG:-/tmp/scion_run.log}"
 
 BOOTSTRAP_PY="${BOOTSTRAP_PY:-bootstrap-server.py}"
@@ -38,7 +38,7 @@ BOOTSTRAP_PORT="${BOOTSTRAP_PORT:-8042}"
 BOOTSTRAP_URL="http://${BOOTSTRAP_BIND}:${BOOTSTRAP_PORT}"
 
 # Which AS directory to serve for endhost bootstrap (must exist under SCION_DIR/gen/)
-BOOTSTRAP_AS="${BOOTSTRAP_AS:-ASff00_0_111}"
+BOOTSTRAP_AS="${BOOTSTRAP_AS:-AS64512}"
 ASDIR="${ASDIR:-$SCION_DIR/gen/$BOOTSTRAP_AS}"
 LOCAL_IA="${BOOTSTRAP_AS:-ASff00_0_111}"
 # Client local cache dir for downloaded topology+TRCs

@@ -12,12 +12,12 @@ source ./config.sh
 GENFILE="$SCION_CONFIG_DIR"
 
 # BR internal address
-OLD_BR_IP="127.0.0.25"
-NEW_BR_IP="${WG_SERVER_IP%%/*}"          # usually 10.0.0.1
+OLD_BR_IP="127.0.0.41"                          # TODO
+NEW_BR_IP="${WG_SERVER_IP%%/*}"                 # usually 10.0.0.1
 
 # sciond / control / discovery reachable address
-OLD_DAEMON_IP="127.0.0.27"
-OLD_CS_IP="127.0.0.26"
+OLD_DAEMON_IP="127.0.0.45"     # TODO
+OLD_CS_IP="127.0.0.44"                         # TODO
 NEW_SERVICE_IP="${SERVER_65413_sciond_addr%%/*}"   # usually 10.0.0.3
 
 echo "Patching SCION topology in $GENFILE"
@@ -27,8 +27,8 @@ sed -i.bak "s|${OLD_BR_IP}|${NEW_BR_IP}|g" "$GENFILE/topology.json"
 echo "Replaced BR IP $OLD_BR_IP -> $NEW_BR_IP in topology.json"
 
 # Control + Discovery service: 127.0.0.26:31004 -> 10.0.0.3:31004
-sed -i.bak "s|${OLD_CS_IP}:31004|${NEW_SERVICE_IP}:31004|g" "$GENFILE/topology.json"
-echo "Replaced Control/Discovery $OLD_CS_IP:31004 -> $NEW_SERVICE_IP:31004 in topology.json"
+sed -i.bak "s|${OLD_CS_IP}:31000|${NEW_SERVICE_IP}:31000|g" "$GENFILE/topology.json"
+echo "Replaced Control/Discovery $OLD_CS_IP:31000 -> $NEW_SERVICE_IP:31000 in topology.json"
 
 # Make service IP available in Server namespace
 sudo ip netns exec "$SERVER_NS" ip addr add "${NEW_SERVICE_IP}/8" dev lo 2>/dev/null || true

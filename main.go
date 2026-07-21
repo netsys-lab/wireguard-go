@@ -228,6 +228,8 @@ func main() {
 
 	scionConfig := device.ScionDeviceConfigFromEnv()
 	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
+	logger.Verbosef("scionConfig.policyFile: %v", scionConfig.PolicyFile)
+	logger.Verbosef("policyFile: %v", os.Getenv("SCION_POLICY_FILE"))
 
 	if bootstrapURL != "" {
 		if scionConfig.ConfigDir == "" {
