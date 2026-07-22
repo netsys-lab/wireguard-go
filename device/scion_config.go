@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/scionproto/scion/pkg/addr"
+	"golang.zx2c4.com/wireguard/scionlog"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
 )
 
@@ -20,7 +21,7 @@ type ScionDeviceConfig struct {
 	InterfaceName string
 	LocalIPv4     netip.Addr      // Explicitly configured local IPv4 (Android: from VPN config)
 	LocalIPv6     netip.Addr      // Explicitly configured local IPv6 (Android: from VPN config)
-	LogConfig     *SCIONLogConfig // nil = use defaults (INFO, all components)
+	LogConfig     *scionlog.LogConfig // nil = use defaults (INFO, all components)
 }
 
 type scionTopologyFile struct {
@@ -94,7 +95,7 @@ func ScionDeviceConfigFromEnv() ScionDeviceConfig {
 
 	enabled := os.Getenv("SCION_ENABLED") == "true" || configDir != ""
 
-	logCfg := SCIONLogConfigFromEnv()
+	logCfg := scionlog.ConfigFromEnv()
 
 	return ScionDeviceConfig{
 		Enabled:   enabled,

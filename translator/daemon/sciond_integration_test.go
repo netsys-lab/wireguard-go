@@ -10,6 +10,12 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/pkg/addr"
+	"golang.zx2c4.com/wireguard/scionlog"
+)
+
+var noopLog = scionlog.NewLogger(
+	func(string, ...any) {},
+	func(string, ...any) {},
 )
 
 // getEnvIA helper to read IAs from environment or use default
@@ -28,7 +34,7 @@ func getEnvIA(key, defaultVal string) addr.IA {
 // TEMP EXPLANATION
 func TestSciondRetrieverRetrievalWithoutPool(t *testing.T) {
 	// 1. Setup Retriever
-	r, err := NewSciondRetriever()
+	r, err := NewSciondRetriever("", noopLog)
 	if err != nil {
 		t.Skipf("skipping integration test: cannot connect to sciond: %v", err)
 	}
@@ -87,7 +93,7 @@ func TestSciondRetrieverRetrievalWithoutPool(t *testing.T) {
 
 // TestSciondRetrieverTimeout verifies that the retriever respects context cancellation
 func TestSciondRetrieverTimeout(t *testing.T) {
-	r, err := NewSciondRetriever()
+	r, err := NewSciondRetriever("", noopLog)
 	if err != nil {
 		t.Skip("skipping timeout test: daemon not available")
 	}

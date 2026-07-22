@@ -3,10 +3,10 @@ package pathpool
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 
 	"github.com/scionproto/scion/pkg/addr"
+	"golang.zx2c4.com/wireguard/scionlog"
 )
 
 // SetRefreshCallback registers a callback that is called after a successful
@@ -17,7 +17,7 @@ func (pp *PathPool) SetRefreshCallback(cb RefreshCallback) {
 	defer pp.mu.Unlock()
 
 	pp.onRefresh = cb
-	log.Printf("[PATHPOOL] refresh callback registered")
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] refresh callback registered")
 }
 
 // PrefetchAsync starts async refreshes for configured IA pairs during startup.
@@ -25,11 +25,11 @@ func (pp *PathPool) SetRefreshCallback(cb RefreshCallback) {
 // destination arrives.
 func (pp *PathPool) PrefetchAsync(pairs []IAPair) {
 	if len(pairs) == 0 {
-		log.Printf("[PATHPOOL] PrefetchAsync: no pairs configured")
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] PrefetchAsync: no pairs configured")
 		return
 	}
 
-	log.Printf("[PATHPOOL] PrefetchAsync: pairs=%d", len(pairs))
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] PrefetchAsync: pairs=%d", len(pairs))
 
 	for _, pair := range pairs {
 		pp.RefreshAsync(pair.Src, pair.Dst, "startup-prefetch")
@@ -48,13 +48,13 @@ func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) RefreshStatus 
 	pp.known[k] = struct{}{}
 
 	if pp.retriever == nil {
-		log.Printf("[PATHPOOL] RefreshAsync skipped: retriever nil src=%s dst=%s reason=%s", src, dst, reason)
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshAsync skipped: retriever nil src=%s dst=%s reason=%s", src, dst, reason)
 		pp.mu.Unlock()
 		return RefreshStatus{}
 	}
 
 	if inflight, ok := pp.inflight[k]; ok {
-		log.Printf("[PATHPOOL] RefreshAsync skipped: already inflight id=%d src=%s dst=%s reason=%s", inflight.id, src, dst, reason)
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshAsync skipped: already inflight id=%d src=%s dst=%s reason=%s", inflight.id, src, dst, reason)
 		pp.mu.Unlock()
 		return RefreshStatus{ID: inflight.id, Started: false}
 	}
@@ -67,7 +67,7 @@ func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) RefreshStatus 
 	}
 	pp.mu.Unlock()
 
-	log.Printf("[SCION-PATH] refreshId=%d event=refresh-async src=%s dst=%s reason=%s started=%v", id, src, dst, reason, true)
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] refreshId=%d event=refresh-async src=%s dst=%s reason=%s started=%v", id, src, dst, reason, true)
 
 	go pp.refreshWorker(src, dst, reason, id)
 
@@ -82,7 +82,7 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string, refreshID uin
 	k := key{src: src, dst: dst}
 	refreshStart := time.Now()
 
-	log.Printf("[SCION-PATH] refreshId=%d event=refresh-started src=%s dst=%s reason=%s", refreshID, src, dst, reason)
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] refreshId=%d event=refresh-started src=%s dst=%s reason=%s", refreshID, src, dst, reason)
 
 	ctx, cancel := context.WithTimeout(context.Background(), pp.queryTimeout)
 	defer cancel()
@@ -132,7 +132,7 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string, refreshID uin
 			}
 		}
 
-		log.Printf("[SCION-PATH] refreshId=%d event=refresh-failed src=%s dst=%s elapsedMs=%d remainingDeadlineMs=%d errorCategory=%s cause=%q reason=%s",
+		pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] refreshId=%d event=refresh-failed src=%s dst=%s elapsedMs=%d remainingDeadlineMs=%d errorCategory=%s cause=%q reason=%s",
 			refreshID, src, dst, retrieveElapsed.Milliseconds(), remainingMs, errorCategory, cause, reason)
 		return
 	}
@@ -141,7 +141,7 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string, refreshID uin
 		entry.lastError = ErrNoPaths
 		pp.mu.Unlock()
 
-		log.Printf("[SCION-PATH] refreshId=%d event=refresh-failed src=%s dst=%s elapsedMs=%d errorCategory=no-paths reason=%s",
+		pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] refreshId=%d event=refresh-failed src=%s dst=%s elapsedMs=%d errorCategory=no-paths reason=%s",
 			refreshID, src, dst, retrieveElapsed.Milliseconds(), reason)
 		return
 	}
@@ -166,7 +166,7 @@ func (pp *PathPool) refreshWorker(src, dst addr.IA, reason string, refreshID uin
 
 	pp.mu.Unlock()
 
-	log.Printf("[SCION-PATH] refreshId=%d event=refresh-success src=%s dst=%s paths=%d elapsedMs=%d reason=%s",
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] refreshId=%d event=refresh-success src=%s dst=%s paths=%d elapsedMs=%d reason=%s",
 		refreshID, src, dst, pathCount, retrieveElapsed.Milliseconds(), reason)
 
 	if shouldCallCallback {
@@ -180,11 +180,11 @@ func (pp *PathPool) RefreshKnownPairs(reason string) {
 	pairs := pp.knownPairsSnapshot()
 
 	if len(pairs) == 0 {
-		log.Printf("[PATHPOOL] RefreshKnownPairs: no known pairs reason=%s", reason)
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshKnownPairs: no known pairs reason=%s", reason)
 		return
 	}
 
-	log.Printf("[PATHPOOL] RefreshKnownPairs: pairs=%d reason=%s", len(pairs), reason)
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshKnownPairs: pairs=%d reason=%s", len(pairs), reason)
 
 	for _, pair := range pairs {
 		pp.RefreshAsync(pair.Src, pair.Dst, reason)

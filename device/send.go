@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/flow"
+	"golang.zx2c4.com/wireguard/scionlog"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
 	"golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
@@ -50,12 +51,12 @@ import (
  */
 
 type QueueOutboundElement struct {
-	buffer  *[MaxMessageSize]byte // slice holding the packet data
-	packet  []byte                // slice of "buffer" (always!)
-	nonce   uint64                // nonce for encryption
-	keypair *Keypair              // keypair for encryption
-	peer    *Peer                 // related peer
-	PacketID uint64               // SCION packet correlation ID (0 = not traced)
+	buffer   *[MaxMessageSize]byte // slice holding the packet data
+	packet   []byte                // slice of "buffer" (always!)
+	nonce    uint64                // nonce for encryption
+	keypair  *Keypair              // keypair for encryption
+	peer     *Peer                 // related peer
+	PacketID uint64                // SCION packet correlation ID (0 = not traced)
 }
 
 type QueueOutboundElementsContainer struct {
@@ -264,28 +265,10 @@ func (device *Device) RoutineReadFromTUN() {
 
 			elem.packet = pkt
 
-			// Flow tracking: read-only inspection of the original packet.
-			// Packet buffer references are never retained; only value types
-			// (netip.Addr, uint8, uint16) are copied into the flow system.
-			// A parse failure does not interrupt the WireGuard pipeline.
-			if device.flowManager != nil {
-				if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-					if snap, created := device.flowManager.ObserveTx(md, len(pkt)); created {
-						device.log.Verbosef(
-							"Flow created: id=%d ip_version=%d protocol=%s endpoint_a=%s endpoint_b=%s status=%s tx_packets=%d tx_bytes=%d rx_packets=%d rx_bytes=%d",
-							snap.ID, snap.IPVersion, snap.ProtocolName(),
-							snap.EndpointA, snap.EndpointB,
-							snap.Status, snap.TxPackets, snap.TxBytes,
-							snap.RxPackets, snap.RxBytes,
-						)
-					}
-				}
-			}
-
 			// lookup peer
 			var peer *Peer
 			packetID := device.NextPacketID()
-			device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=accepted bytes=%d", packetID, len(pkt))
+			device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=accepted bytes=%d", packetID, len(pkt))
 			switch elem.packet[0] >> 4 {
 			case 4:
 				if len(elem.packet) < ipv4.HeaderLen {
@@ -294,22 +277,17 @@ func (device *Device) RoutineReadFromTUN() {
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
 
-				dstIP := net.IP(dst)
-
-				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
-					srcIP := net.IP(pkt[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len])
-					hostPort := 35000
-					start := time.Now()
-					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, false)
-					translateDur := time.Since(start)
-					if err != nil {
-						device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed duration=%v err=%v", packetID, translateDur, err)
-						continue
+				if device.flowManager != nil {
+					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
+							device.log.Verbosef(
+								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+								snap.ID, snap.EgressKind, snap.ProtocolName(),
+								snap.EndpointA, snap.EndpointB,
+								snap.TxPackets, snap.TxBytes,
+							)
+						}
 					}
-					elem.PacketID = packetID
-					elem.packet = newpkt
-					sizes[i] = len(newpkt)
-					device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", packetID, len(newpkt), translateDur)
 				}
 
 			case 6:
@@ -320,6 +298,21 @@ func (device *Device) RoutineReadFromTUN() {
 
 				dstIP := net.IP(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
+
+					//Flow Manager with Scion call
+					if device.flowManager != nil {
+						if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+							if snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion"); created {
+								device.log.Verbosef(
+									"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+									snap.ID, snap.EgressKind, snap.ProtocolName(),
+									snap.EndpointA, snap.EndpointB,
+									snap.TxPackets, snap.TxBytes,
+								)
+							}
+						}
+					}
+
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 					hostPort := 35000
 					start := time.Now()
@@ -329,21 +322,21 @@ func (device *Device) RoutineReadFromTUN() {
 						if errors.Is(err, pathpool.ErrPathPending) {
 							srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP)
 							if iaErr != nil {
-								device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=ia-extract err=%v", packetID, iaErr)
+								device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=ia-extract err=%v", packetID, iaErr)
 								continue
 							}
 
 							if device.pendingSCION == nil {
-								device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=pending-nil src=%s dst=%s", packetID, srcIA, dstIA)
+								device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=pending-nil src=%s dst=%s", packetID, srcIA, dstIA)
 								continue
 							}
 
 							device.pendingSCION.Enqueue(srcIA, dstIA, pkt, true, hostPort, packetID)
-							device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-pending src=%s dst=%s bytes=%d", packetID, srcIA, dstIA, len(pkt))
+							device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-pending src=%s dst=%s bytes=%d", packetID, srcIA, dstIA, len(pkt))
 							continue
 						}
 
-						device.scionLog.Errorf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed duration=%v err=%v", packetID, translateDur, err)
+						device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed duration=%v err=%v", packetID, translateDur, err)
 						continue
 					}
 					elem.PacketID = packetID
@@ -361,22 +354,52 @@ func (device *Device) RoutineReadFromTUN() {
 
 					elem.packet = newpkt
 					sizes[i] = len(newpkt)
-					device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", packetID, len(newpkt), translateDur)
+					device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", packetID, len(newpkt), translateDur)
 				} else {
 					// Not SCION-mapped - normal lookup
 					peer = device.allowedips.Lookup(dst)
+
+					//Flow manager if Ipv6 and not scion
+					if device.flowManager != nil {
+						if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+							if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
+								device.log.Verbosef(
+									"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+									snap.ID, snap.EgressKind, snap.ProtocolName(),
+									snap.EndpointA, snap.EndpointB,
+									snap.TxPackets, snap.TxBytes,
+								)
+							}
+						}
+					}
+
 				}
 
 			default:
-				device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=accepted proto=%d", packetID, elem.packet[0]>>4)
+				device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=accepted proto=%d", packetID, elem.packet[0]>>4)
+
+				//Flow Manager Kind Unknow if not v6 or v4
+				if device.flowManager != nil {
+					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "unknown"); created {
+							device.log.Verbosef(
+								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+								snap.ID, snap.EgressKind, snap.ProtocolName(),
+								snap.EndpointA, snap.EndpointB,
+								snap.TxPackets, snap.TxBytes,
+							)
+						}
+					}
+				}
+
 				continue
 			}
 
 			if peer == nil {
-				device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed", packetID)
+				device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed", packetID)
 				continue
 			}
-			device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-selected", packetID)
+			device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-selected", packetID)
 			elemsForPeer, ok := elemsByPeer[peer]
 			if !ok {
 				elemsForPeer = device.GetOutboundElementsContainer()
@@ -391,7 +414,7 @@ func (device *Device) RoutineReadFromTUN() {
 			if peer.isRunning.Load() {
 				for _, elem := range elemsForPeer.elems {
 					if elem.PacketID != 0 {
-						device.scionLog.Debugf(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-for-encryption", elem.PacketID)
+						device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-for-encryption", elem.PacketID)
 					}
 				}
 				peer.StagePackets(elemsForPeer)
@@ -624,9 +647,9 @@ func (device *Device) RoutineEncryption(id int) {
 			}
 		}
 		if encFirstID != 0 {
-			device.scionLog.Tracef(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=encrypted tracedPackets=%d", encFirstID, encTracedCount)
+			device.scionLog.Tracef(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=encrypted tracedPackets=%d", encFirstID, encTracedCount)
 			if encLastID != encFirstID {
-				device.scionLog.Tracef(ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=encrypted tracedPackets=%d", encLastID, encTracedCount)
+				device.scionLog.Tracef(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=encrypted tracedPackets=%d", encLastID, encTracedCount)
 			}
 		}
 		elemsContainer.Unlock()
@@ -689,7 +712,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 			for _, b := range bufs {
 				totalBytes += len(b)
 			}
-			device.scionLog.Debugf(ComponentEgressLifecycle,
+			device.scionLog.Debugf(scionlog.ComponentEgressLifecycle,
 				"[SCION-EGRESS] event=socket-write-start peer=%s firstPacketId=%d lastPacketId=%d tracedPackets=%d buffers=%d totalBytes=%d",
 				peer, firstID, lastID, tracedCount, len(bufs), totalBytes)
 		}
@@ -704,7 +727,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		// Log socket success/failure
 		if firstID != 0 {
 			if err != nil {
-				device.scionLog.Errorf(ComponentEgressLifecycle,
+				device.scionLog.Errorf(scionlog.ComponentEgressLifecycle,
 					"[SCION-EGRESS] event=socket-write-failed peer=%s firstPacketId=%d tracedPackets=%d err=%v",
 					peer, firstID, tracedCount, err)
 			} else {
@@ -712,7 +735,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 				for _, b := range bufs {
 					totalBytes += len(b)
 				}
-				device.scionLog.Tracef(ComponentEgressLifecycle,
+				device.scionLog.Tracef(scionlog.ComponentEgressLifecycle,
 					"[SCION-EGRESS] event=socket-write-success peer=%s firstPacketId=%d lastPacketId=%d tracedPackets=%d buffers=%d totalBytes=%d",
 					peer, firstID, lastID, tracedCount, len(bufs), totalBytes)
 			}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,34 +13,36 @@ import (
 	"github.com/scionproto/scion/pkg/daemon"
 	"github.com/scionproto/scion/pkg/daemon/types"
 	"github.com/scionproto/scion/pkg/snet"
+	"golang.zx2c4.com/wireguard/scionlog"
 	"golang.zx2c4.com/wireguard/translator/pathpool"
 )
 
 type SciondRetriever struct {
 	connector daemon.Connector
+	log       *scionlog.Logger
 }
 
-func logDialCheck(network, address string) {
+func (r *SciondRetriever) logDialCheck(network, address string) {
 	d := net.Dialer{Timeout: 2 * time.Second}
 	conn, err := d.Dial(network, address)
 	if err != nil {
-		log.Printf("[PATHSRV-DIAL] %s %s FAILED: %v", network, address, err)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] %s %s FAILED: %v", network, address, err)
 		return
 	}
 	_ = conn.Close()
-	log.Printf("[PATHSRV-DIAL] %s %s OK", network, address)
+	r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] %s %s OK", network, address)
 }
 
-func logDialChecksFromTopology(topoPath string) {
+func (r *SciondRetriever) logDialChecksFromTopology(topoPath string) {
 	raw, err := os.ReadFile(topoPath)
 	if err != nil {
-		log.Printf("[PATHSRV-DIAL] read topology failed: %v", err)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] read topology failed: %v", err)
 		return
 	}
 
 	var topo map[string]any
 	if err := json.Unmarshal(raw, &topo); err != nil {
-		log.Printf("[PATHSRV-DIAL] parse topology failed: %v", err)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] parse topology failed: %v", err)
 		return
 	}
 
@@ -62,8 +63,8 @@ func logDialChecksFromTopology(topoPath string) {
 				continue
 			}
 
-			log.Printf("[PATHSRV-DIAL] %s %s addr=%s", section, name, addr)
-			logDialCheck("tcp", addr)
+			r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] %s %s addr=%s", section, name, addr)
+			r.logDialCheck("tcp", addr)
 		}
 	}
 
@@ -82,8 +83,8 @@ func logDialChecksFromTopology(topoPath string) {
 		}
 
 		if internal, _ := br["internal_addr"].(string); internal != "" {
-			log.Printf("[PATHSRV-DIAL] border_router %s internal_addr=%s", brName, internal)
-			logDialCheck("udp", internal)
+			r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] border_router %s internal_addr=%s", brName, internal)
+			r.logDialCheck("udp", internal)
 		}
 
 		ifaces, ok := br["interfaces"].(map[string]any)
@@ -103,21 +104,29 @@ func logDialChecksFromTopology(topoPath string) {
 			}
 
 			if local, _ := underlay["local"].(string); local != "" {
-				log.Printf("[PATHSRV-DIAL] br=%s ifid=%s underlay.local=%s", brName, ifid, local)
-				logDialCheck("udp", local)
+				r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] br=%s ifid=%s underlay.local=%s", brName, ifid, local)
+				r.logDialCheck("udp", local)
 			}
 
 			if remote, _ := underlay["remote"].(string); remote != "" {
-				log.Printf("[PATHSRV-DIAL] br=%s ifid=%s underlay.remote=%s", brName, ifid, remote)
-				logDialCheck("udp", remote)
+				r.log.Infof(scionlog.ComponentPath, "[PATHSRV-DIAL] br=%s ifid=%s underlay.remote=%s", brName, ifid, remote)
+				r.logDialCheck("udp", remote)
 			}
 		}
 	}
 }
 
 // configDir: The directory containing 'topology.json' and a 'certs' subdirectory.
-func NewSciondRetriever(configDir string) (*SciondRetriever, error) {
-	log.Printf("[PATHSRV] NewSciondRetriever: configDir=%s", configDir)
+func NewSciondRetriever(configDir string, log *scionlog.Logger) (*SciondRetriever, error) {
+	if log == nil {
+		log = scionlog.NewLogger(
+			func(string, ...any) {},
+			func(string, ...any) {},
+		)
+	}
+
+	r := &SciondRetriever{log: log}
+	r.log.Infof(scionlog.ComponentPath, "[PATHSRV] NewSciondRetriever: configDir=%s", configDir)
 
 	topoPath := filepath.Join(configDir, "topology.json")
 	certsDir := filepath.Join(configDir, "certs")
@@ -130,27 +139,27 @@ func NewSciondRetriever(configDir string) (*SciondRetriever, error) {
 	ia := asInfo.IA()
 	mtu := asInfo.MTU()
 
-	log.Printf("[PATHSRV] AS info: IA=%s", ia)
-	log.Printf("[PATHSRV] ASInfo MTU=%d", mtu)
+	r.log.Infof(scionlog.ComponentPath, "[PATHSRV] AS info: IA=%s", ia)
+	r.log.Infof(scionlog.ComponentPath, "[PATHSRV] ASInfo MTU=%d", mtu)
 
-	log.Printf("[PATHSRV-CONFIG] topology=%s", topoPath)
-	log.Printf("[PATHSRV-CONFIG] certsDir=%s", certsDir)
+	r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONFIG] topology=%s", topoPath)
+	r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONFIG] certsDir=%s", certsDir)
 
 	rawTopo, err := os.ReadFile(topoPath)
 	if err != nil {
-		log.Printf("[PATHSRV-CONFIG] failed to read topology raw: %v", err)
+		r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONFIG] failed to read topology raw: %v", err)
 	} else {
-		log.Printf("[PATHSRV-CONFIG] raw topology.json:\n%s", string(rawTopo))
+		r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONFIG] raw topology.json:\n%s", string(rawTopo))
 	}
-	logDialChecksFromTopology(topoPath)
+	r.logDialChecksFromTopology(topoPath)
 
-	log.Printf("[PATHSRV-CONFIG] asInfo=%+v", asInfo)
+	r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONFIG] asInfo=%+v", asInfo)
 
 	// Create context with timeout for initial connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	log.Printf("[PATHSRV-CONNECT] creating standalone connector")
+	r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONNECT] creating standalone connector")
 
 	conn, err := daemon.NewStandaloneConnector(
 		ctx,
@@ -161,16 +170,16 @@ func NewSciondRetriever(configDir string) (*SciondRetriever, error) {
 		return nil, fmt.Errorf("failed to initialize standalone SCION connector: %w", err)
 	}
 
-	log.Printf("[PATHSRV] Created standalone connector successfully")
+	r.log.Infof(scionlog.ComponentPath, "[PATHSRV] Created standalone connector successfully")
 
 	// Test connectivity - try to get local IA
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
 	localIA, err := conn.LocalIA(ctx2)
 	if err != nil {
-		log.Printf("[PATHSRV] WARNING: Could not get local IA: %v", err)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV] WARNING: Could not get local IA: %v", err)
 	} else {
-		log.Printf("[PATHSRV] Local IA: %s", localIA)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV] Local IA: %s", localIA)
 	}
 
 	// Get interfaces
@@ -178,71 +187,70 @@ func NewSciondRetriever(configDir string) (*SciondRetriever, error) {
 	defer cancel3()
 	ifaces, err := conn.Interfaces(ctx3)
 	if err != nil {
-		log.Printf("[PATHSRV] WARNING: Could not get interfaces: %v", err)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV] WARNING: Could not get interfaces: %v", err)
 	} else {
-		log.Printf("[PATHSRV] Interfaces: %v", ifaces)
+		r.log.Infof(scionlog.ComponentPath, "[PATHSRV] Interfaces: %v", ifaces)
 	}
 
-	return &SciondRetriever{
-		connector: conn,
-	}, nil
+	r.connector = conn
+	return r, nil
 }
 
 func (r *SciondRetriever) RetrievePaths(ctx context.Context, src, dst addr.IA) ([]snet.Path, error) {
 	refreshID, hasRefreshID := pathpool.RefreshIDFromContext(ctx)
-rid := ""
+	rid := ""
 	if hasRefreshID {
 		rid = fmt.Sprintf("refreshId=%d ", refreshID)
 	}
 
-	log.Printf("[SCION-PATH-TRACE] %sphase=RetrievePaths event=start src=%s dst=%s", rid, src, dst)
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=RetrievePaths event=start src=%s dst=%s", rid, src, dst)
 	retrieveStart := time.Now()
 
 	// Phase: LocalIA probe
-	log.Printf("[SCION-PATH-TRACE] %sphase=local-ia event=start", rid)
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=local-ia event=start", rid)
 	localIAStart := time.Now()
 	localIA, err := r.connector.LocalIA(ctx)
 	localIAElapsed := time.Since(localIAStart)
 	if err != nil {
-		log.Printf("[SCION-PATH-TRACE] %sphase=local-ia event=complete elapsedMs=%d err=%v", rid, localIAElapsed.Milliseconds(), err)
+		r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=local-ia event=complete elapsedMs=%d err=%v", rid, localIAElapsed.Milliseconds(), err)
 	} else {
-		log.Printf("[SCION-PATH-TRACE] %sphase=local-ia event=complete elapsedMs=%d localIA=%s", rid, localIAElapsed.Milliseconds(), localIA)
+		r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=local-ia event=complete elapsedMs=%d localIA=%s", rid, localIAElapsed.Milliseconds(), localIA)
 	}
 
 	// Phase: Interfaces probe
-	log.Printf("[SCION-PATH-TRACE] %sphase=interfaces event=start", rid)
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=interfaces event=start", rid)
 	ifacesStart := time.Now()
 	ifaces, err := r.connector.Interfaces(ctx)
 	ifacesElapsed := time.Since(ifacesStart)
 	if err != nil {
-		log.Printf("[SCION-PATH-TRACE] %sphase=interfaces event=complete elapsedMs=%d err=%v", rid, ifacesElapsed.Milliseconds(), err)
+		r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=interfaces event=complete elapsedMs=%d err=%v", rid, ifacesElapsed.Milliseconds(), err)
 	} else {
-		log.Printf("[SCION-PATH-TRACE] %sphase=interfaces event=complete elapsedMs=%d count=%d", rid, ifacesElapsed.Milliseconds(), len(ifaces))
+		r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=interfaces event=complete elapsedMs=%d count=%d", rid, ifacesElapsed.Milliseconds(), len(ifaces))
 	}
 
 	// Phase: connector.Paths
-	log.Printf("[SCION-PATH-TRACE] %sphase=connector.Paths event=start dst=%s src=%s", rid, dst, src)
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=connector.Paths event=start dst=%s src=%s", rid, dst, src)
 	pathsStart := time.Now()
 	paths, err := r.connector.Paths(ctx, dst, src, types.PathReqFlags{})
 	pathsElapsed := time.Since(pathsStart)
 	if err != nil {
-		log.Printf("[SCION-PATH-TRACE] %sphase=connector.Paths event=complete elapsedMs=%d err=%v", rid, pathsElapsed.Milliseconds(), err)
+		r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=connector.Paths event=complete elapsedMs=%d err=%v", rid, pathsElapsed.Milliseconds(), err)
 		return nil, fmt.Errorf("embedded engine failed to fetch paths: %w", err)
 	}
-	log.Printf("[SCION-PATH-TRACE] %sphase=connector.Paths event=complete elapsedMs=%d pathCount=%d", rid, pathsElapsed.Milliseconds(), len(paths))
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=connector.Paths event=complete elapsedMs=%d pathCount=%d", rid, pathsElapsed.Milliseconds(), len(paths))
 
 	// Phase: result processing
-	log.Printf("[SCION-PATH-TRACE] %sphase=result-processing event=start pathCount=%d", rid, len(paths))
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=result-processing event=start pathCount=%d", rid, len(paths))
 	processingStart := time.Now()
 	for i, p := range paths {
 		meta := p.Metadata()
-		log.Printf("[SCION-PATH-TRACE] %spath[%d] nextHop=%v expiry=%v", rid, i, p.UnderlayNextHop(), meta.Expiry)
+		r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %spath[%d] nextHop=%v expiry=%v", rid, i, p.UnderlayNextHop(), meta.Expiry)
 	}
 	processingElapsed := time.Since(processingStart)
-	log.Printf("[SCION-PATH-TRACE] %sphase=result-processing event=complete elapsedMs=%d", rid, processingElapsed.Milliseconds())
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=result-processing event=complete elapsedMs=%d", rid, processingElapsed.Milliseconds())
 
 	totalElapsed := time.Since(retrieveStart)
-	log.Printf("[SCION-PATH-TRACE] %sphase=RetrievePaths event=complete elapsedMs=%d pathCount=%d", rid, totalElapsed.Milliseconds(), len(paths))
+	r.log.Infof(scionlog.ComponentPath, "[SCION-PATH-TRACE] %sphase=RetrievePaths event=complete elapsedMs=%d pathCount=%d", rid, totalElapsed.Milliseconds(), len(paths))
 
 	return paths, nil
 }

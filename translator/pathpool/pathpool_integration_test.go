@@ -11,7 +11,13 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/pkg/addr"
+	"golang.zx2c4.com/wireguard/scionlog"
 	"golang.zx2c4.com/wireguard/translator/daemon"
+)
+
+var noopLog = scionlog.NewLogger(
+	func(string, ...any) {},
+	func(string, ...any) {},
 )
 
 // getEnvIAHelper reads an IA from an environment variable or falls back to a default.
@@ -63,12 +69,12 @@ func waitForRealPaths(t *testing.T, pp *PathPool, src, dst addr.IA, timeout time
 
 // integration test against real SCION daemon / retriever.
 func TestPathPoolIntegration_RealDaemon(t *testing.T) {
-	retriever, err := daemon.NewSciondRetriever()
+	retriever, err := daemon.NewSciondRetriever("", noopLog)
 	if err != nil {
 		t.Skipf("Skipping integration test: cannot connect to SCION daemon/retriever: %v", err)
 	}
 
-	pp := NewPathPool(retriever)
+	pp := NewPathPool(retriever, noopLog)
 	defer pp.Close()
 
 	src := getEnvIAHelper("SCION_TEST_SRC_IA", "1-ff00:0:110")

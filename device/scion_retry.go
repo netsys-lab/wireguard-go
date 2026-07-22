@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"golang.zx2c4.com/wireguard/scionlog"
 	bootstrap "golang.zx2c4.com/wireguard/translator/bootstrap"
 )
 
@@ -52,7 +53,7 @@ func (device *Device) InitSCIONWithBootstrapRetry(
 	}
 
 	if !scionConfig.Enabled {
-		device.log.Verbosef("SCION retry init skipped: SCION disabled")
+		device.scionLog.Infof(scionlog.ComponentInit, "SCION retry init skipped: SCION disabled")
 		return nil
 	}
 
@@ -75,7 +76,7 @@ func (device *Device) InitSCIONWithBootstrapRetry(
 		default:
 		}
 
-		device.log.Verbosef("SCION bootstrap/init attempt %d started", attempt)
+		device.scionLog.Infof(scionlog.ComponentInit, "SCION bootstrap/init attempt %d started", attempt)
 
 		if bootstrapURL != "" {
 			bootstrapCtx, cancel := context.WithTimeout(ctx, options.BootstrapTimeout)
@@ -84,26 +85,26 @@ func (device *Device) InitSCIONWithBootstrapRetry(
 
 			if err != nil {
 				lastErr = fmt.Errorf("SCION bootstrap attempt %d failed: %w", attempt, err)
-				device.log.Verbosef("%v", lastErr)
+				device.scionLog.Infof(scionlog.ComponentInit, "%v", lastErr)
 			} else {
-				device.log.Verbosef("SCION bootstrap attempt %d succeeded", attempt)
+				device.scionLog.Infof(scionlog.ComponentInit, "SCION bootstrap attempt %d succeeded", attempt)
 
 				if err := device.InitSCION(scionConfig); err != nil {
 					lastErr = fmt.Errorf("SCION init attempt %d failed: %w", attempt, err)
-					device.log.Errorf("%v", lastErr)
+					device.scionLog.Errorf(scionlog.ComponentInit, "%v", lastErr)
 				} else {
-					device.log.Verbosef("SCION initialized after %d attempt(s)", attempt)
+					device.scionLog.Infof(scionlog.ComponentInit, "SCION initialized after %d attempt(s)", attempt)
 					return nil
 				}
 			}
 		} else {
-			device.log.Verbosef("No SCION bootstrap URL provided, trying InitSCION from config dir: %s", scionConfig.ConfigDir)
+			device.scionLog.Infof(scionlog.ComponentInit, "No SCION bootstrap URL provided, trying InitSCION from config dir: %s", scionConfig.ConfigDir)
 
 			if err := device.InitSCION(scionConfig); err != nil {
 				lastErr = fmt.Errorf("SCION init attempt %d failed: %w", attempt, err)
-				device.log.Errorf("%v", lastErr)
+				device.scionLog.Errorf(scionlog.ComponentInit, "%v", lastErr)
 			} else {
-				device.log.Verbosef("SCION initialized after %d attempt(s)", attempt)
+				device.scionLog.Infof(scionlog.ComponentInit, "SCION initialized after %d attempt(s)", attempt)
 				return nil
 			}
 		}

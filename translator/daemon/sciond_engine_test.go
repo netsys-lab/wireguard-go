@@ -6,6 +6,12 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/pkg/addr"
+	"golang.zx2c4.com/wireguard/scionlog"
+)
+
+var noopLog = scionlog.NewLogger(
+	func(string, ...any) {},
+	func(string, ...any) {},
 )
 
 const (
@@ -17,7 +23,7 @@ const (
 
 func TestRetrievePaths_RealIntegration(t *testing.T) {
 
-	retriever, err := NewSciondRetriever(RealConfigDir)
+	retriever, err := NewSciondRetriever(RealConfigDir, noopLog)
 
 	if err != nil {
 

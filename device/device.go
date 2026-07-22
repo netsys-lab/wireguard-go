@@ -17,6 +17,7 @@ import (
 	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/ratelimiter"
 	"golang.zx2c4.com/wireguard/rwcancel"
+	"golang.zx2c4.com/wireguard/scionlog"
 	daemon "golang.zx2c4.com/wireguard/translator/daemon"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
 	pathcache "golang.zx2c4.com/wireguard/translator/pathpool"
@@ -98,7 +99,7 @@ type Device struct {
 	ipcMutex     sync.RWMutex
 	closed       chan struct{}
 	log          *Logger
-	scionLog     *SCIONLogger
+	scionLog     *scionlog.Logger
 	flowManager  *flow.Manager
 	pendingSCION *PendingSCIONQueue
 
@@ -315,19 +316,19 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 
 	// Initialize SCION logger before any SCION work so that init
 	// messages can be routed through it.
-	device.scionLog = NewSCIONLogger(logger)
+	device.scionLog = scionlog.NewLogger(logger.Verbosef, logger.Errorf)
 	if scionConfig.LogConfig != nil {
 		device.scionLog.SetConfig(*scionConfig.LogConfig)
 	}
 
 	// Emit effective configuration log once at startup.
 	// Android-specific log config is applied later in InitSCION().
-	LogEffectiveConfig(device.scionLog, "default", true)
+	scionlog.LogEffectiveConfig(device.scionLog, "default", true)
 
 	if scionConfig.Enabled {
-		logger.Verbosef("SCION requested, deferred init")
+		device.scionLog.Infof(scionlog.ComponentInit, "SCION requested, deferred init")
 	} else {
-		logger.Verbosef("SCION disabled")
+		device.scionLog.Infof(scionlog.ComponentInit, "SCION disabled at device creation")
 	}
 
 	mtu, err := device.tun.device.MTU()
@@ -371,12 +372,12 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 // So we need a Function for the device, that creates the translator and does all that afterwards, Would that be called from the main.go?
 func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	if !scionConfig.Enabled {
-		device.log.Verbosef("SCION disabled")
+		device.scionLog.Infof(scionlog.ComponentInit, "SCION disabled")
 		return nil
 	}
 
 	if scionConfig.ConfigDir == "" {
-		device.log.Errorf("SCION init failed: enabled but no config dir")
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: enabled but no config dir")
 		return fmt.Errorf("SCION init failed: enabled but no config dir")
 	}
 
@@ -385,39 +386,39 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	// peers, translator, PathPool, and egress pipeline.
 	if scionConfig.LogConfig != nil {
 		device.scionLog.SetConfig(*scionConfig.LogConfig)
-		LogEffectiveConfig(device.scionLog, "android-build-config", true)
+		scionlog.LogEffectiveConfig(device.scionLog, "android-build-config", true)
 	}
 
 	localIA, err := loadLocalIAFromTopology(scionConfig.ConfigDir)
 	if err != nil {
-		device.log.Errorf("SCION init failed: could not load local IA from topology: %v", err)
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: could not load local IA from topology: %v", err)
 		return fmt.Errorf("SCION init failed: could not load local IA from topology: %w", err)
 	}
 
 	brAddr, err := loadBRAddrFromTopology(scionConfig.ConfigDir)
 	if err != nil {
-		device.log.Errorf("SCION init failed: could not load BR address from topology: %w", err)
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: could not load BR address from topology: %w", err)
 		return fmt.Errorf("SCION init failed: could not load BR address from topology: %w", err)
 	}
 
 	dispatchedPorts, err := loadDispatchedPortsFromTopology(scionConfig.ConfigDir)
 	if err != nil {
-		device.log.Errorf("SCION init failed: could not load dispatched_ports from topology: %w", err)
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: could not load dispatched_ports from topology: %w", err)
 		return fmt.Errorf("SCION init failed: could not load dispatched_ports from topology: %w", err)
 	}
 
-	retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir)
+	retriever, err := daemon.NewSciondRetriever(scionConfig.ConfigDir, device.scionLog)
 	if err != nil {
-		device.log.Errorf("SCION init failed: %w", err)
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: %w", err)
 		return fmt.Errorf("SCION init failed: %w", err)
 	}
 
-	pathPool := pathcache.NewPathPool(retriever)
+	pathPool := pathcache.NewPathPool(retriever, device.scionLog)
 
 	interfaceName := scionConfig.InterfaceName
 
 	pendingSCION := NewPendingSCIONQueue(64, 40*time.Second)
-	translator := header_parsing.NewTranslator(pathPool, localIA, brAddr, interfaceName)
+	translator := header_parsing.NewTranslator(pathPool, localIA, brAddr, interfaceName, device.scionLog)
 	translator.SetDispatchedPorts(dispatchedPorts)
 
 	// Set explicitly configured addresses (Android path).
@@ -434,14 +435,14 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	if scionConfig.LocalIPv4.IsValid() || scionConfig.LocalIPv6.IsValid() {
 		addressSource = "android-config"
 	}
-	device.log.Verbosef(
+	device.scionLog.Infof(scionlog.ComponentInit,
 		"[SCION-INIT-CONFIG] interfaceName=%s localIPv4=%s localIPv6=%s addressSource=%s",
 		interfaceName,
 		scionConfig.LocalIPv4,
 		scionConfig.LocalIPv6,
 		addressSource,
 	)
-	device.log.Verbosef(
+	device.scionLog.Infof(scionlog.ComponentInit,
 		"[SCION-INIT-CONFIG] dispatched_ports=%d-%d valid=%v localIA=%s brAddr=%s",
 		dispatchedPorts.Start,
 		dispatchedPorts.End,
@@ -454,12 +455,12 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	defer device.ipcMutex.Unlock()
 
 	if device.isClosed() {
-		device.log.Errorf("SCION init failed: device is closed")
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: device is closed")
 		return fmt.Errorf("SCION init failed: device is closed")
 	}
 
 	if device.translator != nil {
-		device.log.Errorf("SCION init failed: translator already initialized")
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: translator already initialized")
 		return fmt.Errorf("SCION init failed: translator already initialized")
 	}
 
@@ -468,7 +469,7 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	pathPool.SetRefreshCallback(device.OnPathReady)
 	device.translator = translator
 
-	device.log.Verbosef(
+	device.scionLog.Infof(scionlog.ComponentInit,
 		"SCION init success: configDir=%s localIA=%s brAddr=%s",
 		scionConfig.ConfigDir,
 		localIA,
@@ -719,4 +720,13 @@ func (device *Device) lookupPeerForPacket(packet []byte) *Peer {
 		device.log.Verbosef("[LOOKUP] No peer found for IP %s", net.IP(dstIP).String())
 	}
 	return peer
+}
+
+// FlowSnapshots returns an immutable sorted snapshot of all tracked flows.
+// Returns nil if the device has no FlowManager (should not happen in normal operation).
+func (device *Device) FlowSnapshots() []flow.Snapshot {
+	if device.flowManager == nil {
+		return nil
+	}
+	return device.flowManager.Snapshot()
 }

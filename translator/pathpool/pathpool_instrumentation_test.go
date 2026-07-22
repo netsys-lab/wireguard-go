@@ -30,7 +30,7 @@ func TestRefreshID_FirstIDIsOne(t *testing.T) {
 			return nil, nil
 		},
 	}
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	src := mustIA(t, 1, 1)
@@ -51,7 +51,7 @@ func TestRefreshID_SecondDistinctPairGetsHigherID(t *testing.T) {
 			return nil, nil
 		},
 	}
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	src1 := mustIA(t, 1, 1)
@@ -78,7 +78,7 @@ func TestRefreshID_JoinedRefreshPreservesSameID(t *testing.T) {
 			return nil, nil
 		},
 	}
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	src := mustIA(t, 1, 1)
@@ -227,7 +227,7 @@ func TestRefreshWorker_ContextDeadline_Logged(t *testing.T) {
 		},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	src := mustIA(t, 1, 1)
@@ -255,7 +255,7 @@ func TestRefreshWorker_NoPaths_Logged(t *testing.T) {
 		},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	src := mustIA(t, 1, 1)

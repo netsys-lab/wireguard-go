@@ -17,6 +17,12 @@ import (
 
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/snet/path"
+	"golang.zx2c4.com/wireguard/scionlog"
+)
+
+var noopLog = scionlog.NewLogger(
+	func(string, ...any) {},
+	func(string, ...any) {},
 )
 
 //-------------- HELPER ------------------------
@@ -629,7 +635,7 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -678,7 +684,7 @@ func TestTranslateScion4ToIpUdp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::ffff:a00:1")
@@ -720,7 +726,7 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -769,7 +775,7 @@ func TestTranslateScion6ToIpUdp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -814,7 +820,7 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -862,7 +868,7 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -929,7 +935,7 @@ func TestTranslateScion6ToIpUdpLocal(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP - local SCION-mapped address
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
@@ -968,7 +974,7 @@ func TestTranslateIcmpToScmp(t *testing.T) {
 	}
 
 	srcIA := mustIA(t, 1, 64513)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	hostIP := mustParseIP(t, "10.0.0.1")
 
@@ -1044,7 +1050,7 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
@@ -1093,7 +1099,7 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:20fb:f100::ffff:a00:2")
@@ -1292,7 +1298,7 @@ func TestUnmapIPv6_SCIONMapped(t *testing.T) {
 // ---------------- ICMP Translation Tests ----------------
 
 func TestICMPv6ToSCMP(t *testing.T) {
-	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "", noopLog)
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 	if len(pkts) < 1 {
@@ -1326,7 +1332,7 @@ func TestICMPv6ToSCMP(t *testing.T) {
 }
 
 func TestSCMPToICMPv6(t *testing.T) {
-	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, mustIA(t, 1, 64513), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "", noopLog)
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
 	if len(pkts) < 2 {
@@ -1362,7 +1368,7 @@ func TestICMPTypeCodeMapping(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := translateICMPv6ToSCMPTypeCode(tc.icmp6)
+			result := translateICMPv6ToSCMPTypeCode(tc.icmp6, noopLog)
 			if result.Type() != tc.expected.Type() {
 				t.Errorf("Expected type %v, got %v", tc.expected.Type(), result.Type())
 			}
@@ -1384,7 +1390,7 @@ func TestSCMPTypeCodeMapping(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := translateSCMPTypeCodeToICMPv6(tc.scmp)
+			result := translateSCMPTypeCodeToICMPv6(tc.scmp, noopLog)
 			if uint8(result) != uint8(tc.expected) {
 				t.Errorf("Expected %v, got %v", tc.expected, result)
 			}
@@ -1398,7 +1404,7 @@ func TestMTU_Translation(t *testing.T) {
 	// Test that translation handles different packet sizes correctly
 	// Using existing test data
 
-	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// Load test packets
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
@@ -1453,7 +1459,7 @@ func TestTranslateIPv4ToSCION(t *testing.T) {
 	// Test that IPv4 packets with SCION-mapped destination are handled
 	// Note: The actual IPv4→SCION requires the IPv4 to be wrapped in SCION-mapped IPv6
 
-	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "")
+	translator := NewTranslator(nil, mustIA(t, 1, 64496), &net.UDPAddr{IP: net.ParseIP("127.0.0.9"), Port: 31002}, "", noopLog)
 
 	// Load test packets - IPv6 packet is at index 0
 	pkts := LoadPackets(t, "../data/translate_udp_ipv4.bin")
@@ -1543,7 +1549,7 @@ func TestPacketClassification(t *testing.T) {
 
 func TestConfiguredIPv4BypassesInterfaceLookup(t *testing.T) {
 	srcIA := mustIA(t, 71, 74)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
 
 	// Set a configured IPv4 — this should be used without calling net.InterfaceByName.
 	configuredIPv4 := netip.MustParseAddr("10.44.25.72")
@@ -1571,7 +1577,7 @@ func TestConfiguredIPv4BypassesInterfaceLookup(t *testing.T) {
 
 func TestConfiguredIPv6BypassesInterfaceLookup(t *testing.T) {
 	srcIA := mustIA(t, 71, 74)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
 
 	// Set a configured IPv6 — this should be used without calling net.InterfaceByName.
 	configuredIPv6 := netip.MustParseAddr("fd42:42:42::72")
@@ -1590,7 +1596,7 @@ func TestConfiguredIPv6BypassesInterfaceLookup(t *testing.T) {
 
 func TestConfiguredAddressesWithPrefix32and128(t *testing.T) {
 	srcIA := mustIA(t, 71, 74)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
 
 	// netip.ParseAddr does NOT accept CIDR notation — prefix must be stripped before passing to Go.
 	// This mirrors what Java does: InetNetwork.getAddress().getHostAddress() returns the bare address.
@@ -1628,7 +1634,7 @@ func TestConfiguredAddressesWithPrefix32and128(t *testing.T) {
 func TestAndroidPathUsesConfiguredAddress(t *testing.T) {
 	// Simulate the Android path: configured addresses available, interface lookup not needed.
 	srcIA := mustIA(t, 71, 74)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "nonexistent-interface")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "nonexistent-interface", noopLog)
 	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
 	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
 
@@ -1655,7 +1661,7 @@ func TestSCIONSourceHostIsConfiguredIPv4(t *testing.T) {
 	// Verify that the SCION source host in the inner header is the WG IPv4,
 	// NOT replaced by outer IPv4 source. Use same-AS with IPv6 dest.
 	srcIA := mustIA(t, 2, 64497)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
 	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
 	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
 
@@ -1713,7 +1719,7 @@ func TestInnerUDPPortPreserved(t *testing.T) {
 	// Use same-AS (srcIA == dstIA) so empty path works without a BR nextHop.
 	// Destination is IPv6 (::2) so outer encapsulation needs IPv6 source.
 	srcIA := mustIA(t, 2, 64497)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
 	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
 	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
 
@@ -1768,7 +1774,7 @@ func TestOuterSrcPortSeparateFromInner(t *testing.T) {
 	// Verify that outer UDP source port (35000) is separate from inner.
 	// Use same-AS (2-64497) and configure IPv6 source for IPv6 destination.
 	srcIA := mustIA(t, 2, 64497)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
 	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
 	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
 
@@ -1813,7 +1819,7 @@ func TestUnderlayDstPortSeparate(t *testing.T) {
 	// Use same-AS (2-64497) and configure IPv6 source for IPv6 destination.
 	srcIA := mustIA(t, 2, 64497)
 	brAddr := &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}
-	translator := NewTranslator(nil, srcIA, brAddr, "wg3-scion")
+	translator := NewTranslator(nil, srcIA, brAddr, "wg3-scion", noopLog)
 	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
 	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
 
@@ -1866,7 +1872,7 @@ func TestMissingIPv4ReturnsClearError(t *testing.T) {
 	// When neither configured nor interface-derived IPv4 is available,
 	// WGSrcIPv4 should return a clear error.
 	srcIA := mustIA(t, 71, 74)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "nonexistent-interface")
+	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "nonexistent-interface", noopLog)
 
 	_, err := translator.WGSrcIPv4()
 	if err == nil {

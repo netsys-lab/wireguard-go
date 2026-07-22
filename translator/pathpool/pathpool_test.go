@@ -12,6 +12,12 @@ import (
 	"github.com/scionproto/scion/pkg/segment/iface"
 	"github.com/scionproto/scion/pkg/snet"
 	"github.com/scionproto/scion/pkg/snet/path"
+	"golang.zx2c4.com/wireguard/scionlog"
+)
+
+var noopLog = scionlog.NewLogger(
+	func(string, ...any) {},
+	func(string, ...any) {},
 )
 
 // --- Helpers & Mocks ---
@@ -91,7 +97,7 @@ func TestPathPoolAddAndGet(t *testing.T) {
 	expiry := time.Now().Add(1 * time.Hour)
 	mockPath := createPath(src, dst, 1, expiry, "127.0.0.1", 30041)
 
-	pp := NewPathPool(nil)
+	pp := NewPathPool(nil, noopLog)
 	defer pp.Close()
 
 	pp.Add(src, dst, []snet.Path{mockPath})
@@ -122,7 +128,7 @@ func TestPathPoolMultiplePaths(t *testing.T) {
 	path1 := createPath(src, dst, 1, expiry, "127.0.0.1", 30041)
 	path2 := createPath(src, dst, 2, expiry.Add(10*time.Minute), "127.0.0.2", 40042)
 
-	pp := NewPathPool(nil)
+	pp := NewPathPool(nil, noopLog)
 	defer pp.Close()
 
 	pp.Add(src, dst, []snet.Path{path1, path2})
@@ -147,7 +153,7 @@ func TestPathPoolExpiredPathsReturnPending(t *testing.T) {
 	expiry := time.Now().Add(-1 * time.Hour)
 	expiredPath := createPath(src, dst, 10, expiry, "127.0.0.3", 50043)
 
-	pp := NewPathPool(nil)
+	pp := NewPathPool(nil, noopLog)
 	defer pp.Close()
 
 	pp.Add(src, dst, []snet.Path{expiredPath})
@@ -175,7 +181,7 @@ func TestPathPoolCacheMissTriggersAsyncRefresh(t *testing.T) {
 		PathsToReturn: []snet.Path{retrievedPath},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	ctx := context.Background()
@@ -226,7 +232,7 @@ func TestPathPoolInflightDeduplicatesRefreshes(t *testing.T) {
 		Delay:         100 * time.Millisecond,
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	ctx := context.Background()
@@ -263,7 +269,7 @@ func TestPathPoolRefreshCallbackFiresOnSuccess(t *testing.T) {
 		PathsToReturn: []snet.Path{retrievedPath},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	done := make(chan struct{})
@@ -297,7 +303,7 @@ func TestPathPoolRefreshErrorIsVisibleInSnapshot(t *testing.T) {
 		ErrToReturn: mockErr,
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	_, err := pp.Get(context.Background(), src, dst)
@@ -333,7 +339,7 @@ func TestPathPoolNoPathsResultIsVisibleInSnapshot(t *testing.T) {
 		PathsToReturn: []snet.Path{},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	_, err := pp.Get(context.Background(), src, dst)
@@ -371,7 +377,7 @@ func TestPathPoolExpirySoonTriggersBackgroundRefresh(t *testing.T) {
 		PathsToReturn: []snet.Path{freshPath},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	pp.Add(src, dst, []snet.Path{oldPath})
@@ -409,7 +415,7 @@ func TestPathPoolPrefetchAsync(t *testing.T) {
 		PathsToReturn: []snet.Path{retrievedPath},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	pp.PrefetchAsync([]IAPair{
@@ -432,7 +438,7 @@ func TestRefreshAsync_FirstRequestStartsRefreshIDX(t *testing.T) {
 		PathsToReturn: []snet.Path{},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	status := pp.RefreshAsync(src, dst, "test")
@@ -454,7 +460,7 @@ func TestRefreshAsync_SecondRequestJoinsSameRefreshID(t *testing.T) {
 		Delay:         200 * time.Millisecond,
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	status1 := pp.RefreshAsync(src, dst, "test")
@@ -482,7 +488,7 @@ func TestRefreshAsync_DifferentIAPairGetsDifferentID(t *testing.T) {
 		Delay:         200 * time.Millisecond,
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	status1 := pp.RefreshAsync(src1, dst1, "test")
@@ -507,7 +513,7 @@ func TestRefreshAsync_InflightDeletedOnSuccess(t *testing.T) {
 		PathsToReturn: []snet.Path{retrievedPath},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	pp.RefreshAsync(src, dst, "test")
@@ -536,7 +542,7 @@ func TestRefreshAsync_InflightDeletedOnError(t *testing.T) {
 		ErrToReturn: errors.New("mock error"),
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	pp.RefreshAsync(src, dst, "test")
@@ -565,7 +571,7 @@ func TestRefreshAsync_InflightDeletedOnNoPaths(t *testing.T) {
 		PathsToReturn: []snet.Path{},
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	pp.RefreshAsync(src, dst, "test")
@@ -594,7 +600,7 @@ func TestRefreshAsync_InflightDeletedOnTimeout(t *testing.T) {
 		Delay: 5 * time.Second,
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	pp.queryTimeout = 50 * time.Millisecond
 	defer pp.Close()
 
@@ -627,7 +633,7 @@ func TestRefreshAsync_RefreshIDMonotonicallyIncreases(t *testing.T) {
 		Delay:         200 * time.Millisecond,
 	}
 
-	pp := NewPathPool(mock)
+	pp := NewPathPool(mock, noopLog)
 	defer pp.Close()
 
 	s1 := pp.RefreshAsync(src1, dst1, "test")

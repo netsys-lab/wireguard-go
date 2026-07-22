@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/snet"
+	"golang.zx2c4.com/wireguard/scionlog"
 )
 
 // contextKeyRefreshID is the context key for carrying refreshId through the
@@ -111,6 +111,8 @@ type PathPool struct {
 
 	onRefresh RefreshCallback
 
+	log *scionlog.Logger
+
 	refreshIDCounter uint64
 	refreshInterval  time.Duration
 	refreshBeforeExpiry time.Duration
@@ -120,13 +122,21 @@ type PathPool struct {
 // NewPathPool creates a PathPool and starts its background maintenance loops.
 // The pool stores cached SCION paths by src/dst IA pair and can refresh paths
 // asynchronously through the configured PathRetriever.
-func NewPathPool(retriever PathRetriever) *PathPool {
+func NewPathPool(retriever PathRetriever, log *scionlog.Logger) *PathPool {
+	if log == nil {
+		log = scionlog.NewLogger(
+			func(string, ...any) {},
+			func(string, ...any) {},
+		)
+	}
+
 	pp := &PathPool{
 		cache:               make(map[key]*pathsEntry),
 		inflight:            make(map[key]*inflightRefresh),
 		known:               make(map[key]struct{}),
 		closed:              make(chan struct{}),
 		retriever:           retriever,
+		log:                 log,
 		refreshInterval:     defaultRefreshInterval,
 		refreshBeforeExpiry: defaultRefreshBeforeExpiry,
 		queryTimeout:        defaultQueryTimeout,
@@ -164,7 +174,7 @@ func (pp *PathPool) Add(src, dst addr.IA, paths []snet.Path) {
 	entry.lastRefresh = time.Now()
 	entry.lastError = nil
 
-	log.Printf("[PATHPOOL] Add: src=%s dst=%s added=%d total=%d", src, dst, len(paths), len(entry.paths))
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] Add: src=%s dst=%s added=%d total=%d", src, dst, len(paths), len(entry.paths))
 }
 
 // GetCached performs a cache-only lookup for valid paths.
@@ -206,7 +216,7 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 
 	k := key{src: src, dst: dst}
 
-	log.Printf("[SCION-PATH] event=cache-lookup src=%s dst=%s", src, dst)
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] event=cache-lookup src=%s dst=%s", src, dst)
 
 	lookupStart := time.Now()
 
@@ -233,7 +243,7 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 	lookupDur := time.Since(lookupStart)
 
 	if len(valid) > 0 {
-		log.Printf("[SCION-PATH] event=cache-hit src=%s dst=%s valid=%d refreshSoon=%v elapsedMs=%d",
+		pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] event=cache-hit src=%s dst=%s valid=%d refreshSoon=%v elapsedMs=%d",
 			src, dst, len(valid), refreshSoon, lookupDur.Milliseconds())
 
 		if refreshSoon {
@@ -245,7 +255,7 @@ func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, er
 		return result, nil
 	}
 
-	log.Printf("[SCION-PATH] event=cache-miss src=%s dst=%s elapsedMs=%d",
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] event=cache-miss src=%s dst=%s elapsedMs=%d",
 		src, dst, lookupDur.Milliseconds())
 
 	pp.RefreshAsync(src, dst, "cache-miss")
