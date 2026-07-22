@@ -205,6 +205,47 @@ func (pp *PathPool) GetCached(src, dst addr.IA) []CachedPath {
 	return result
 }
 
+type PathStatus int
+
+const (
+	PathStatusCached PathStatus = iota
+	PathStatusPending
+	PathStatusEmpty
+	PathStatusError
+)
+
+// GetStatus is a pure read that returns the cache state for an IA pair.
+// It never triggers a refresh or side effect.
+func (pp *PathPool) GetStatus(src, dst addr.IA) PathStatus {
+	k := key{src: src, dst: dst}
+
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	entry, ok := pp.cache[k]
+	if !ok {
+		if pp.inflight[k] != nil {
+			return PathStatusPending
+		}
+		return PathStatusPending
+	}
+
+	valid := filterValid(entry.paths)
+	if len(valid) > 0 {
+		return PathStatusCached
+	}
+
+	if pp.inflight[k] != nil {
+		return PathStatusPending
+	}
+
+	if entry.lastError != nil {
+		return PathStatusError
+	}
+
+	return PathStatusEmpty
+}
+
 // Get retrieves currently valid cached paths for a src/dst IA pair.
 // If no valid path is cached, it schedules an async refresh and returns
 // ErrPathPending instead of blocking on network path retrieval.
