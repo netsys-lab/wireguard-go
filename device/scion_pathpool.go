@@ -5,9 +5,10 @@ import (
 )
 
 /*
-Exposes SCION path status from the Device level.
+SCIONPathSnapshotJSON bridges Device → pathpool.Snapshot() as JSON.
 
-It calls the PathPool snapshot API and serializes the result as JSON.
+This is the snapshot bridge to the SCION PathPool, consumed by the
+frontend for path selection display and the future Paths-per-Flow UI.
 */
 
 func (device *Device) SCIONPathSnapshotJSON() (string, error) {
@@ -29,7 +30,7 @@ func (device *Device) MustSCIONPathSnapshotJSON() string {
 	out, err := device.SCIONPathSnapshotJSON()
 	if err != nil {
 		if device != nil && device.log != nil {
-			device.log.Errorf("[SCION-STATUS] failed to marshal path snapshot: %v", err)
+			device.log.Errorf("[SCION-PATHPOOL] failed to marshal path snapshot: %v", err)
 		}
 		return `{"strategy":"","pairs":[]}`
 	}

@@ -268,6 +268,18 @@ func (t *Translator) SetDispatchedPorts(r DispatchPortRange) {
 	t.dispatchedPorts = r
 }
 
+func (t *Translator) LocalIA() addr.IA {
+	return t.localIA
+}
+
+func (t *Translator) BRAddr() *net.UDPAddr {
+	return t.brAddr
+}
+
+func (t *Translator) DispatchedPorts() DispatchPortRange {
+	return t.dispatchedPorts
+}
+
 // SetConfiguredIPv4 sets the local IPv4 address for outer encapsulation.
 // Used on Android where net.InterfaceByName is unavailable.
 func (t *Translator) SetConfiguredIPv4(addr netip.Addr) {
