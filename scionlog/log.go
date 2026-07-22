@@ -26,6 +26,7 @@ const (
 	ComponentTranslateEgress Component = "translate-egress"
 	ComponentWireguardEgress Component = "wireguard-egress"
 	ComponentEgressLifecycle Component = "egress-lifecycle"
+	ComponentFlow            Component = "flow"
 )
 
 type LogConfig struct {

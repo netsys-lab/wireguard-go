@@ -91,6 +91,7 @@ func ParseConfig(levelStr, componentsStr string) LogConfig {
 			ComponentTranslateEgress: true,
 			ComponentWireguardEgress: true,
 			ComponentEgressLifecycle: true,
+			ComponentFlow:            true,
 		}
 
 		for _, s := range strings.Split(componentsStr, ",") {

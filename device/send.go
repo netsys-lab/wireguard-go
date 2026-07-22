@@ -277,20 +277,22 @@ func (device *Device) RoutineReadFromTUN() {
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
 
-				if device.flowManager != nil {
-					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
-							device.log.Verbosef(
-								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
-								snap.ID, snap.EgressKind, snap.ProtocolName(),
-								snap.EndpointA, snap.EndpointB,
-								snap.TxPackets, snap.TxBytes,
-							)
-						}
+			if device.flowManager != nil {
+				if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+					if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
+						device.log.Verbosef(
+							"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+							snap.ID, snap.EgressKind, snap.ProtocolName(),
+							snap.EndpointA, snap.EndpointB,
+							snap.TxPackets, snap.TxBytes,
+						)
 					}
+				} else {
+					device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=ip err=%v packetLen=%d ipVersion=4", err, len(pkt))
 				}
+			}
 
-			case 6:
+		case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
 					continue
 				}
@@ -310,6 +312,8 @@ func (device *Device) RoutineReadFromTUN() {
 									snap.TxPackets, snap.TxBytes,
 								)
 							}
+						} else {
+							device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
 						}
 					}
 
@@ -370,6 +374,8 @@ func (device *Device) RoutineReadFromTUN() {
 									snap.TxPackets, snap.TxBytes,
 								)
 							}
+						} else {
+							device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=ip err=%v packetLen=%d ipVersion=6", err, len(pkt))
 						}
 					}
 
@@ -389,6 +395,8 @@ func (device *Device) RoutineReadFromTUN() {
 								snap.TxPackets, snap.TxBytes,
 							)
 						}
+					} else {
+						device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=unknown err=%v packetLen=%d ipVersion=%d", err, len(pkt), pkt[0]>>4)
 					}
 				}
 
