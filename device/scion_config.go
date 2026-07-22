@@ -22,6 +22,7 @@ type ScionDeviceConfig struct {
 	LocalIPv4     netip.Addr      // Explicitly configured local IPv4 (Android: from VPN config)
 	LocalIPv6     netip.Addr      // Explicitly configured local IPv6 (Android: from VPN config)
 	LogConfig     *scionlog.LogConfig // nil = use defaults (INFO, all components)
+	PolicyFile string
 }
 
 type scionTopologyFile struct {
@@ -96,12 +97,13 @@ func ScionDeviceConfigFromEnv() ScionDeviceConfig {
 	enabled := os.Getenv("SCION_ENABLED") == "true" || configDir != ""
 
 	logCfg := scionlog.ConfigFromEnv()
+	policyFile := os.Getenv("SCION_POLICY_FILE")
 
 	return ScionDeviceConfig{
 		Enabled:   enabled,
 		ConfigDir: configDir,
 		LogConfig: &logCfg,
-	}
+		PolicyFile: policyFile,
 }
 
 func loadSCIONTopology(configDir string) (*scionTopologyFile, error) {

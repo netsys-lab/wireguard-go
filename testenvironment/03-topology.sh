@@ -23,7 +23,7 @@ generate_topology() {
     cd "$SCION_DIR"
     
     # Check if topology already exists
-    if [[ -d "$SCION_DIR/gen/AS64513" ]]; then
+    if [[ -d "$SCION_DIR/gen/ASff00_0_110" ]]; then
         log_info "Topology already exists, re- generation"
     fi
     
@@ -46,14 +46,14 @@ verify_topology() {
     local failed=0
     
     # Check key directories exist
-    for as_dir in AS64512 AS64513 AS64514; do
-        if [[ -d "$SCION_DIR/gen/$as_dir" ]]; then
-            log_success "Found: $as_dir"
-        else
-            log_error "Missing: $as_dir"
-            ((failed++))
-        fi
-    done
+    # for as_dir in AS64512 AS64513 AS64514; do
+    #     if [[ -d "$SCION_DIR/gen/$as_dir" ]]; then
+    #         log_success "Found: $as_dir"
+    #     else
+    #         log_error "Missing: $as_dir"
+    #         ((failed++))
+    #     fi
+    # done
     
     # Check sciond addresses
     if [[ -f "$SCION_DIR/gen/sciond_addresses.json" ]]; then

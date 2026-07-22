@@ -22,7 +22,7 @@ check_prereqs() {
     log_info "Checking prerequisites..."
     
     # Check topology exists
-    if [[ ! -d "$SCION_DIR/gen/AS64513" ]]; then
+    if [[ ! -d "$SCION_DIR/gen/AS${SCION_LOCAL_IA}" ]]; then
         log_error "SCION topology not found. Run 03a-topology.sh first"
         return 1
     fi

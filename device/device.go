@@ -20,6 +20,7 @@ import (
 	"golang.zx2c4.com/wireguard/scionlog"
 	daemon "golang.zx2c4.com/wireguard/translator/daemon"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
+	"golang.zx2c4.com/wireguard/translator/pathpolicy"
 	pathcache "golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -467,6 +468,25 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	device.pathPool = pathPool
 	device.pendingSCION = pendingSCION
 	pathPool.SetRefreshCallback(device.OnPathReady)
+
+	// Load path policy engine (optional).
+	// Try explicit SCION_POLICY_FILE first, then <configDir>/policy.json.
+	device.scionLog.Verbosef(scionlog.ComponentInit, "SCION path policy file: %v", scionConfig.PolicyFile)
+	policyPaths := []string{}
+	if scionConfig.PolicyFile != "" {
+		policyPaths = append(policyPaths, scionConfig.PolicyFile)
+	}
+	// policyPaths = append(policyPaths, filepath.Join(scionConfig.ConfigDir, "policy.json"))
+	device.scionLog.Verbosef(scionlog.ComponentInit, "SCION path policy load paths: %v", policyPaths)
+
+	policyEngine, err := pathpolicy.LoadEngineFromPaths(policyPaths...)
+	if err != nil {
+		device.scionLog.Errorf(scionlog.ComponentInit, "SCION path policy load failed: %v", err)
+		// Non-fatal: translator will use first-valid path selection.
+	} else if policyEngine != nil {
+		translator.SetPolicyEngine(policyEngine)
+	}
+
 	device.translator = translator
 
 	device.scionLog.Infof(scionlog.ComponentInit,
