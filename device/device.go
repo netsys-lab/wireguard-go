@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/scionproto/scion/pkg/addr"
+	"github.com/scionproto/scion/pkg/snet"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/ratelimiter"
@@ -102,6 +105,9 @@ type Device struct {
 	scionLog     *scionlog.Logger
 	flowManager  *flow.Manager
 	pendingSCION *PendingSCIONQueue
+
+	scionFlowMu     sync.RWMutex
+	scionFlowStates map[flow.ID]SCIONEgressState
 
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
 	// It is assigned only to SCION-mapped egress packets accepted from TUN
@@ -729,4 +735,142 @@ func (device *Device) FlowSnapshots() []flow.Snapshot {
 		return nil
 	}
 	return device.flowManager.Snapshot()
+}
+
+// SCIONPathsForFlow returns all cached SCION paths and metadata for a flow.
+// The current path matches the runtime's existing selection strategy (paths[0]).
+// Policy-based selection will be wired through currentPathIndex when Path Policy merges.
+func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
+	if device.flowManager == nil || device.pathPool == nil {
+		return FlowPathsResult{Error: "tunnel_not_running"}
+	}
+
+	snap, ok := device.flowManager.GetByID(flowID)
+	if !ok {
+		return FlowPathsResult{FlowID: uint64(flowID), Error: "flow_not_found"}
+	}
+	if snap.EgressKind != flow.EgressSCION {
+		return FlowPathsResult{FlowID: uint64(flowID), Error: "not_scion_flow"}
+	}
+
+	state, ok := device.getSCIONEgress(flowID)
+	if !ok {
+		return FlowPathsResult{FlowID: uint64(flowID), Error: "scion_state_unavailable"}
+	}
+
+	paths := device.pathPool.GetCached(state.SrcIA, state.DstIA)
+	if paths == nil {
+		switch device.pathPool.GetStatus(state.SrcIA, state.DstIA) {
+		case pathcache.PathStatusPending:
+			device.pathPool.RefreshAsync(state.SrcIA, state.DstIA, "flow-tap")
+			return FlowPathsResult{FlowID: uint64(flowID), State: FlowPathsPending}
+		case pathcache.PathStatusError:
+			return FlowPathsResult{FlowID: uint64(flowID), State: FlowPathsError, Error: "path_lookup_failed"}
+		default:
+			return FlowPathsResult{FlowID: uint64(flowID), State: FlowPathsEmpty}
+		}
+	}
+
+	currentIdx := device.currentPathIndex(flowID, paths)
+	dtos := make([]FlowPathDTO, 0, len(paths))
+	for i, p := range paths {
+		dtos = append(dtos, pathToDTO(p, i == currentIdx))
+	}
+
+	return FlowPathsResult{
+		FlowID: uint64(flowID),
+		State:  FlowPathsReady,
+		Paths:  dtos,
+	}
+}
+
+// currentPathIndex returns the index of the current path within the given slice.
+// Phase 1: first-valid strategy (paths[0]) — matches current runtime behavior.
+// Phase 2: when Path Policy merges, delegates to policy engine via translator.
+func (device *Device) currentPathIndex(flowID flow.ID, paths []pathcache.CachedPath) int {
+	return 0
+}
+
+func pathToDTO(p pathcache.CachedPath, current bool) FlowPathDTO {
+	dto := FlowPathDTO{
+		Fingerprint: p.Fingerprint,
+		Current:     current,
+		NextHop:     formatUDPAddr(p.NextHop),
+	}
+	if !p.Expiry.IsZero() {
+		dto.Expiry = p.Expiry.Format(time.RFC3339Nano)
+	}
+
+	meta := p.Path.Metadata()
+	if meta == nil {
+		dto.Display = p.Fingerprint
+		return dto
+	}
+
+	dto.MTU = meta.MTU
+	dto.Display = buildPathDisplay(meta.Interfaces)
+	dto.Interfaces = make([]string, len(meta.Interfaces))
+	for i, iface := range meta.Interfaces {
+		dto.Interfaces[i] = iface.String()
+	}
+
+	if len(meta.Latency) > 0 {
+		dto.LatencyMs = make([]float64, len(meta.Latency))
+		for i, l := range meta.Latency {
+			dto.LatencyMs[i] = float64(l) / float64(time.Millisecond)
+		}
+	}
+	if len(meta.Bandwidth) > 0 {
+		dto.Bandwidth = make([]uint64, len(meta.Bandwidth))
+		copy(dto.Bandwidth, meta.Bandwidth)
+	}
+	if len(meta.Geo) > 0 {
+		dto.Geo = make([]GeoDTO, len(meta.Geo))
+		for i, g := range meta.Geo {
+			dto.Geo[i] = GeoDTO{
+				Latitude:  float64(g.Latitude),
+				Longitude: float64(g.Longitude),
+				Address:   g.Address,
+			}
+		}
+	}
+	if len(meta.LinkType) > 0 {
+		dto.LinkType = make([]string, len(meta.LinkType))
+		for i, lt := range meta.LinkType {
+			dto.LinkType[i] = lt.String()
+		}
+	}
+	if len(meta.InternalHops) > 0 {
+		dto.InternalHops = make([]uint32, len(meta.InternalHops))
+		copy(dto.InternalHops, meta.InternalHops)
+	}
+	if len(meta.Notes) > 0 {
+		dto.Notes = make([]string, len(meta.Notes))
+		copy(dto.Notes, meta.Notes)
+	}
+
+	return dto
+}
+
+func buildPathDisplay(ifaces []snet.PathInterface) string {
+	if len(ifaces) == 0 {
+		return ""
+	}
+	var lastIA addr.IA
+	var parts []string
+	for _, iface := range ifaces {
+		if iface.IA == lastIA {
+			continue
+		}
+		parts = append(parts, iface.IA.String())
+		lastIA = iface.IA
+	}
+	return strings.Join(parts, " → ")
+}
+
+func formatUDPAddr(a *net.UDPAddr) string {
+	if a == nil {
+		return ""
+	}
+	return a.String()
 }

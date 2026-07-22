@@ -165,6 +165,16 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 	return flow.snapshot(), true
 }
 
+func (m *Manager) GetByID(id ID) (Snapshot, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	flow, ok := m.flowsByID[id]
+	if !ok {
+		return Snapshot{}, false
+	}
+	return flow.snapshot(), true
+}
+
 func (m *Manager) Snapshot() []Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

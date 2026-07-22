@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"github.com/scionproto/scion/pkg/addr"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/scionlog"
@@ -304,17 +305,26 @@ func (device *Device) RoutineReadFromTUN() {
 				//Flow Manager with Scion call
 				if device.flowManager != nil {
 					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						var scionSrcIA, scionDstIA addr.IA
+						var iaValid bool
 						if srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP); iaErr == nil {
 							md.SrcIA = srcIA.String()
 							md.DstIA = dstIA.String()
+							scionSrcIA = srcIA
+							scionDstIA = dstIA
+							iaValid = true
 						}
-						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion"); created {
+						snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
+						if created {
 							device.log.Verbosef(
 								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
 								snap.ID, snap.EgressKind, snap.ProtocolName(),
 								snap.EndpointA, snap.EndpointB,
 								snap.TxPackets, snap.TxBytes,
 							)
+						}
+						if iaValid {
+							device.rememberSCIONEgress(snap.ID, scionSrcIA, scionDstIA)
 						}
 					} else {
 						device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
