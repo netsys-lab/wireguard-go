@@ -13,6 +13,8 @@ type Snapshot struct {
 
 	Status     Status
 	EgressKind EgressKind
+	SrcIA      string
+	DstIA      string
 
 	TxPackets uint64
 	TxBytes   uint64

@@ -301,21 +301,25 @@ func (device *Device) RoutineReadFromTUN() {
 				dstIP := net.IP(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 
-					//Flow Manager with Scion call
-					if device.flowManager != nil {
-						if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-							if snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion"); created {
-								device.log.Verbosef(
-									"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
-									snap.ID, snap.EgressKind, snap.ProtocolName(),
-									snap.EndpointA, snap.EndpointB,
-									snap.TxPackets, snap.TxBytes,
-								)
-							}
-						} else {
-							device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
+				//Flow Manager with Scion call
+				if device.flowManager != nil {
+					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						if srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP); iaErr == nil {
+							md.SrcIA = srcIA.String()
+							md.DstIA = dstIA.String()
 						}
+						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion"); created {
+							device.log.Verbosef(
+								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+								snap.ID, snap.EgressKind, snap.ProtocolName(),
+								snap.EndpointA, snap.EndpointB,
+								snap.TxPackets, snap.TxBytes,
+							)
+						}
+					} else {
+						device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
 					}
+				}
 
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 					hostPort := 35000

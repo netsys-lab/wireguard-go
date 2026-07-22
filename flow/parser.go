@@ -25,6 +25,8 @@ type PacketMetadata struct {
 	Protocol    uint8
 	Source      Endpoint
 	Destination Endpoint
+	SrcIA       string // SCION only, empty for IP
+	DstIA       string // SCION only, empty for IP
 }
 
 func ParsePacketMetadata(packet []byte) (PacketMetadata, error) {

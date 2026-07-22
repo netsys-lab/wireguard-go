@@ -30,6 +30,8 @@ type Flow struct {
 	endpointB  Endpoint
 	status     Status
 	egressKind EgressKind
+	srcIA      string
+	dstIA      string
 	txPackets  uint64
 	txBytes    uint64
 	rxPackets  uint64
@@ -47,6 +49,8 @@ func (f *Flow) snapshot() Snapshot {
 		EndpointB:  f.endpointB,
 		Status:     f.status,
 		EgressKind: f.egressKind,
+		SrcIA:      f.srcIA,
+		DstIA:      f.dstIA,
 		TxPackets:  f.txPackets,
 		TxBytes:    f.txBytes,
 		RxPackets:  f.rxPackets,
@@ -106,6 +110,8 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 		endpointB:  key.endpointB,
 		status:     StatusActive,
 		egressKind: egressKind,
+		srcIA:      metadata.SrcIA,
+		dstIA:      metadata.DstIA,
 		txPackets:  1,
 		txBytes:    uint64(packetLength),
 		createdAt:  now,
@@ -145,6 +151,8 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 		endpointB:  key.endpointB,
 		status:     StatusActive,
 		egressKind: egressKind,
+		srcIA:      metadata.SrcIA,
+		dstIA:      metadata.DstIA,
 		rxPackets:  1,
 		rxBytes:    uint64(packetLength),
 		createdAt:  now,

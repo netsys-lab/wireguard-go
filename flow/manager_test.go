@@ -277,9 +277,9 @@ func TestCreatedAtStableLastSeenUpdated(t *testing.T) {
 func TestSnapshotReturnsCopiesSortedByID(t *testing.T) {
 	m := NewManager()
 	mds := []PacketMetadata{
-		{4, ProtocolTCP, Endpoint{netip.MustParseAddr("10.0.0.1"), 100}, Endpoint{netip.MustParseAddr("10.0.0.2"), 200}},
-		{4, ProtocolTCP, Endpoint{netip.MustParseAddr("10.0.0.3"), 300}, Endpoint{netip.MustParseAddr("10.0.0.4"), 400}},
-		{4, ProtocolUDP, Endpoint{netip.MustParseAddr("10.0.0.5"), 500}, Endpoint{netip.MustParseAddr("10.0.0.6"), 600}},
+		{IPVersion: 4, Protocol: ProtocolTCP, Source: Endpoint{netip.MustParseAddr("10.0.0.1"), 100}, Destination: Endpoint{netip.MustParseAddr("10.0.0.2"), 200}},
+		{IPVersion: 4, Protocol: ProtocolTCP, Source: Endpoint{netip.MustParseAddr("10.0.0.3"), 300}, Destination: Endpoint{netip.MustParseAddr("10.0.0.4"), 400}},
+		{IPVersion: 4, Protocol: ProtocolUDP, Source: Endpoint{netip.MustParseAddr("10.0.0.5"), 500}, Destination: Endpoint{netip.MustParseAddr("10.0.0.6"), 600}},
 	}
 
 	for _, md := range mds {

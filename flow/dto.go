@@ -18,6 +18,8 @@ type FlowDTO struct {
 	EndpointB   FlowEndpointDTO `json:"endpointB"`
 	Status      string          `json:"status"`
 	EgressKind  string          `json:"egressKind"`
+	SrcIA       string          `json:"srcIA,omitempty"`
+	DstIA       string          `json:"dstIA,omitempty"`
 	TxPackets   uint64          `json:"txPackets"`
 	TxBytes     uint64          `json:"txBytes"`
 	RxPackets   uint64          `json:"rxPackets"`
@@ -59,6 +61,8 @@ func MapSnapshotToDTO(s Snapshot) FlowDTO {
 		},
 		Status:     string(s.Status),
 		EgressKind: string(ek),
+		SrcIA:      s.SrcIA,
+		DstIA:      s.DstIA,
 		TxPackets:  s.TxPackets,
 		TxBytes:    s.TxBytes,
 		RxPackets:  s.RxPackets,
