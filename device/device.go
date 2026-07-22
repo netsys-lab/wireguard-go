@@ -109,6 +109,7 @@ type Device struct {
 
 	scionFlowMu     sync.RWMutex
 	scionFlowStates map[flow.ID]SCIONEgressState
+	policyEngine    *pathpolicy.Engine
 
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
 	// It is assigned only to SCION-mapped egress packets accepted from TUN
@@ -477,13 +478,13 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 
 	// Load path policy engine (optional).
 	// Try explicit SCION_POLICY_FILE first, then <configDir>/policy.json.
-	device.scionLog.Verbosef(scionlog.ComponentInit, "SCION path policy file: %v", scionConfig.PolicyFile)
+	device.scionLog.Infof(scionlog.ComponentInit, "SCION path policy file: %v", scionConfig.PolicyFile)
 	policyPaths := []string{}
 	if scionConfig.PolicyFile != "" {
 		policyPaths = append(policyPaths, scionConfig.PolicyFile)
 	}
 	// policyPaths = append(policyPaths, filepath.Join(scionConfig.ConfigDir, "policy.json"))
-	device.scionLog.Verbosef(scionlog.ComponentInit, "SCION path policy load paths: %v", policyPaths)
+	device.scionLog.Infof(scionlog.ComponentInit, "SCION path policy load paths: %v", policyPaths)
 
 	policyEngine, err := pathpolicy.LoadEngineFromPaths(policyPaths...)
 	if err != nil {
@@ -491,6 +492,7 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 		// Non-fatal: translator will use first-valid path selection.
 	} else if policyEngine != nil {
 		translator.SetPolicyEngine(policyEngine)
+		device.policyEngine = policyEngine
 	}
 
 	device.translator = translator
@@ -791,9 +793,19 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 		}
 	}
 
-	currentIdx := device.currentPathIndex(flowID, paths)
-	dtos := make([]FlowPathDTO, 0, len(paths))
-	for i, p := range paths {
+	// Apply policy engine to filter and sort paths.
+	selectedPaths := paths
+	if device.policyEngine != nil {
+		info := buildPacketInfo(snap, state)
+		selectedPaths = device.policyEngine.SelectPaths(info, paths)
+		device.scionLog.Debugf(scionlog.ComponentPath,
+			"Policy applied for flow %d: paths=%d->%d",
+			flowID, len(paths), len(selectedPaths))
+	}
+
+	currentIdx := device.currentPathIndex(flowID, selectedPaths)
+	dtos := make([]FlowPathDTO, 0, len(selectedPaths))
+	for i, p := range selectedPaths {
 		dtos = append(dtos, pathToDTO(p, i == currentIdx))
 	}
 
@@ -804,9 +816,40 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 	}
 }
 
+// buildPacketInfo constructs a pathpolicy.PacketInfo from a flow snapshot
+// and its associated SCION egress state for policy evaluation.
+func buildPacketInfo(snap flow.Snapshot, state SCIONEgressState) pathpolicy.PacketInfo {
+	info := pathpolicy.PacketInfo{
+		SrcIA:   state.SrcIA,
+		DstIA:   state.DstIA,
+		SrcPort: snap.EndpointA.Port,
+		DstPort: snap.EndpointB.Port,
+	}
+	if snap.EndpointA.Addr.IsValid() {
+		info.SrcIP = net.IP(snap.EndpointA.Addr.AsSlice())
+	}
+	if snap.EndpointB.Addr.IsValid() {
+		info.DstIP = net.IP(snap.EndpointB.Addr.AsSlice())
+	}
+	info.Protocol = protocolName(snap.Protocol)
+	return info
+}
+
+// protocolName converts an IP protocol number to the string expected by PathPolicy.
+func protocolName(p uint8) string {
+	switch p {
+	case flow.ProtocolTCP:
+		return "tcp"
+	case flow.ProtocolUDP:
+		return "udp"
+	default:
+		return "unknown"
+	}
+}
+
 // currentPathIndex returns the index of the current path within the given slice.
-// Phase 1: first-valid strategy (paths[0]) — matches current runtime behavior.
-// Phase 2: when Path Policy merges, delegates to policy engine via translator.
+// After policy filtering, the first surviving path is always the "current" one.
+// When no policy engine is active, the first-valid strategy (paths[0]) is used.
 func (device *Device) currentPathIndex(flowID flow.ID, paths []pathcache.CachedPath) int {
 	return 0
 }

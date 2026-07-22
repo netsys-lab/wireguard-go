@@ -60,6 +60,15 @@ func LoadEngineFromPaths(paths ...string) (*Engine, error) {
 	return nil, nil
 }
 
+// Matchers returns the list of matchers from the loaded policy file.
+// Used by the device layer for policy-aware path display.
+func (e *Engine) Matchers() []Matcher {
+	if e == nil || e.file == nil {
+		return nil
+	}
+	return e.file.Matchers
+}
+
 // SelectPaths applies the full policy pipeline to a set of cached paths:
 //  1. Match the packet info to a policy name
 //  2. Filter paths using the resolved policy (ACL, sequence, requirements)

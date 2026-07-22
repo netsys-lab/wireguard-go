@@ -38,10 +38,11 @@ type GeoDTO struct {
 }
 
 type FlowPathsResult struct {
-	FlowID uint64         `json:"flowId"`
-	State  FlowPathsState `json:"state"`
-	Paths  []FlowPathDTO  `json:"paths"`
-	Error  string         `json:"error,omitempty"`
+	FlowID     uint64         `json:"flowId"`
+	State      FlowPathsState `json:"state"`
+	Paths      []FlowPathDTO  `json:"paths"`
+	Error      string         `json:"error,omitempty"`
+	PolicyName string         `json:"policyName,omitempty"`
 }
 
 type SCIONEgressState struct {
