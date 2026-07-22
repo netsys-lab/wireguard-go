@@ -14,6 +14,14 @@ const (
 	StatusActive Status = "active"
 )
 
+type EgressKind string
+
+const (
+	EgressUnknown EgressKind = "unknown"
+	EgressIP      EgressKind = "ip"
+	EgressSCION   EgressKind = "scion"
+)
+
 type Flow struct {
 	id         ID
 	ipVersion  uint8
@@ -21,6 +29,7 @@ type Flow struct {
 	endpointA  Endpoint
 	endpointB  Endpoint
 	status     Status
+	egressKind EgressKind
 	txPackets  uint64
 	txBytes    uint64
 	rxPackets  uint64
@@ -31,18 +40,27 @@ type Flow struct {
 
 func (f *Flow) snapshot() Snapshot {
 	return Snapshot{
-		ID:        f.id,
-		IPVersion: f.ipVersion,
-		Protocol:  f.protocol,
-		EndpointA: f.endpointA,
-		EndpointB: f.endpointB,
-		Status:    f.status,
-		TxPackets: f.txPackets,
-		TxBytes:   f.txBytes,
-		RxPackets: f.rxPackets,
-		RxBytes:   f.rxBytes,
-		CreatedAt: f.createdAt,
-		LastSeen:  f.lastSeen,
+		ID:         f.id,
+		IPVersion:  f.ipVersion,
+		Protocol:   f.protocol,
+		EndpointA:  f.endpointA,
+		EndpointB:  f.endpointB,
+		Status:     f.status,
+		EgressKind: f.egressKind,
+		TxPackets:  f.txPackets,
+		TxBytes:    f.txBytes,
+		RxPackets:  f.rxPackets,
+		RxBytes:    f.rxBytes,
+		CreatedAt:  f.createdAt,
+		LastSeen:   f.lastSeen,
+	}
+}
+
+// setEgressKind sets the egress kind on creation or promotes unknown -> known.
+// It does not silently overwrite a non-unknown kind with a different non-unknown kind.
+func (f *Flow) setEgressKind(kind EgressKind) {
+	if f.egressKind == EgressUnknown || f.egressKind == "" {
+		f.egressKind = kind
 	}
 }
 
@@ -61,7 +79,7 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int) (Snapshot, bool) {
+func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKind EgressKind) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 
 	m.mu.Lock()
@@ -73,6 +91,7 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int) (Snapshot
 		flow.txPackets++
 		flow.txBytes += uint64(packetLength)
 		flow.lastSeen = now
+		flow.setEgressKind(egressKind)
 		return flow.snapshot(), false
 	}
 
@@ -80,16 +99,17 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int) (Snapshot
 	m.nextID++
 
 	flow := &Flow{
-		id:        id,
-		ipVersion: metadata.IPVersion,
-		protocol:  metadata.Protocol,
-		endpointA: key.endpointA,
-		endpointB: key.endpointB,
-		status:    StatusActive,
-		txPackets: 1,
-		txBytes:   uint64(packetLength),
-		createdAt: now,
-		lastSeen:  now,
+		id:         id,
+		ipVersion:  metadata.IPVersion,
+		protocol:   metadata.Protocol,
+		endpointA:  key.endpointA,
+		endpointB:  key.endpointB,
+		status:     StatusActive,
+		egressKind: egressKind,
+		txPackets:  1,
+		txBytes:    uint64(packetLength),
+		createdAt:  now,
+		lastSeen:   now,
 	}
 
 	m.flowsByKey[key] = flow
@@ -98,7 +118,7 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int) (Snapshot
 	return flow.snapshot(), true
 }
 
-func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int) (Snapshot, bool) {
+func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKind EgressKind) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 
 	m.mu.Lock()
@@ -110,6 +130,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int) (Snapshot
 		flow.rxPackets++
 		flow.rxBytes += uint64(packetLength)
 		flow.lastSeen = now
+		flow.setEgressKind(egressKind)
 		return flow.snapshot(), false
 	}
 
@@ -117,16 +138,17 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int) (Snapshot
 	m.nextID++
 
 	flow := &Flow{
-		id:        id,
-		ipVersion: metadata.IPVersion,
-		protocol:  metadata.Protocol,
-		endpointA: key.endpointA,
-		endpointB: key.endpointB,
-		status:    StatusActive,
-		rxPackets: 1,
-		rxBytes:   uint64(packetLength),
-		createdAt: now,
-		lastSeen:  now,
+		id:         id,
+		ipVersion:  metadata.IPVersion,
+		protocol:   metadata.Protocol,
+		endpointA:  key.endpointA,
+		endpointB:  key.endpointB,
+		status:     StatusActive,
+		egressKind: egressKind,
+		rxPackets:  1,
+		rxBytes:    uint64(packetLength),
+		createdAt:  now,
+		lastSeen:   now,
 	}
 
 	m.flowsByKey[key] = flow

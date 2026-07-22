@@ -11,7 +11,8 @@ type Snapshot struct {
 	EndpointA Endpoint
 	EndpointB Endpoint
 
-	Status Status
+	Status     Status
+	EgressKind EgressKind
 
 	TxPackets uint64
 	TxBytes   uint64
