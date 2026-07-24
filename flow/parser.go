@@ -12,12 +12,12 @@ const (
 )
 
 var (
-	ErrInvalidIPv4        = errors.New("invalid IPv4 packet")
-	ErrInvalidIPv6        = errors.New("invalid IPv6 packet")
-	ErrTruncated          = errors.New("truncated packet")
-	ErrIPv4Fragment       = errors.New("non-initial IPv4 fragment")
-	ErrIPv6ExtensionHdr   = errors.New("IPv6 extension header not supported")
-	ErrUnsupportedProto   = errors.New("unsupported transport protocol")
+	ErrInvalidIPv4      = errors.New("invalid IPv4 packet")
+	ErrInvalidIPv6      = errors.New("invalid IPv6 packet")
+	ErrTruncated        = errors.New("truncated packet")
+	ErrIPv4Fragment     = errors.New("non-initial IPv4 fragment")
+	ErrIPv6ExtensionHdr = errors.New("IPv6 extension header not supported")
+	ErrUnsupportedProto = errors.New("unsupported transport protocol")
 )
 
 type PacketMetadata struct {
@@ -25,8 +25,9 @@ type PacketMetadata struct {
 	Protocol    uint8
 	Source      Endpoint
 	Destination Endpoint
-	SrcIA       string // SCION only, empty for IP
-	DstIA       string // SCION only, empty for IP
+	SrcIA       string     // local SCION AS; empty for IP; set by caller
+	DstIA       string     // remote SCION dst AS; empty for IP; set by caller
+	SCIONDstIP  netip.Addr // authoritative SCION dst IPv4; zero for IP; set by caller
 }
 
 func ParsePacketMetadata(packet []byte) (PacketMetadata, error) {
@@ -82,8 +83,8 @@ func parseIPv4(packet []byte) (PacketMetadata, error) {
 	dstPort := binary.BigEndian.Uint16(packet[ihl+2 : ihl+4])
 
 	return PacketMetadata{
-		IPVersion: 4,
-		Protocol:  protocol,
+		IPVersion:   4,
+		Protocol:    protocol,
 		Source:      Endpoint{Addr: srcIP, Port: srcPort},
 		Destination: Endpoint{Addr: dstIP, Port: dstPort},
 	}, nil
@@ -120,8 +121,8 @@ func parseIPv6(packet []byte) (PacketMetadata, error) {
 	dstPort := binary.BigEndian.Uint16(packet[42:44])
 
 	return PacketMetadata{
-		IPVersion: 6,
-		Protocol:  nextHeader,
+		IPVersion:   6,
+		Protocol:    nextHeader,
 		Source:      Endpoint{Addr: srcIP, Port: srcPort},
 		Destination: Endpoint{Addr: dstIP, Port: dstPort},
 	}, nil

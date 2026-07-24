@@ -1,6 +1,9 @@
 package flow
 
-import "time"
+import (
+	"net/netip"
+	"time"
+)
 
 type Snapshot struct {
 	ID ID
@@ -10,6 +13,10 @@ type Snapshot struct {
 
 	EndpointA Endpoint
 	EndpointB Endpoint
+
+	LocalEndpoint  Endpoint
+	RemoteEndpoint Endpoint
+	SCIONDstIP     netip.Addr
 
 	Status     Status
 	EgressKind EgressKind

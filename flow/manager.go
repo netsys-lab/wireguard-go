@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -23,11 +24,16 @@ const (
 )
 
 type Flow struct {
-	id         ID
-	ipVersion  uint8
-	protocol   uint8
-	endpointA  Endpoint
-	endpointB  Endpoint
+	id        ID
+	ipVersion uint8
+	protocol  uint8
+	endpointA Endpoint
+	endpointB Endpoint
+
+	localEndpoint  Endpoint
+	remoteEndpoint Endpoint
+	scionDstIP     netip.Addr
+
 	status     Status
 	egressKind EgressKind
 	srcIA      string
@@ -42,21 +48,40 @@ type Flow struct {
 
 func (f *Flow) snapshot() Snapshot {
 	return Snapshot{
-		ID:         f.id,
-		IPVersion:  f.ipVersion,
-		Protocol:   f.protocol,
-		EndpointA:  f.endpointA,
-		EndpointB:  f.endpointB,
-		Status:     f.status,
-		EgressKind: f.egressKind,
-		SrcIA:      f.srcIA,
-		DstIA:      f.dstIA,
-		TxPackets:  f.txPackets,
-		TxBytes:    f.txBytes,
-		RxPackets:  f.rxPackets,
-		RxBytes:    f.rxBytes,
-		CreatedAt:  f.createdAt,
-		LastSeen:   f.lastSeen,
+		ID:             f.id,
+		IPVersion:      f.ipVersion,
+		Protocol:       f.protocol,
+		EndpointA:      f.endpointA,
+		EndpointB:      f.endpointB,
+		LocalEndpoint:  f.localEndpoint,
+		RemoteEndpoint: f.remoteEndpoint,
+		SCIONDstIP:     f.scionDstIP,
+		Status:         f.status,
+		EgressKind:     f.egressKind,
+		SrcIA:          f.srcIA,
+		DstIA:          f.dstIA,
+		TxPackets:      f.txPackets,
+		TxBytes:        f.txBytes,
+		RxPackets:      f.rxPackets,
+		RxBytes:        f.rxBytes,
+		CreatedAt:      f.createdAt,
+		LastSeen:       f.lastSeen,
+	}
+}
+
+// enrichSCIONMetadata copies SCION-specific metadata from a packet into the
+// flow when the corresponding flow fields are still empty (first-writer-wins).
+// It does not change endpointA/endpointB, localEndpoint/remoteEndpoint,
+// counters, or timestamps.
+func (f *Flow) enrichSCIONMetadata(metadata PacketMetadata) {
+	if f.srcIA == "" && metadata.SrcIA != "" {
+		f.srcIA = metadata.SrcIA
+	}
+	if f.dstIA == "" && metadata.DstIA != "" {
+		f.dstIA = metadata.DstIA
+	}
+	if !f.scionDstIP.IsValid() && metadata.SCIONDstIP.IsValid() {
+		f.scionDstIP = metadata.SCIONDstIP
 	}
 }
 
@@ -69,8 +94,8 @@ func (f *Flow) setEgressKind(kind EgressKind) {
 }
 
 type Manager struct {
-	mu        sync.RWMutex
-	nextID    ID
+	mu         sync.RWMutex
+	nextID     ID
 	flowsByKey map[Key]*Flow
 	flowsByID  map[ID]*Flow
 }
@@ -96,6 +121,7 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 		flow.txBytes += uint64(packetLength)
 		flow.lastSeen = now
 		flow.setEgressKind(egressKind)
+		flow.enrichSCIONMetadata(metadata)
 		return flow.snapshot(), false
 	}
 
@@ -103,19 +129,22 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 	m.nextID++
 
 	flow := &Flow{
-		id:         id,
-		ipVersion:  metadata.IPVersion,
-		protocol:   metadata.Protocol,
-		endpointA:  key.endpointA,
-		endpointB:  key.endpointB,
-		status:     StatusActive,
-		egressKind: egressKind,
-		srcIA:      metadata.SrcIA,
-		dstIA:      metadata.DstIA,
-		txPackets:  1,
-		txBytes:    uint64(packetLength),
-		createdAt:  now,
-		lastSeen:   now,
+		id:             id,
+		ipVersion:      metadata.IPVersion,
+		protocol:       metadata.Protocol,
+		endpointA:      key.endpointA,
+		endpointB:      key.endpointB,
+		localEndpoint:  metadata.Source,
+		remoteEndpoint: metadata.Destination,
+		scionDstIP:     metadata.SCIONDstIP,
+		status:         StatusActive,
+		egressKind:     egressKind,
+		srcIA:          metadata.SrcIA,
+		dstIA:          metadata.DstIA,
+		txPackets:      1,
+		txBytes:        uint64(packetLength),
+		createdAt:      now,
+		lastSeen:       now,
 	}
 
 	m.flowsByKey[key] = flow
@@ -137,6 +166,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 		flow.rxBytes += uint64(packetLength)
 		flow.lastSeen = now
 		flow.setEgressKind(egressKind)
+		flow.enrichSCIONMetadata(metadata)
 		return flow.snapshot(), false
 	}
 
@@ -144,19 +174,22 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 	m.nextID++
 
 	flow := &Flow{
-		id:         id,
-		ipVersion:  metadata.IPVersion,
-		protocol:   metadata.Protocol,
-		endpointA:  key.endpointA,
-		endpointB:  key.endpointB,
-		status:     StatusActive,
-		egressKind: egressKind,
-		srcIA:      metadata.SrcIA,
-		dstIA:      metadata.DstIA,
-		rxPackets:  1,
-		rxBytes:    uint64(packetLength),
-		createdAt:  now,
-		lastSeen:   now,
+		id:             id,
+		ipVersion:      metadata.IPVersion,
+		protocol:       metadata.Protocol,
+		endpointA:      key.endpointA,
+		endpointB:      key.endpointB,
+		localEndpoint:  metadata.Destination,
+		remoteEndpoint: metadata.Source,
+		scionDstIP:     metadata.SCIONDstIP,
+		status:         StatusActive,
+		egressKind:     egressKind,
+		srcIA:          metadata.SrcIA,
+		dstIA:          metadata.DstIA,
+		rxPackets:      1,
+		rxBytes:        uint64(packetLength),
+		createdAt:      now,
+		lastSeen:       now,
 	}
 
 	m.flowsByKey[key] = flow

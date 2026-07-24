@@ -10,8 +10,8 @@ import (
 func TestFirstPacketCreatesFlowID1(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -28,8 +28,8 @@ func TestFirstPacketCreatesFlowID1(t *testing.T) {
 func TestSameTupleUpdatesSameFlow(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -64,8 +64,8 @@ func TestReverseDirectionSameFlow(t *testing.T) {
 	m := NewManager()
 
 	md1 := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -75,8 +75,8 @@ func TestReverseDirectionSameFlow(t *testing.T) {
 	}
 
 	md2 := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 	}
@@ -98,14 +98,14 @@ func TestReverseDirectionSameFlow(t *testing.T) {
 func TestDifferentPortDifferentFlow(t *testing.T) {
 	m := NewManager()
 	baseMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
 	diffPortMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49153},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -121,14 +121,14 @@ func TestDifferentPortDifferentFlow(t *testing.T) {
 func TestTCPvUDPDifferentFlows(t *testing.T) {
 	m := NewManager()
 	tcpMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
 	udpMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolUDP,
+		IPVersion:   4,
+		Protocol:    ProtocolUDP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -144,14 +144,14 @@ func TestTCPvUDPDifferentFlows(t *testing.T) {
 func TestIPv4v6DistinctFlows(t *testing.T) {
 	m := NewManager()
 	ipv4MD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
 	ipv6MD := PacketMetadata{
-		IPVersion: 6,
-		Protocol:  ProtocolTCP,
+		IPVersion:   6,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("::ffff:a00:2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("::ffff:a00:3"), Port: 443},
 	}
@@ -167,8 +167,8 @@ func TestIPv4v6DistinctFlows(t *testing.T) {
 func TestObserveTxIncrementsTxOnly(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -202,8 +202,8 @@ func TestObserveTxIncrementsTxOnly(t *testing.T) {
 func TestObserveRxIncrementsRxOnly(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -226,8 +226,8 @@ func TestObserveRxIncrementsRxOnly(t *testing.T) {
 func TestPacketByteCounters(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -254,8 +254,8 @@ func TestPacketByteCounters(t *testing.T) {
 func TestCreatedAtStableLastSeenUpdated(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -321,8 +321,8 @@ func TestEgressKindModel(t *testing.T) {
 func TestNewIPFlowStoresEgressIP(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -335,8 +335,8 @@ func TestNewIPFlowStoresEgressIP(t *testing.T) {
 func TestNewSCIONFlowStoresEgressSCION(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 6,
-		Protocol:  ProtocolTCP,
+		IPVersion:   6,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("fd42:42:42::70"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("fc04:7800:4a00::ffff:a2c:1947"), Port: 443},
 	}
@@ -349,8 +349,8 @@ func TestNewSCIONFlowStoresEgressSCION(t *testing.T) {
 func TestRepeatedPacketPreservesClassification(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -367,8 +367,8 @@ func TestRepeatedPacketPreservesClassification(t *testing.T) {
 func TestIPNotOverwrittenBySCION(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -386,14 +386,14 @@ func TestIPNotOverwrittenBySCION(t *testing.T) {
 func TestDifferentFlowsDifferentEgressKind(t *testing.T) {
 	m := NewManager()
 	ipMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
 	scionMD := PacketMetadata{
-		IPVersion: 6,
-		Protocol:  ProtocolUDP,
+		IPVersion:   6,
+		Protocol:    ProtocolUDP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("fd42:42:42::70"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("fc04:7800:4a00::ffff:a2c:1947"), Port: 443},
 	}
@@ -413,8 +413,8 @@ func TestDifferentFlowsDifferentEgressKind(t *testing.T) {
 func TestSnapshotContainsEgressKind(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -431,8 +431,8 @@ func TestSnapshotContainsEgressKind(t *testing.T) {
 func TestUnknownPromotedToIP(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
@@ -448,16 +448,16 @@ func TestUnknownPromotedToIP(t *testing.T) {
 func TestReverseDirectionSameEgressKind(t *testing.T) {
 	m := NewManager()
 	txMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}
 	snap1, _ := m.ObserveTx(txMD, 100, EgressIP)
 
 	rxMD := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 	}
@@ -471,11 +471,167 @@ func TestReverseDirectionSameEgressKind(t *testing.T) {
 	}
 }
 
+func TestObserveTxSetsOrientation(t *testing.T) {
+	m := NewManager()
+	md := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+		SCIONDstIP:  netip.MustParseAddr("10.0.0.4"),
+	}
+	snap, _ := m.ObserveTx(md, 100, EgressIP)
+	if snap.LocalEndpoint != md.Source {
+		t.Errorf("LocalEndpoint = %v, want %v", snap.LocalEndpoint, md.Source)
+	}
+	if snap.RemoteEndpoint != md.Destination {
+		t.Errorf("RemoteEndpoint = %v, want %v", snap.RemoteEndpoint, md.Destination)
+	}
+	if snap.SCIONDstIP != md.SCIONDstIP {
+		t.Errorf("SCIONDstIP = %v, want %v", snap.SCIONDstIP, md.SCIONDstIP)
+	}
+}
+
+func TestObserveRxSetsOrientation(t *testing.T) {
+	m := NewManager()
+	md := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		SCIONDstIP:  netip.MustParseAddr("10.0.0.4"),
+	}
+	snap, _ := m.ObserveRx(md, 200, EgressIP)
+	// For rx, local = metadata.Destination, remote = metadata.Source
+	if snap.LocalEndpoint != md.Destination {
+		t.Errorf("LocalEndpoint = %v, want %v", snap.LocalEndpoint, md.Destination)
+	}
+	if snap.RemoteEndpoint != md.Source {
+		t.Errorf("RemoteEndpoint = %v, want %v", snap.RemoteEndpoint, md.Source)
+	}
+	if snap.SCIONDstIP != md.SCIONDstIP {
+		t.Errorf("SCIONDstIP = %v, want %v", snap.SCIONDstIP, md.SCIONDstIP)
+	}
+}
+
+func TestObservationKeepsOrientationStable(t *testing.T) {
+	m := NewManager()
+	txMD := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+		SCIONDstIP:  netip.MustParseAddr("10.0.0.4"),
+	}
+	snap1, _ := m.ObserveTx(txMD, 100, EgressIP)
+
+	rxMD := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+	}
+	snap2, _ := m.ObserveRx(rxMD, 200, EgressIP)
+
+	if snap1.LocalEndpoint != snap2.LocalEndpoint {
+		t.Errorf("LocalEndpoint changed: was %v, now %v", snap1.LocalEndpoint, snap2.LocalEndpoint)
+	}
+	if snap1.RemoteEndpoint != snap2.RemoteEndpoint {
+		t.Errorf("RemoteEndpoint changed: was %v, now %v", snap1.RemoteEndpoint, snap2.RemoteEndpoint)
+	}
+	if snap1.SCIONDstIP != snap2.SCIONDstIP {
+		t.Errorf("SCIONDstIP changed: was %v, now %v", snap1.SCIONDstIP, snap2.SCIONDstIP)
+	}
+}
+
+func TestEnrichSCIONMetadataFillsEmptyFields(t *testing.T) {
+	f := &Flow{
+		localEndpoint:  Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		remoteEndpoint: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+	}
+	md := PacketMetadata{
+		SrcIA:      "1-ff00:0:110",
+		DstIA:      "1-ff00:0:111",
+		SCIONDstIP: netip.MustParseAddr("10.0.0.5"),
+	}
+	f.enrichSCIONMetadata(md)
+	if f.srcIA != "1-ff00:0:110" {
+		t.Errorf("srcIA = %q, want 1-ff00:0:110", f.srcIA)
+	}
+	if f.dstIA != "1-ff00:0:111" {
+		t.Errorf("dstIA = %q, want 1-ff00:0:111", f.dstIA)
+	}
+	if f.scionDstIP != netip.MustParseAddr("10.0.0.5") {
+		t.Errorf("scionDstIP = %v, want 10.0.0.5", f.scionDstIP)
+	}
+}
+
+func TestEnrichSCIONMetadataDoesNotOverwrite(t *testing.T) {
+	f := &Flow{
+		srcIA:      "existing-src",
+		dstIA:      "existing-dst",
+		scionDstIP: netip.MustParseAddr("10.0.0.1"),
+	}
+	md := PacketMetadata{
+		SrcIA:      "new-src",
+		DstIA:      "new-dst",
+		SCIONDstIP: netip.MustParseAddr("10.0.0.2"),
+	}
+	f.enrichSCIONMetadata(md)
+	if f.srcIA != "existing-src" {
+		t.Errorf("srcIA overwritten to %q", f.srcIA)
+	}
+	if f.dstIA != "existing-dst" {
+		t.Errorf("dstIA overwritten to %q", f.dstIA)
+	}
+	if f.scionDstIP != netip.MustParseAddr("10.0.0.1") {
+		t.Errorf("scionDstIP overwritten to %v", f.scionDstIP)
+	}
+}
+
+func TestEnrichSCIONMetadataOnExistingFlow(t *testing.T) {
+	m := NewManager()
+	md := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+		SrcIA:       "1-ff00:0:110",
+		DstIA:       "1-ff00:0:111",
+		SCIONDstIP:  netip.MustParseAddr("10.0.0.5"),
+	}
+	snap1, created := m.ObserveTx(md, 100, EgressSCION)
+	if !created {
+		t.Fatal("expected new flow")
+	}
+
+	// Second observation with different enrichment data — should NOT overwrite
+	md2 := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+	}
+	snap2, created := m.ObserveTx(md2, 200, EgressSCION)
+	if created {
+		t.Fatal("expected existing flow")
+	}
+	if snap2.SrcIA != snap1.SrcIA {
+		t.Errorf("SrcIA changed: %q -> %q", snap1.SrcIA, snap2.SrcIA)
+	}
+	if snap2.DstIA != snap1.DstIA {
+		t.Errorf("DstIA changed: %q -> %q", snap1.DstIA, snap2.DstIA)
+	}
+	if snap2.SCIONDstIP != snap1.SCIONDstIP {
+		t.Errorf("SCIONDstIP changed: %v -> %v", snap1.SCIONDstIP, snap2.SCIONDstIP)
+	}
+}
+
 func TestConcurrentObservations(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
-		IPVersion: 4,
-		Protocol:  ProtocolTCP,
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
 		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
 		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
 	}

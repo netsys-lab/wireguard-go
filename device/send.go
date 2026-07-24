@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/scionproto/scion/pkg/addr"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
-	"github.com/scionproto/scion/pkg/addr"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/scionlog"
@@ -278,22 +278,22 @@ func (device *Device) RoutineReadFromTUN() {
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
 
-			if device.flowManager != nil {
-				if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-					if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
-						device.log.Verbosef(
-							"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
-							snap.ID, snap.EgressKind, snap.ProtocolName(),
-							snap.EndpointA, snap.EndpointB,
-							snap.TxPackets, snap.TxBytes,
-						)
+				if device.flowManager != nil {
+					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
+							device.log.Verbosef(
+								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+								snap.ID, snap.EgressKind, snap.ProtocolName(),
+								snap.EndpointA, snap.EndpointB,
+								snap.TxPackets, snap.TxBytes,
+							)
+						}
+					} else {
+						device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=ip err=%v packetLen=%d ipVersion=4", err, len(pkt))
 					}
-				} else {
-					device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=ip err=%v packetLen=%d ipVersion=4", err, len(pkt))
 				}
-			}
 
-		case 6:
+			case 6:
 				if len(elem.packet) < ipv6.HeaderLen {
 					continue
 				}
@@ -302,34 +302,34 @@ func (device *Device) RoutineReadFromTUN() {
 				dstIP := net.IP(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 
-				//Flow Manager with Scion call
-				if device.flowManager != nil {
-					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-						var scionSrcIA, scionDstIA addr.IA
-						var iaValid bool
-						if srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP); iaErr == nil {
-							md.SrcIA = srcIA.String()
-							md.DstIA = dstIA.String()
-							scionSrcIA = srcIA
-							scionDstIA = dstIA
-							iaValid = true
+					//Flow Manager with Scion call
+					if device.flowManager != nil {
+						if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+							var scionSrcIA, scionDstIA addr.IA
+							mapped, mapErr := device.translator.MappedDestinationFor(dstIP)
+							if mapErr == nil {
+								md.SrcIA = mapped.SrcIA.String()
+								md.DstIA = mapped.DstIA.String()
+								md.SCIONDstIP = mapped.Host
+								scionSrcIA = mapped.SrcIA
+								scionDstIA = mapped.DstIA
+							}
+							snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
+							if created {
+								device.log.Verbosef(
+									"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+									snap.ID, snap.EgressKind, snap.ProtocolName(),
+									snap.EndpointA, snap.EndpointB,
+									snap.TxPackets, snap.TxBytes,
+								)
+							}
+							if mapErr == nil {
+								device.rememberSCIONEgress(snap.ID, scionSrcIA, scionDstIA)
+							}
+						} else {
+							device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
 						}
-						snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
-						if created {
-							device.log.Verbosef(
-								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
-								snap.ID, snap.EgressKind, snap.ProtocolName(),
-								snap.EndpointA, snap.EndpointB,
-								snap.TxPackets, snap.TxBytes,
-							)
-						}
-						if iaValid {
-							device.rememberSCIONEgress(snap.ID, scionSrcIA, scionDstIA)
-						}
-					} else {
-						device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
 					}
-				}
 
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 					hostPort := 35000
@@ -338,19 +338,19 @@ func (device *Device) RoutineReadFromTUN() {
 					translateDur := time.Since(start)
 					if err != nil {
 						if errors.Is(err, pathpool.ErrPathPending) {
-							srcIA, dstIA, iaErr := device.translator.IAPairForMappedDst(dstIP)
+							mapped, iaErr := device.translator.MappedDestinationFor(dstIP)
 							if iaErr != nil {
 								device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=ia-extract err=%v", packetID, iaErr)
 								continue
 							}
 
 							if device.pendingSCION == nil {
-								device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=pending-nil src=%s dst=%s", packetID, srcIA, dstIA)
+								device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=translation-failed reason=pending-nil src=%s dst=%s", packetID, mapped.SrcIA, mapped.DstIA)
 								continue
 							}
 
-							device.pendingSCION.Enqueue(srcIA, dstIA, pkt, true, hostPort, packetID)
-							device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-pending src=%s dst=%s bytes=%d", packetID, srcIA, dstIA, len(pkt))
+							device.pendingSCION.Enqueue(mapped.SrcIA, mapped.DstIA, pkt, true, hostPort, packetID)
+							device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-pending src=%s dst=%s bytes=%d", packetID, mapped.SrcIA, mapped.DstIA, len(pkt))
 							continue
 						}
 

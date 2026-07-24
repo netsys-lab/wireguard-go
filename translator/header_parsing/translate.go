@@ -193,18 +193,24 @@ func (t *Translator) WGSrcIPv4() (net.IP, error) {
 	return append(net.IP(nil), ip...), nil
 }
 
-func (t *Translator) IAPairForMappedDst(dstIP net.IP) (addr.IA, addr.IA, error) {
+type MappedDestination struct {
+	SrcIA addr.IA
+	DstIA addr.IA
+	Host  netip.Addr
+}
+
+func (t *Translator) MappedDestinationFor(dstIP net.IP) (MappedDestination, error) {
 	t.log.Infof(scionlog.ComponentPath, "[IA-MAP] enter dstIP=%s localIA=%s", ipString(dstIP), t.localIA)
 
 	if !IsSCIONMapped(dstIP) {
 		t.log.Infof(scionlog.ComponentPath, "[IA-MAP] not SCION-mapped dstIP=%s", ipString(dstIP))
-		return 0, 0, fmt.Errorf("dst IP is not SCION-mapped: %s", dstIP)
+		return MappedDestination{}, fmt.Errorf("dst IP is not SCION-mapped: %s", dstIP)
 	}
 
 	isd, asn, localPrefix, subnet, host, hostIsIPv4, err := UnmapIPv6(dstIP, 8)
 	if err != nil {
 		t.log.Infof(scionlog.ComponentPath, "[IA-MAP] UnmapIPv6 failed dstIP=%s err=%v", ipString(dstIP), err)
-		return 0, 0, fmt.Errorf("unmap IPv6 failed: %w", err)
+		return MappedDestination{}, fmt.Errorf("unmap IPv6 failed: %w", err)
 	}
 
 	dstIA := addr.MustIAFrom(addr.ISD(isd), addr.AS(asn))
@@ -212,10 +218,16 @@ func (t *Translator) IAPairForMappedDst(dstIP net.IP) (addr.IA, addr.IA, error) 
 	srcIA := t.localIA
 	if srcIA == 0 {
 		t.log.Infof(scionlog.ComponentPath, "[IA-MAP] localIA not configured dstIP=%s dstIA=%s", ipString(dstIP), dstIA)
-		return 0, 0, fmt.Errorf("localIA not configured")
+		return MappedDestination{}, fmt.Errorf("localIA not configured")
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[IA-MAP] success dstIP=%s srcIA=%s dstIA=%s isd=%d asn=%d localPrefix=%d subnet=%d host=%s hostIsIPv4=%v",
+	hostIP, hostErr := ipToNetip(host)
+	if hostErr != nil {
+		t.log.Infof(scionlog.ComponentPath, "[IA-MAP] ipToNetip failed dstIP=%s host=%s err=%v", ipString(dstIP), ipString(host), hostErr)
+		return MappedDestination{}, fmt.Errorf("convert host IP: %w", hostErr)
+	}
+
+	t.log.Infof(scionlog.ComponentPath, "[IA-MAP] success dstIP=%s srcIA=%s dstIA=%s isd=%d asn=%d localPrefix=%d subnet=%d host=%s hostIP=%s hostIsIPv4=%v",
 		ipString(dstIP),
 		srcIA,
 		dstIA,
@@ -224,10 +236,15 @@ func (t *Translator) IAPairForMappedDst(dstIP net.IP) (addr.IA, addr.IA, error) 
 		localPrefix,
 		subnet,
 		ipString(host),
+		hostIP,
 		hostIsIPv4,
 	)
 
-	return srcIA, dstIA, nil
+	return MappedDestination{
+		SrcIA: srcIA,
+		DstIA: dstIA,
+		Host:  hostIP,
+	}, nil
 }
 
 func ipToNetip(ip net.IP) (netip.Addr, error) {
