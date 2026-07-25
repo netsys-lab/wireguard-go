@@ -107,9 +107,11 @@ type Device struct {
 	flowManager  *flow.Manager
 	pendingSCION *PendingSCIONQueue
 
-	scionFlowMu     sync.RWMutex
-	scionFlowStates map[flow.ID]SCIONEgressState
-	policyEngine    *pathpolicy.Engine
+	scionFlowMu      sync.RWMutex
+	scionFlowStates  map[flow.ID]SCIONEgressState
+	flowOverrideMu   sync.RWMutex
+	flowOverrides    map[flow.ID]string
+	policyEngine     *pathpolicy.Engine
 
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
 	// It is assigned only to SCION-mapped egress packets accepted from TUN
@@ -805,14 +807,49 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 
 	currentIdx := device.currentPathIndex(flowID, selectedPaths)
 	dtos := make([]FlowPathDTO, 0, len(selectedPaths))
-	for i, p := range selectedPaths {
-		dtos = append(dtos, pathToDTO(p, i == currentIdx))
+	for _, p := range selectedPaths {
+		dtos = append(dtos, pathToDTO(p))
+	}
+
+	var policyMode PolicyMode = PolicyNone
+	var policyName string
+	var policyFallback bool
+	if device.policyEngine != nil {
+		policyMode = PolicyDefault
+	}
+
+	var effectiveFingerprint string
+	if len(dtos) > 0 {
+		idx := currentIdx
+		if idx < 0 || idx >= len(dtos) {
+			idx = 0
+		}
+		effectiveFingerprint = dtos[idx].Fingerprint
+	}
+
+	overrideState := OverrideInactive
+	var overrideFingerprint string
+	device.flowOverrideMu.RLock()
+	ofp, hasOverride := device.flowOverrides[flowID]
+	device.flowOverrideMu.RUnlock()
+	if hasOverride {
+		overrideFingerprint = ofp
+		overrideState = OverrideActive
+		if effectiveFingerprint != ofp {
+			overrideState = OverrideStale
+		}
 	}
 
 	return FlowPathsResult{
-		FlowID: uint64(flowID),
-		State:  FlowPathsReady,
-		Paths:  dtos,
+		FlowID:     uint64(flowID),
+		State:      FlowPathsReady,
+		Paths:      dtos,
+		PolicyName: policyName,
+		PolicyMode: policyMode,
+		PolicyFallbackApplied: policyFallback,
+		OverrideState:        overrideState,
+		OverrideFingerprint:  overrideFingerprint,
+		EffectiveFingerprint: effectiveFingerprint,
 	}
 }
 
@@ -847,17 +884,63 @@ func protocolName(p uint8) string {
 	}
 }
 
+// SetFlowPathOverride sets a manual override for a flow to use the path
+// identified by the given fingerprint. The override persists until explicitly
+// cleared with ClearFlowPathOverride.
+func (device *Device) SetFlowPathOverride(flowID flow.ID, fingerprint string) error {
+	if fingerprint == "" {
+		return fmt.Errorf("empty fingerprint")
+	}
+	device.flowOverrideMu.Lock()
+	defer device.flowOverrideMu.Unlock()
+	if device.flowOverrides == nil {
+		device.flowOverrides = make(map[flow.ID]string)
+	}
+	device.flowOverrides[flowID] = fingerprint
+	if device.scionLog != nil {
+		device.scionLog.Debugf(scionlog.ComponentPath,
+			"[OVERRIDE] set flowID=%d fingerprint=%s", flowID, fingerprint)
+	}
+	return nil
+}
+
+// ClearFlowPathOverride removes any manual override for the given flow.
+func (device *Device) ClearFlowPathOverride(flowID flow.ID) {
+	device.flowOverrideMu.Lock()
+	defer device.flowOverrideMu.Unlock()
+	delete(device.flowOverrides, flowID)
+	if device.scionLog != nil {
+		device.scionLog.Debugf(scionlog.ComponentPath,
+			"[OVERRIDE] cleared flowID=%d", flowID)
+	}
+}
+
 // currentPathIndex returns the index of the current path within the given slice.
-// After policy filtering, the first surviving path is always the "current" one.
-// When no policy engine is active, the first-valid strategy (paths[0]) is used.
+// When a manual override is active and the override fingerprint matches a known
+// path, that path's index is returned. If the override fingerprint is not found
+// among the current paths (stale override), index 0 is returned as fallback.
+// When no override is set, the first-valid strategy (paths[0]) is used.
 func (device *Device) currentPathIndex(flowID flow.ID, paths []pathcache.CachedPath) int {
+	device.flowOverrideMu.RLock()
+	fp, hasOverride := device.flowOverrides[flowID]
+	device.flowOverrideMu.RUnlock()
+
+	if hasOverride {
+		for i, p := range paths {
+			if p.Fingerprint == fp {
+				return i
+			}
+		}
+		// Override fingerprint not found in current paths — caller
+		// will set OverrideState = STALE. Return 0 as fallback.
+		return 0
+	}
 	return 0
 }
 
-func pathToDTO(p pathcache.CachedPath, current bool) FlowPathDTO {
+func pathToDTO(p pathcache.CachedPath) FlowPathDTO {
 	dto := FlowPathDTO{
 		Fingerprint: p.Fingerprint,
-		Current:     current,
 		NextHop:     formatUDPAddr(p.NextHop),
 	}
 	if !p.Expiry.IsZero() {
@@ -870,7 +953,8 @@ func pathToDTO(p pathcache.CachedPath, current bool) FlowPathDTO {
 		return dto
 	}
 
-	dto.MTU = meta.MTU
+	mtu := meta.MTU
+	dto.MTU = &mtu
 	dto.Display = buildPathDisplay(meta.Interfaces)
 	dto.Interfaces = make([]string, len(meta.Interfaces))
 	for i, iface := range meta.Interfaces {
@@ -878,15 +962,50 @@ func pathToDTO(p pathcache.CachedPath, current bool) FlowPathDTO {
 	}
 
 	if len(meta.Latency) > 0 {
-		dto.LatencyMs = make([]float64, len(meta.Latency))
+		dto.LatencyMicros = make([]int64, len(meta.Latency))
 		for i, l := range meta.Latency {
-			dto.LatencyMs[i] = float64(l) / float64(time.Millisecond)
+			dto.LatencyMicros[i] = l.Microseconds()
+		}
+		if isComplete := allNonNegative(dto.LatencyMicros); isComplete {
+			var total int64
+			for _, v := range dto.LatencyMicros {
+				total += v
+			}
+			dto.TotalLatencyMicros = &total
+			latComplete := true
+			dto.LatencyComplete = &latComplete
+		} else {
+			latComplete := false
+			dto.LatencyComplete = &latComplete
 		}
 	}
+
 	if len(meta.Bandwidth) > 0 {
-		dto.Bandwidth = make([]uint64, len(meta.Bandwidth))
-		copy(dto.Bandwidth, meta.Bandwidth)
+		dto.BandwidthKbps = make([]uint64, len(meta.Bandwidth))
+		for i, bw := range meta.Bandwidth {
+			dto.BandwidthKbps[i] = bw / 1000
+		}
+		if isComplete := allPositive(dto.BandwidthKbps); isComplete {
+			var min uint64 = dto.BandwidthKbps[0]
+			for _, v := range dto.BandwidthKbps[1:] {
+				if v < min {
+					min = v
+				}
+			}
+			dto.BottleneckKbps = &min
+			bwComplete := true
+			dto.BandwidthComplete = &bwComplete
+		} else {
+			bwComplete := false
+			dto.BandwidthComplete = &bwComplete
+		}
 	}
+
+	ifaces := len(meta.Interfaces)
+	if ifaces > 1 {
+		dto.InterAsLinks = ifaces - 1
+	}
+
 	if len(meta.Geo) > 0 {
 		dto.Geo = make([]GeoDTO, len(meta.Geo))
 		for i, g := range meta.Geo {
@@ -913,6 +1032,24 @@ func pathToDTO(p pathcache.CachedPath, current bool) FlowPathDTO {
 	}
 
 	return dto
+}
+
+func allNonNegative(vals []int64) bool {
+	for _, v := range vals {
+		if v < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func allPositive(vals []uint64) bool {
+	for _, v := range vals {
+		if v == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func buildPathDisplay(ifaces []snet.PathInterface) string {

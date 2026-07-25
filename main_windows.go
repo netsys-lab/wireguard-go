@@ -48,8 +48,8 @@ func main() {
 		logger.Errorf("Failed to create TUN device: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
-
-	device := device.NewDevice(tun, conn.NewDefaultBind(), logger)
+	scionConfig := device.ScionDeviceConfigFromEnv()
+	device := device.NewDevice(tun, conn.NewDefaultBind(), logger, scionConfig)
 	err = device.Up()
 	if err != nil {
 		logger.Errorf("Failed to bring up device: %v", err)
