@@ -10,6 +10,25 @@ import (
 	"strings"
 )
 
+func FormatSCIONIPv6(ip net.IP) string {
+	ip = ip.To16()
+	if ip == nil {
+		return "<nil>"
+	}
+	if ip[0] != SCIONPrefixFirstByte {
+		return ip.String()
+	}
+	lo := binary.BigEndian.Uint64(ip[8:16])
+	if lo&0xffffffff00000000 == 0x0000ffff00000000 {
+		v4 := net.IP(ip[12:16]).To4()
+		s := ip.String()
+		if idx := strings.LastIndex(s, "ffff:"); idx >= 0 {
+			return s[:idx] + "ffff:" + v4.String()
+		}
+	}
+	return ip.String()
+}
+
 const (
 	SCIONPrefixFirstByte = 0xfc
 

@@ -39,7 +39,7 @@ func ipString(ip net.IP) string {
 	if ip == nil {
 		return "<nil>"
 	}
-	return ip.String()
+	return addr_translation.FormatSCIONIPv6(ip)
 }
 
 func udpAddrString(a *net.UDPAddr) string {

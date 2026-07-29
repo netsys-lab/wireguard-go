@@ -300,6 +300,7 @@ func (device *Device) RoutineReadFromTUN() {
 				dst := elem.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len]
 
 				dstIP := net.IP(dst)
+				peer = device.allowedips.Lookup(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
 
 					//Flow Manager with Scion call
@@ -360,15 +361,17 @@ func (device *Device) RoutineReadFromTUN() {
 					elem.PacketID = packetID
 
 					// Lookup peer based on translated packet's outer destination
-					if len(newpkt) > 4 {
-						if newpkt[0]>>4 == 4 {
-							translatedDst := newpkt[16:20]
-							peer = device.allowedips.Lookup(translatedDst)
-						} else if newpkt[0]>>4 == 6 {
-							translatedDst := newpkt[24:40]
-							peer = device.allowedips.Lookup(translatedDst)
+					/*
+						if len(newpkt) > 4 {
+							if newpkt[0]>>4 == 4 {
+								translatedDst := newpkt[16:20]
+								peer = device.allowedips.Lookup(translatedDst)
+							} else if newpkt[0]>>4 == 6 {
+								translatedDst := newpkt[24:40]
+								peer = device.allowedips.Lookup(translatedDst)
+							}
 						}
-					}
+					*/
 
 					elem.packet = newpkt
 					sizes[i] = len(newpkt)
