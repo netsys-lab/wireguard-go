@@ -302,6 +302,15 @@ func (device *Device) RoutineReadFromTUN() {
 				dstIP := net.IP(dst)
 				peer = device.allowedips.Lookup(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
+					if peer == nil {
+						device.scionLog.Errorf(scionlog.ComponentEgressLifecycle,
+							"[SCION-EGRESS] packetId=%d event=peer-lookup-failed lookupStage=before-translation lookupDst=%s",
+							packetID, dstIP.String())
+						continue
+					}
+					device.scionLog.Debugf(scionlog.ComponentEgressLifecycle,
+						"[SCION-EGRESS] packetId=%d event=peer-selected-original-dst lookupDst=%s",
+						packetID, dstIP.String())
 
 					//Flow Manager with Scion call
 					if device.flowManager != nil {
@@ -359,19 +368,6 @@ func (device *Device) RoutineReadFromTUN() {
 						continue
 					}
 					elem.PacketID = packetID
-
-					// Lookup peer based on translated packet's outer destination
-					/*
-						if len(newpkt) > 4 {
-							if newpkt[0]>>4 == 4 {
-								translatedDst := newpkt[16:20]
-								peer = device.allowedips.Lookup(translatedDst)
-							} else if newpkt[0]>>4 == 6 {
-								translatedDst := newpkt[24:40]
-								peer = device.allowedips.Lookup(translatedDst)
-							}
-						}
-					*/
 
 					elem.packet = newpkt
 					sizes[i] = len(newpkt)

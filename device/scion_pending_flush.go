@@ -69,6 +69,13 @@ func (device *Device) flushOnePendingSCION(p pendingSCIONPacket) {
 		dstIP := net.IP(p.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len])
 		srcIP := net.IP(p.packet[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 
+		peer := device.allowedips.Lookup(p.packet[IPv6offsetDst : IPv6offsetDst+net.IPv6len])
+		if peer == nil {
+			device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed lookupStage=before-translation lookupDst=%s", p.packetID, dstIP.String())
+			return
+		}
+		device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-selected-original-dst lookupDst=%s", p.packetID, dstIP.String())
+
 		start := time.Now()
 		newpkt, err := device.translator.ReadOutboundPacket(p.packet, dstIP, srcIP, p.hostPort, true)
 		translateDur := time.Since(start)
@@ -79,13 +86,6 @@ func (device *Device) flushOnePendingSCION(p pendingSCIONPacket) {
 
 		device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", p.packetID, len(newpkt), translateDur)
 
-		peer := device.lookupPeerForPacket(newpkt)
-		if peer == nil {
-			device.scionLog.Errorf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-lookup-failed reason=no-route", p.packetID)
-			return
-		}
-
-		device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=peer-selected peer=%s", p.packetID, peer)
 		device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=queued-for-encryption", p.packetID)
 
 		device.QueueOutboundPacket(peer, newpkt, p.packetID)
