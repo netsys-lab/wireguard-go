@@ -6,3 +6,4 @@ wireguard-go
 wireguard
 testenv/keys/*
 testenv/logs/*
+*.trc
