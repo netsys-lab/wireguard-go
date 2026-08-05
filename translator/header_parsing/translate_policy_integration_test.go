@@ -68,7 +68,7 @@ func TestTranslatorSelectPathWithPolicy(t *testing.T) {
 		makeTestPathWithLatency(srcIA, dstIA, 30, 50),  // 50ms
 	}
 
-	translator := NewTranslator(&mockPool{paths: paths}, srcIA, nil)
+	translator := NewTranslator(&mockPool{paths: paths}, srcIA, nil, "", nil)
 
 	// No policy -> first valid path
 	selected := translator.selectPathWithPolicy(paths, srcIA, dstIA)

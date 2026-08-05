@@ -23,8 +23,9 @@ func chooseSameASDispatchPort(
 		return innerDstPort
 	}
 
-	// ICMP/SCMP has no TCP/UDP destination port.
-	// Use your translator/endhost port, e.g. 35000.
+	// ICMP/SCMP has no TCP/UDP destination port, so no inner L4 port is
+	// available. Fall back to the translator/endhost control port (hostPort,
+	// e.g. 35000) when it falls within the dispatched port range.
 	if hostPort != 0 && dispatched.Contains(hostPort) {
 		return hostPort
 	}

@@ -342,6 +342,10 @@ func (device *Device) RoutineReadFromTUN() {
 					}
 
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
+					// SCION endhost/control port. Only used as the outer UDP
+					// source port for SCMP/ICMPv6 control traffic; the outer
+					// source port of TCP/UDP data flows is derived by the
+					// translator from the inner L4 source port.
 					hostPort := 35000
 					start := time.Now()
 					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, true)

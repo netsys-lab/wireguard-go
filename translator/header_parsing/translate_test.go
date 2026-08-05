@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/gopacket/gopacket"
@@ -650,7 +651,7 @@ func TestTranslateIpUdpToScion4(t *testing.T) {
 		return fake, nil
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 35000, GetPathCallback)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -1065,7 +1066,7 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 		return fake, nil
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 35000, GetPathCallback)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -1770,48 +1771,252 @@ func TestInnerUDPPortPreserved(t *testing.T) {
 	t.Logf("inner UDP DstPort = %d (correct)", innerUDP.DstPort)
 }
 
-func TestOuterSrcPortSeparateFromInner(t *testing.T) {
-	// Verify that outer UDP source port (35000) is separate from inner.
-	// Use same-AS (2-64497) and configure IPv6 source for IPv6 destination.
-	srcIA := mustIA(t, 2, 64497)
-	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
-	translator.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
-	translator.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+func parseOuterUDP(t *testing.T, b []byte) layers.UDP {
+	t.Helper()
+	if len(b) == 0 {
+		t.Fatal("empty translated packet")
+	}
+	firstNibble := b[0] >> 4
+	var pkt gopacket.Packet
+	if firstNibble == 4 {
+		pkt = gopacket.NewPacket(b, layers.LayerTypeIPv4, gopacket.Default)
+	} else {
+		pkt = gopacket.NewPacket(b, layers.LayerTypeIPv6, gopacket.Default)
+	}
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		t.Fatal("no outer UDP layer in translated packet")
+	}
+	return *udpLayer.(*layers.UDP)
+}
+
+func newSameASTranslator(t *testing.T) *Translator {
+	t.Helper()
+	tr := NewTranslator(nil, mustIA(t, 2, 64497), &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
+	tr.SetConfiguredIPv4(netip.MustParseAddr("10.44.25.72"))
+	tr.SetConfiguredIPv6(netip.MustParseAddr("fd42:42:42::72"))
+	return tr
+}
+
+// sameASDst is an IPv6 address that UnmapIPv6 resolves to ISD 2, AS 64497,
+// i.e. the same AS as newSameASTranslator's local IA.
+func sameASDst(t *testing.T) net.IP {
+	t.Helper()
+	return mustParseIP(t, "fc00:20fb:f100::2")
+}
+
+func emptyPathCallback(srcIA, dstIA addr.IA) (path.Path, error) {
+	return path.Path{}, nil
+}
+
+// buildIPv6Packet serializes an inner IPv6 packet with the given L4 layers,
+// the way an application socket would emit it towards the tunnel.
+func buildIPv6Packet(t *testing.T, nextHeader layers.IPProtocol, dst net.IP, l4s ...gopacket.SerializableLayer) []byte {
+	t.Helper()
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   64,
+		NextHeader: nextHeader,
+		SrcIP:      mustParseIP(t, "fd42:42:42::72"),
+		DstIP:      dst,
+	}
+	for _, l := range l4s {
+		if cs, ok := l.(interface {
+			SetNetworkLayerForChecksum(gopacket.NetworkLayer) error
+		}); ok {
+			cs.SetNetworkLayerForChecksum(ip6)
+		}
+	}
+	items := make([]gopacket.SerializableLayer, 0, len(l4s)+1)
+	items = append(items, ip6)
+	items = append(items, l4s...)
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, items...); err != nil {
+		t.Fatalf("serialize test packet: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestOuterSrcPortEqualsInnerL4Port(t *testing.T) {
+	// The outer UDP source port of TCP/UDP data flows must equal the inner L4
+	// source port, regardless of the hostPort (SCION endhost/control port)
+	// passed in. Previously the outer source port was fixed to hostPort
+	// (35000), so inner and outer ports could diverge and dispatcher-less
+	// same-AS peers dropped the packet.
+	tr := newSameASTranslator(t)
+	srcHost := mustParseIP(t, "fd42:42:42::72")
+	hostPort := 35000
 
 	pkts := LoadPackets(t, "../data/translate_udp_ipv6.bin")
 	input := pkts[0]
 
-	srcHost := mustParseIP(t, "fd42:42:42::72")
-	outerSrcPort := 35000
-
-	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
-		return path.Path{}, nil
+	// Parse the inner UDP source port of the fixture (32766) instead of
+	// hard-coding it, so the test stays meaningful if the fixture changes.
+	inner := gopacket.NewPacket(input, layers.LayerTypeIPv6, gopacket.Default)
+	innerUDPLayer := inner.Layer(layers.LayerTypeUDP)
+	if innerUDPLayer == nil {
+		t.Fatal("input has no inner UDP layer")
+	}
+	innerUDP := innerUDPLayer.(*layers.UDP)
+	want := uint16(innerUDP.SrcPort)
+	if want == uint16(hostPort) {
+		t.Fatalf("fixture inner src port %d must differ from hostPort %d to expose the regression", want, hostPort)
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, srcHost, outerSrcPort, GetPathCallback)
+	scionBytes, _, err := tr.TranslateEgress(input, srcHost, hostPort, emptyPathCallback)
 	if err != nil {
 		t.Fatalf("TranslateEgress failed: %v", err)
 	}
 
-	// Parse outer packet.
-	firstNibble := scionBytes[0] >> 4
-	var outerUDP layers.UDP
-	if firstNibble == 4 {
-		pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv4, gopacket.Default)
-		if l := pkt.Layer(layers.LayerTypeUDP); l != nil {
-			outerUDP = *l.(*layers.UDP)
-		}
-	} else {
-		pkt := gopacket.NewPacket(scionBytes, layers.LayerTypeIPv6, gopacket.Default)
-		if l := pkt.Layer(layers.LayerTypeUDP); l != nil {
-			outerUDP = *l.(*layers.UDP)
-		}
+	outer := parseOuterUDP(t, scionBytes)
+	if outer.SrcPort != layers.UDPPort(want) {
+		t.Errorf("outer UDP SrcPort = %d, expected inner L4 source port %d", outer.SrcPort, want)
+	}
+	t.Logf("outer UDP SrcPort = %d, inner source port = %d (correct)", outer.SrcPort, want)
+}
+
+func TestOuterSrcPortTable(t *testing.T) {
+	// For every inner L4 source port, the outer UDP source port must equal it.
+	// hostPort is chosen to differ from the inner port so a regression back to
+	// the fixed 35000 constant is caught.
+	ports := []uint16{35000, 52734, 32766}
+	protocols := []struct {
+		name string
+		l4   func(p uint16) gopacket.SerializableLayer
+	}{
+		{"udp", func(p uint16) gopacket.SerializableLayer {
+			return &layers.UDP{SrcPort: layers.UDPPort(p), DstPort: 8000}
+		}},
+		{"tcp", func(p uint16) gopacket.SerializableLayer {
+			return &layers.TCP{SrcPort: layers.TCPPort(p), DstPort: 8000, SYN: true, Window: 65535}
+		}},
 	}
 
-	if outerUDP.SrcPort != layers.UDPPort(outerSrcPort) {
-		t.Errorf("outer UDP SrcPort = %d, expected %d", outerUDP.SrcPort, outerSrcPort)
+	for _, proto := range protocols {
+		for _, port := range ports {
+			name := proto.name + "-" + strconv.Itoa(int(port))
+			t.Run(name, func(t *testing.T) {
+				tr := newSameASTranslator(t)
+				hostPort := 35000
+				if port == uint16(hostPort) {
+					hostPort = 32766
+				}
+
+				nextHeader := layers.IPProtocolUDP
+				if proto.name == "tcp" {
+					nextHeader = layers.IPProtocolTCP
+				}
+				pkt := buildIPv6Packet(t, nextHeader, sameASDst(t), proto.l4(port))
+
+				out, _, err := tr.TranslateEgress(pkt, mustParseIP(t, "fd42:42:42::72"), hostPort, emptyPathCallback)
+				if err != nil {
+					t.Fatalf("TranslateEgress failed: %v", err)
+				}
+				outer := parseOuterUDP(t, out)
+				if outer.SrcPort != layers.UDPPort(port) {
+					t.Errorf("outer UDP SrcPort = %d, expected inner %s source port %d", outer.SrcPort, proto.name, port)
+				}
+			})
+		}
 	}
-	t.Logf("outer UDP SrcPort = %d (correct)", outerUDP.SrcPort)
+}
+
+func TestOuterSrcPortDeterministic(t *testing.T) {
+	// Two identical TCP SYN packets must produce the same outer UDP source
+	// port (no allocation, no NAT-style mapping).
+	tr := newSameASTranslator(t)
+	pkt := buildIPv6Packet(t, layers.IPProtocolTCP, sameASDst(t),
+		&layers.TCP{SrcPort: 52734, DstPort: 8000, SYN: true, Window: 65535})
+	srcHost := mustParseIP(t, "fd42:42:42::72")
+
+	first, _, err := tr.TranslateEgress(pkt, srcHost, 35000, emptyPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress (1st) failed: %v", err)
+	}
+	second, _, err := tr.TranslateEgress(pkt, srcHost, 35000, emptyPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress (2nd) failed: %v", err)
+	}
+
+	o1 := parseOuterUDP(t, first)
+	o2 := parseOuterUDP(t, second)
+	if o1.SrcPort != o2.SrcPort {
+		t.Errorf("outer UDP SrcPort differs across identical inputs: %d vs %d", o1.SrcPort, o2.SrcPort)
+	}
+	if o1.SrcPort != layers.UDPPort(52734) {
+		t.Errorf("outer UDP SrcPort = %d, expected inner TCP source port 52734", o1.SrcPort)
+	}
+}
+
+func TestSameASDispatchPortSelection(t *testing.T) {
+	// The outer UDP destination port for same-AS (empty path) traffic must be
+	// determined by the existing dispatch logic and must be unaffected by the
+	// source-port fix.
+	tests := []struct {
+		name        string
+		dispatched  DispatchPortRange
+		innerDst    uint16
+		wantDstPort uint16
+		desc        string
+	}{
+		{"inner-dst-in-dispatched-range", DispatchPortRange{Start: 30000, End: 40000, Valid: true}, 32767, 32767, "inner L4 dst inside dispatched_ports -> direct"},
+		{"inner-dst-outside-dispatched-range", DispatchPortRange{Start: 50000, End: 60000, Valid: true}, 32767, DefaultSCIONEndhostPort, "inner L4 dst outside dispatched_ports -> dispatcher fallback"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := newSameASTranslator(t)
+			tr.SetDispatchedPorts(tt.dispatched)
+
+			pkt := buildIPv6Packet(t, layers.IPProtocolUDP, sameASDst(t),
+				&layers.UDP{SrcPort: 32766, DstPort: layers.UDPPort(tt.innerDst)})
+
+			_, nextHop, err := tr.TranslateEgress(pkt, mustParseIP(t, "fd42:42:42::72"), 35000, emptyPathCallback)
+			if err != nil {
+				t.Fatalf("TranslateEgress failed: %v", err)
+			}
+			if nextHop == nil {
+				t.Fatal("nextHop is nil for same-AS empty path")
+			}
+			if nextHop.Port != int(tt.wantDstPort) {
+				t.Errorf("nextHop.Port = %d, expected %d (%s)", nextHop.Port, tt.wantDstPort, tt.desc)
+			}
+		})
+	}
+}
+
+func TestSCMPOuterSrcPortUsesControlPort(t *testing.T) {
+	// SCMP/ICMPv6 carries no L4 ports, so the outer UDP source port must stay
+	// on the control port (hostPort). It must NOT pick up the ICMPv6 echo ID.
+	const echoID uint16 = 12345
+	const controlPort = 35000
+
+	tr := newSameASTranslator(t)
+	tr.SetDispatchedPorts(DispatchPortRange{Start: 30000, End: 40000, Valid: true})
+
+	pkt := buildIPv6Packet(t, layers.IPProtocolICMPv6, sameASDst(t),
+		&layers.ICMPv6{TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)},
+		&layers.ICMPv6Echo{Identifier: echoID, SeqNumber: 1})
+
+	out, nextHop, err := tr.TranslateEgress(pkt, mustParseIP(t, "fd42:42:42::72"), controlPort, emptyPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress failed: %v", err)
+	}
+
+	outer := parseOuterUDP(t, out)
+	if outer.SrcPort != layers.UDPPort(controlPort) {
+		t.Errorf("outer UDP SrcPort = %d, expected control port %d for SCMP", outer.SrcPort, controlPort)
+	}
+	if outer.SrcPort == layers.UDPPort(echoID) {
+		t.Errorf("outer UDP SrcPort must not use the ICMPv6 echo ID %d", echoID)
+	}
+	if nextHop == nil {
+		t.Fatal("nextHop is nil for same-AS empty path")
+	}
+	if nextHop.Port != controlPort {
+		t.Errorf("same-AS dispatch port = %d, expected control port %d (no inner L4 port, control port within dispatched range)", nextHop.Port, controlPort)
+	}
 }
 
 func TestUnderlayDstPortSeparate(t *testing.T) {

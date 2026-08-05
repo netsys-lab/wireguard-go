@@ -547,6 +547,13 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 
 // IPv6 -> SCION
 // returns SCION packet bytes and the UDP next-hop to send to if successful
+//
+// hostPort is the SCION endhost/control port of the local translator. It is
+// used as the outer UDP source port for SCMP/ICMPv6 traffic (which carries no
+// L4 ports) and as a fallback in the same-AS destination-port dispatch. It no
+// longer determines the outer UDP source port of TCP/UDP data flows: that port
+// is derived from the inner L4 source port so the peer can reply to the client
+// port.
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
 	if len(pktData) < 40 {
 		return nil, nil, errors.New("packet too short for IPv6")
@@ -575,6 +582,13 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	// Init Port variable
 	var DstPort int
 	var _ = DstPort // suppress unused var warning (DstPort used in other code paths)
+
+	// Outer UDP source port. Defaults to the SCION endhost/control port
+	// (hostPort), which is used for SCMP/ICMPv6 traffic that carries no L4
+	// ports. For TCP/UDP data flows it is overridden below with the inner L4
+	// source port so the receiving side sees a consistent (outer UDP, inner
+	// TCP/UDP) port pair.
+	outerSrcPort := uint16(hostPort)
 
 	if !IsSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
@@ -656,6 +670,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 		innerDstPort = uint16(udp.DstPort)
 		hasInnerDstPort = true
+		outerSrcPort = uint16(udp.SrcPort)
 
 		// --- FIX: Extract correct payload ---
 		var l4Payload []byte
@@ -689,6 +704,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 		innerDstPort = uint16(tcp.DstPort)
 		hasInnerDstPort = true
+		outerSrcPort = uint16(tcp.SrcPort)
 
 		innerTCP := &layers.TCP{
 			SrcPort: tcp.SrcPort,
@@ -789,12 +805,13 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			}
 
 			t.log.Infof(
-				scionlog.ComponentPath, "[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v hostPort=%d dispatched=%d-%d valid=%v",
+				scionlog.ComponentPath, "[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v hostPort=%d outerSrcPort=%d dispatched=%d-%d valid=%v",
 				nextHop.String(),
 				port,
 				innerDstPort,
 				hasInnerDstPort,
 				uint16(hostPort),
+				outerSrcPort,
 				t.dispatchedPorts.Start,
 				t.dispatchedPorts.End,
 				t.dispatchedPorts.Valid,
@@ -829,7 +846,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		}
 
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(hostPort),
+			SrcPort: layers.UDPPort(outerSrcPort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip4)
@@ -858,9 +875,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			DstIP:        nextHop.IP,
 		}
 
-		//Muss hostPort sein. Um zwischen SCION und normal zu unterscheiden
+		// Outer UDP source port: derived from the inner L4 source port for
+		// TCP/UDP data flows; falls back to the SCION endhost/control port
+		// (hostPort) for SCMP which carries no L4 ports.
 		udp := &layers.UDP{
-			SrcPort: layers.UDPPort(hostPort),
+			SrcPort: layers.UDPPort(outerSrcPort),
 			DstPort: layers.UDPPort(nextHop.Port),
 		}
 		udp.SetNetworkLayerForChecksum(ip6Under)
