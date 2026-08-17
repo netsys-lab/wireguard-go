@@ -299,7 +299,7 @@ func TestLogger_ComponentFilterWithMultipleComponents(t *testing.T) {
 	l.SetConfig(LogConfig{
 		Level: LogDebug,
 		Components: map[Component]struct{}{
-			ComponentPath:           {},
+			ComponentPath:            {},
 			ComponentTranslateEgress: {},
 		},
 	})

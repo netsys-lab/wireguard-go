@@ -113,8 +113,8 @@ type PathPool struct {
 
 	log *scionlog.Logger
 
-	refreshIDCounter uint64
-	refreshInterval  time.Duration
+	refreshIDCounter    uint64
+	refreshInterval     time.Duration
 	refreshBeforeExpiry time.Duration
 	queryTimeout        time.Duration
 }

@@ -687,8 +687,10 @@ func TestTranslateScion4ToIpUdp(t *testing.T) {
 	srcIA := mustIA(t, 1, 64496)
 	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
-	// HostIP
-	hostIP := mustParseIP(t, "fc00:10fb:f000::ffff:a00:1")
+	// HostIP: local tunnel endpoint IPv6. Set to the fixture's app-layer
+	// destination so the round-trip identity egress(app)->SCION->ingress holds
+	// under the Scitra-conformant rule (ingress dst = local tunnel IPv6).
+	hostIP := mustParseIP(t, "fc00:20fb:f100::ffff:a00:2")
 
 	//IA
 	//srcIA := mustIA(t, 1, 64496)
@@ -729,6 +731,11 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 	srcIA := mustIA(t, 1, 64496)
 	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
+	// The same-AS fixture expects the outer UDP destination port to equal the
+	// inner L4 destination port (32767), which the dispatch logic selects
+	// directly for TCP/UDP data flows.
+	translator.SetDispatchedPorts(DispatchPortRange{Start: 32760, End: 32770, Valid: true})
+
 	// HostIP
 	hostIP := mustParseIP(t, "10.0.0.1")
 
@@ -742,7 +749,10 @@ func TestTranslateIpUdpToScion4Local(t *testing.T) {
 		return path.Path{}, nil
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
+	// hostPort is deliberately different from the fixture's inner L4 source
+	// port (32766) so a regression back to the fixed control-port outer source
+	// is caught by the byte-exact comparison.
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 35000, GetPathCallback)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -823,6 +833,10 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 	srcIA := mustIA(t, 1, 64496)
 	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
+	// IPv6 underlay source. The fixture's outer header src is the local tunnel
+	// IPv6, which the translator resolves via WGSrcIPv6.
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fc00:10fb:f000::1"))
+
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
 
@@ -836,7 +850,10 @@ func TestTranslateIpUdpToScion6(t *testing.T) {
 		return fake, nil
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
+	// hostPort is deliberately different from the fixture's inner L4 source
+	// port (32766) so a regression back to the fixed control-port outer source
+	// is caught by the byte-exact comparison.
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 35000, GetPathCallback)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -871,6 +888,15 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 	srcIA := mustIA(t, 1, 64496)
 	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
+	// IPv6 underlay source. The fixture's outer header src is the local tunnel
+	// IPv6, which the translator resolves via WGSrcIPv6.
+	translator.SetConfiguredIPv6(netip.MustParseAddr("fc00:10fb:f000::1"))
+
+	// The same-AS fixture expects the outer UDP destination port to equal the
+	// inner L4 destination port (32767), which the dispatch logic selects
+	// directly.
+	translator.SetDispatchedPorts(DispatchPortRange{Start: 32760, End: 32770, Valid: true})
+
 	// HostIP
 	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
 
@@ -884,7 +910,10 @@ func TestTranslateIpUdpToScion6Local(t *testing.T) {
 		return path.Path{}, nil
 	}
 
-	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 32766, GetPathCallback)
+	// hostPort is deliberately different from the fixture's inner L4 source
+	// port (32766) so a regression back to the fixed control-port outer source
+	// is caught by the byte-exact comparison.
+	scionBytes, _, err := translator.TranslateEgress(input, hostIP, 35000, GetPathCallback)
 	if err != nil {
 		t.Fatalf("Error in TranslateEgress: %s", err)
 	}
@@ -938,8 +967,10 @@ func TestTranslateScion6ToIpUdpLocal(t *testing.T) {
 	srcIA := mustIA(t, 1, 64496)
 	translator := NewTranslator(nil, srcIA, &net.UDPAddr{IP: mustParseIP(t, "127.0.0.9"), Port: 31002}, "", noopLog)
 
-	// HostIP - local SCION-mapped address
-	hostIP := mustParseIP(t, "fc00:10fb:f000::1")
+	// HostIP - local tunnel endpoint IPv6. Set to the fixture's app-layer
+	// destination so the round-trip identity holds under the Scitra-conformant
+	// rule (ingress dst = local tunnel IPv6).
+	hostIP := mustParseIP(t, "fc00:10fb:f000::2")
 
 	ipBytes, err := translator.TranslateIngress(input, hostIP)
 	if err != nil {
@@ -952,6 +983,64 @@ func TestTranslateScion6ToIpUdpLocal(t *testing.T) {
 	//------------------- Assertions
 	if !bytes.Equal(ipBytes, expected) {
 		t.Fatalf("IPv6 Bytes mismatch: \nexpected: %x\nipv6: %x", expected, ipBytes)
+	}
+}
+
+func TestMapSCIONHostToIPv6(t *testing.T) {
+	testCases := []struct {
+		name      string
+		ia        addr.IA
+		addrType  slayers.AddrType
+		raw       []byte
+		expected  string
+		wantError bool
+	}{
+		{
+			name:     "T4Ip IPv4 host maps to SCION-mapped IPv6",
+			ia:       mustIA(t, 1, 64496),
+			addrType: slayers.T4Ip,
+			raw:      []byte{0x0a, 0x00, 0x00, 0x01}, // 10.0.0.1
+			expected: "fc00:10fb:f000::ffff:a00:1",
+		},
+		{
+			name:     "T16Ip already SCION-mapped returned as-is",
+			ia:       mustIA(t, 1, 64496),
+			addrType: slayers.T16Ip,
+			raw:      mustParseIP(t, "fc00:10fb:f000::ffff:a00:1").To16(),
+			expected: "fc00:10fb:f000::ffff:a00:1",
+		},
+		{
+			name:     "T16Ip interface id maps to SCION-mapped IPv6",
+			ia:       mustIA(t, 1, 64496),
+			addrType: slayers.T16Ip,
+			raw:      []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, // ::1
+			expected: "fc00:10fb:f000::1",
+		},
+		{
+			name:      "unsupported addr type returns error",
+			ia:        mustIA(t, 1, 64496),
+			addrType:  slayers.AddrType(99),
+			raw:       []byte{0, 0, 0, 0},
+			wantError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mapSCIONHostToIPv6(tc.ia, tc.addrType, tc.raw)
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("expected error, got nil (ip=%s)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.String() != tc.expected {
+				t.Errorf("expected %s, got %s", tc.expected, got.String())
+			}
+		})
 	}
 }
 
@@ -980,7 +1069,7 @@ func TestTranslateIcmpToScmp(t *testing.T) {
 	hostIP := mustParseIP(t, "10.0.0.1")
 
 	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
-		return path.Path{}, nil
+		return loadTestPath(t, 0), nil
 	}
 
 	result, nextHop, err := translator.TranslateEgress(icmpPacket, hostIP, 32766, GetPathCallback)
@@ -1313,7 +1402,7 @@ func TestICMPv6ToSCMP(t *testing.T) {
 	hostIP := mustParseIP(t, "10.0.0.1")
 
 	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
-		return path.Path{}, nil
+		return loadTestPath(t, 0), nil
 	}
 
 	result, nextHop, err := translator.TranslateEgress(icmpPacket, hostIP, 32766, GetPathCallback)
@@ -1361,10 +1450,10 @@ func TestICMPTypeCodeMapping(t *testing.T) {
 		icmp6    layers.ICMPv6TypeCode
 		expected slayers.SCMPTypeCode
 	}{
-		{"EchoRequest", layers.ICMPv6TypeEchoRequest, slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0)},
-		{"EchoReply", layers.ICMPv6TypeEchoReply, slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0)},
+		{"EchoRequest", layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0), slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0)},
+		{"EchoReply", layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoReply, 0), slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0)},
 		{"DestUnreach", layers.CreateICMPv6TypeCode(1, 0), slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, 0)},
-		{"PacketTooBig", layers.ICMPv6TypePacketTooBig, slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0)},
+		{"PacketTooBig", layers.CreateICMPv6TypeCode(layers.ICMPv6TypePacketTooBig, 0), slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0)},
 	}
 
 	for _, tc := range testCases {
@@ -1383,16 +1472,16 @@ func TestSCMPTypeCodeMapping(t *testing.T) {
 		scmp     slayers.SCMPTypeCode
 		expected layers.ICMPv6TypeCode
 	}{
-		{"EchoRequest", slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0), layers.ICMPv6TypeEchoRequest},
-		{"EchoReply", slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0), layers.ICMPv6TypeEchoReply},
-		{"DestUnreach", slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, 0), layers.ICMPv6TypeDestinationUnreachable},
-		{"PacketTooBig", slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0), layers.ICMPv6TypePacketTooBig},
+		{"EchoRequest", slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoRequest, 0), layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)},
+		{"EchoReply", slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0), layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoReply, 0)},
+		{"DestUnreach", slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, 0), layers.CreateICMPv6TypeCode(layers.ICMPv6TypeDestinationUnreachable, 0)},
+		{"PacketTooBig", slayers.CreateSCMPTypeCode(slayers.SCMPTypePacketTooBig, 0), layers.CreateICMPv6TypeCode(layers.ICMPv6TypePacketTooBig, 0)},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := translateSCMPTypeCodeToICMPv6(tc.scmp, noopLog)
-			if uint8(result) != uint8(tc.expected) {
+			if result != tc.expected {
 				t.Errorf("Expected %v, got %v", tc.expected, result)
 			}
 		})
@@ -1418,7 +1507,9 @@ func TestMTU_Translation(t *testing.T) {
 	hostIP := mustParseIP(t, "10.0.0.1")
 
 	GetPathCallback := func(srcIA, dstIA addr.IA) (path.Path, error) {
-		return path.Path{}, nil // Empty path for local
+		// The fixture is inter-AS (1-64496 -> 2-64497), so a real path with a
+		// next-hop is required; an empty path would have no next-hop to send to.
+		return loadTestPath(t, 0), nil
 	}
 
 	scionPacket, _, err := translator.TranslateEgress(ipv6Packet, hostIP, 32766, GetPathCallback)
@@ -1790,6 +1881,39 @@ func parseOuterUDP(t *testing.T, b []byte) layers.UDP {
 	return *udpLayer.(*layers.UDP)
 }
 
+// decodeSCMPEchoFromOuter decodes the SCMPEcho info block from a translated
+// SCION packet (outer UDP + SCION + SCMP + SCMPEcho + data).
+func decodeSCMPEchoFromOuter(t *testing.T, b []byte) *slayers.SCMPEcho {
+	t.Helper()
+	outer := parseOuterUDP(t, b)
+
+	var scn slayers.SCION
+	var scmp slayers.SCMP
+
+	parser := gopacket.NewDecodingLayerParser(
+		slayers.LayerTypeSCION,
+		&scn,
+		&scmp,
+	)
+	parser.IgnoreUnsupported = true
+	var decoded []gopacket.LayerType
+	if err := parser.DecodeLayers(outer.Payload, &decoded); err != nil {
+		t.Fatalf("decode SCION+SCMP failed: %v", err)
+	}
+	return decodeSCMPEcho(t, scmp.LayerPayload())
+}
+
+// decodeSCMPEcho decodes a SCMPEcho info block (+ trailing data) from bytes
+// following a SCMP header.
+func decodeSCMPEcho(t *testing.T, payload []byte) *slayers.SCMPEcho {
+	t.Helper()
+	var echo slayers.SCMPEcho
+	if err := echo.DecodeFromBytes(payload, gopacket.NilDecodeFeedback); err != nil {
+		t.Fatalf("decode SCMPEcho failed: %v", err)
+	}
+	return &echo
+}
+
 func newSameASTranslator(t *testing.T) *Translator {
 	t.Helper()
 	tr := NewTranslator(nil, mustIA(t, 2, 64497), &net.UDPAddr{IP: mustParseIP(t, "141.44.25.151"), Port: 30001}, "wg3-scion", noopLog)
@@ -1950,18 +2074,65 @@ func TestOuterSrcPortDeterministic(t *testing.T) {
 }
 
 func TestSameASDispatchPortSelection(t *testing.T) {
-	// The outer UDP destination port for same-AS (empty path) traffic must be
-	// determined by the existing dispatch logic and must be unaffected by the
-	// source-port fix.
+	// The outer UDP destination port for same-AS (empty path) traffic:
+	//   - TCP/UDP data flows use the inner L4 destination port unconditionally
+	//     (no dispatched-range gating, no 30041 fallback), so dispatcher-less
+	//     peers reach the application socket bound to that port.
+	//   - SCMP/ICMPv6 carries no L4 port and is routed to the well-known
+	//     SCION end-host/dispatcher port (30041).
 	tests := []struct {
 		name        string
 		dispatched  DispatchPortRange
 		innerDst    uint16
+		l4          func(p uint16) gopacket.SerializableLayer
+		nextHeader  layers.IPProtocol
 		wantDstPort uint16
 		desc        string
 	}{
-		{"inner-dst-in-dispatched-range", DispatchPortRange{Start: 30000, End: 40000, Valid: true}, 32767, 32767, "inner L4 dst inside dispatched_ports -> direct"},
-		{"inner-dst-outside-dispatched-range", DispatchPortRange{Start: 50000, End: 60000, Valid: true}, 32767, DefaultSCIONEndhostPort, "inner L4 dst outside dispatched_ports -> dispatcher fallback"},
+		{
+			"udp-dst-in-dispatched-range",
+			DispatchPortRange{Start: 30000, End: 40000, Valid: true},
+			32767,
+			func(p uint16) gopacket.SerializableLayer {
+				return &layers.UDP{SrcPort: 32766, DstPort: layers.UDPPort(p)}
+			},
+			layers.IPProtocolUDP,
+			32767,
+			"inner UDP dst inside dispatched_ports -> direct",
+		},
+		{
+			"udp-dst-outside-dispatched-range",
+			DispatchPortRange{Start: 50000, End: 60000, Valid: true},
+			32767,
+			func(p uint16) gopacket.SerializableLayer {
+				return &layers.UDP{SrcPort: 32766, DstPort: layers.UDPPort(p)}
+			},
+			layers.IPProtocolUDP,
+			32767,
+			"inner UDP dst outside dispatched_ports -> still direct (no fallback)",
+		},
+		{
+			"tcp-dst-outside-dispatched-range",
+			DispatchPortRange{Start: 50000, End: 60000, Valid: true},
+			443,
+			func(p uint16) gopacket.SerializableLayer {
+				return &layers.TCP{SrcPort: 32766, DstPort: layers.TCPPort(p), SYN: true, Window: 65535}
+			},
+			layers.IPProtocolTCP,
+			443,
+			"inner TCP dst outside dispatched_ports -> still direct (no fallback)",
+		},
+		{
+			"scmp-no-l4-port-uses-dispatcher-port",
+			DispatchPortRange{Start: 30000, End: 40000, Valid: true},
+			0,
+			func(p uint16) gopacket.SerializableLayer {
+				return &layers.ICMPv6{TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)}
+			},
+			layers.IPProtocolICMPv6,
+			DefaultSCIONEndhostPort,
+			"SCMP has no inner L4 port -> well-known SCION end-host/dispatcher port",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1969,8 +2140,7 @@ func TestSameASDispatchPortSelection(t *testing.T) {
 			tr := newSameASTranslator(t)
 			tr.SetDispatchedPorts(tt.dispatched)
 
-			pkt := buildIPv6Packet(t, layers.IPProtocolUDP, sameASDst(t),
-				&layers.UDP{SrcPort: 32766, DstPort: layers.UDPPort(tt.innerDst)})
+			pkt := buildIPv6Packet(t, tt.nextHeader, sameASDst(t), tt.l4(tt.innerDst))
 
 			_, nextHop, err := tr.TranslateEgress(pkt, mustParseIP(t, "fd42:42:42::72"), 35000, emptyPathCallback)
 			if err != nil {
@@ -1986,9 +2156,15 @@ func TestSameASDispatchPortSelection(t *testing.T) {
 	}
 }
 
-func TestSCMPOuterSrcPortUsesControlPort(t *testing.T) {
-	// SCMP/ICMPv6 carries no L4 ports, so the outer UDP source port must stay
-	// on the control port (hostPort). It must NOT pick up the ICMPv6 echo ID.
+func TestSCMPOuterSrcPortUsesDispatcherPort(t *testing.T) {
+	// SCMP/ICMPv6 carries no L4 ports, so the outer UDP source port must be
+	// the well-known SCION end-host/dispatcher port (30041) — NOT the legacy
+	// control port (35000) and NOT the ICMPv6 echo ID. The same-AS destination
+	// port must also be 30041.
+	//
+	// This request has no echo data, so the original ICMPv6 echo ID cannot be
+	// stashed in the data block and is kept in the SCMPEcho identifier field
+	// instead (documented short-payload fallback).
 	const echoID uint16 = 12345
 	const controlPort = 35000
 
@@ -2005,8 +2181,11 @@ func TestSCMPOuterSrcPortUsesControlPort(t *testing.T) {
 	}
 
 	outer := parseOuterUDP(t, out)
-	if outer.SrcPort != layers.UDPPort(controlPort) {
-		t.Errorf("outer UDP SrcPort = %d, expected control port %d for SCMP", outer.SrcPort, controlPort)
+	if outer.SrcPort != layers.UDPPort(DefaultSCIONEndhostPort) {
+		t.Errorf("outer UDP SrcPort = %d, expected dispatcher port %d for SCMP", outer.SrcPort, DefaultSCIONEndhostPort)
+	}
+	if outer.SrcPort == layers.UDPPort(controlPort) {
+		t.Errorf("outer UDP SrcPort must not use the legacy control port %d", controlPort)
 	}
 	if outer.SrcPort == layers.UDPPort(echoID) {
 		t.Errorf("outer UDP SrcPort must not use the ICMPv6 echo ID %d", echoID)
@@ -2014,9 +2193,233 @@ func TestSCMPOuterSrcPortUsesControlPort(t *testing.T) {
 	if nextHop == nil {
 		t.Fatal("nextHop is nil for same-AS empty path")
 	}
-	if nextHop.Port != controlPort {
-		t.Errorf("same-AS dispatch port = %d, expected control port %d (no inner L4 port, control port within dispatched range)", nextHop.Port, controlPort)
+	if nextHop.Port != int(DefaultSCIONEndhostPort) {
+		t.Errorf("same-AS dispatch port = %d, expected dispatcher port %d (SCMP has no inner L4 port)", nextHop.Port, DefaultSCIONEndhostPort)
 	}
+
+	// Verify the SCMPEcho info block: identifier carries the original ICMPv6
+	// echo ID (short-payload fallback), sequence is preserved.
+	scmpEcho := decodeSCMPEchoFromOuter(t, out)
+	if scmpEcho.Identifier != echoID {
+		t.Errorf("SCMPEcho Identifier = %d, expected original ICMPv6 echo ID %d (short-payload fallback)", scmpEcho.Identifier, echoID)
+	}
+	if scmpEcho.SeqNumber != 1 {
+		t.Errorf("SCMPEcho SeqNumber = %d, expected 1", scmpEcho.SeqNumber)
+	}
+}
+
+func TestSCMPEchoRequestStashesOriginalID(t *testing.T) {
+	// Egress Echo Request with a data block >= 18 bytes: the SCMPEcho
+	// identifier is the well-known end-host/dispatcher port and the original
+	// ICMPv6 identifier is stashed at data bytes 16..17.
+	const origID uint16 = 4242
+	const seq uint16 = 7
+
+	data := bytes.Repeat([]byte{0xAB}, 32)
+	binary.BigEndian.PutUint16(data[16:18], 0xBEEF) // payload content that gets overwritten by the stash
+
+	echoReq := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint16(echoReq[0:2], origID)
+	binary.BigEndian.PutUint16(echoReq[2:4], seq)
+	copy(echoReq[4:], data)
+
+	scmpPayload := buildSCMPEchoPayload(slayers.SCMPTypeEchoRequest, echoReq, noopLog)
+
+	if len(scmpPayload) != 4+len(data) {
+		t.Fatalf("unexpected SCMP payload len %d, want %d", len(scmpPayload), 4+len(data))
+	}
+	if id := binary.BigEndian.Uint16(scmpPayload[0:2]); id != DefaultSCIONEndhostPort {
+		t.Errorf("SCMPEcho Identifier = %d, expected dispatcher port %d", id, DefaultSCIONEndhostPort)
+	}
+	if s := binary.BigEndian.Uint16(scmpPayload[2:4]); s != seq {
+		t.Errorf("SCMPEcho SeqNumber = %d, expected %d", s, seq)
+	}
+	if stashed := binary.BigEndian.Uint16(scmpPayload[4+scmpEchoIdentifierStashOffset : 4+scmpEchoIdentifierStashOffset+2]); stashed != origID {
+		t.Errorf("stashed original ID = %d, expected %d", stashed, origID)
+	}
+}
+
+func TestSCMPEchoShortPayloadKeepsOriginalID(t *testing.T) {
+	// Egress Echo Request with a data block < 18 bytes: there is no room to
+	// stash the original identifier, so it is kept in the SCMPEcho identifier
+	// field (documented fallback) and the data is unchanged.
+	const origID uint16 = 9999
+	const seq uint16 = 3
+
+	echoReq := make([]byte, 4+4)
+	binary.BigEndian.PutUint16(echoReq[0:2], origID)
+	binary.BigEndian.PutUint16(echoReq[2:4], seq)
+	copy(echoReq[4:], []byte("data"))
+
+	scmpPayload := buildSCMPEchoPayload(slayers.SCMPTypeEchoRequest, echoReq, noopLog)
+
+	if id := binary.BigEndian.Uint16(scmpPayload[0:2]); id != origID {
+		t.Errorf("SCMPEcho Identifier = %d, expected original ICMPv6 ID %d (short-payload fallback)", id, origID)
+	}
+	if !bytes.Equal(scmpPayload[4:], echoReq[4:]) {
+		t.Errorf("short-payload data was modified")
+	}
+}
+
+func TestSCMPEchoReplyKeepsRequestID(t *testing.T) {
+	// Egress Echo Reply: the SCMPEcho identifier must carry the original
+	// ICMPv6 identifier (the request's identifier) so routers route the reply
+	// to the correct destination port, and the data must be returned
+	// unmodified.
+	const reqID uint16 = 5555
+	const seq uint16 = 9
+
+	reply := make([]byte, 4+32)
+	binary.BigEndian.PutUint16(reply[0:2], reqID)
+	binary.BigEndian.PutUint16(reply[2:4], seq)
+	for i := 4; i < len(reply); i++ {
+		reply[i] = byte(i)
+	}
+
+	scmpPayload := buildSCMPEchoPayload(slayers.SCMPTypeEchoReply, reply, noopLog)
+
+	if id := binary.BigEndian.Uint16(scmpPayload[0:2]); id != reqID {
+		t.Errorf("SCMPEcho Identifier = %d, expected request ID %d", id, reqID)
+	}
+	if s := binary.BigEndian.Uint16(scmpPayload[2:4]); s != seq {
+		t.Errorf("SCMPEcho SeqNumber = %d, expected %d", s, seq)
+	}
+	if !bytes.Equal(scmpPayload[4:], reply[4:]) {
+		t.Errorf("reply data was modified; must be returned unmodified")
+	}
+}
+
+func TestSCMPEchoRoundTrip(t *testing.T) {
+	// Full round trip of a ping: ICMPv6 Echo Request -> SCMP Echo Request
+	// (dispatcher port + stashed ID) -> SCMP Echo Reply (echoed) -> ICMPv6
+	// Echo Reply with the original identifier restored.
+	const origID uint16 = 4242
+	const seq uint16 = 7
+
+	data := bytes.Repeat([]byte{0xCD}, 32)
+
+	tr := newSameASTranslator(t)
+
+	// 1) Egress: ICMPv6 Echo Request -> SCION/SCMP Echo Request.
+	req := buildIPv6Packet(t, layers.IPProtocolICMPv6, sameASDst(t),
+		&layers.ICMPv6{TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)},
+		&layers.ICMPv6Echo{Identifier: origID, SeqNumber: seq},
+		gopacket.Payload(data))
+
+	outReq, _, err := tr.TranslateEgress(req, mustParseIP(t, "fd42:42:42::72"), 35000, emptyPathCallback)
+	if err != nil {
+		t.Fatalf("TranslateEgress (request) failed: %v", err)
+	}
+
+	outerReq := parseOuterUDP(t, outReq)
+	scmpEchoReq, reqPayload := decodeSCMPEchoAndData(t, outerReq.Payload)
+	if scmpEchoReq.Identifier != DefaultSCIONEndhostPort {
+		t.Fatalf("SCMP Echo Request identifier = %d, expected dispatcher port %d", scmpEchoReq.Identifier, DefaultSCIONEndhostPort)
+	}
+	if len(reqPayload) < 4+scmpEchoMinStashDataLen {
+		t.Fatalf("request data too short for stash: %d", len(reqPayload))
+	}
+	if got := binary.BigEndian.Uint16(reqPayload[scmpEchoIdentifierStashOffset:]); got != origID {
+		t.Fatalf("request data does not carry original ID: got %d want %d", got, origID)
+	}
+
+	// 2) Remote SCION SCMP responder echoes identifier + seq + data.
+	replyEcho := &slayers.SCMPEcho{Identifier: scmpEchoReq.Identifier, SeqNumber: scmpEchoReq.SeqNumber}
+	replyBuf := gopacket.NewSerializeBuffer()
+	if err := replyEcho.SerializeTo(replyBuf, gopacket.SerializeOptions{}); err != nil {
+		t.Fatalf("serialize reply SCMPEcho: %v", err)
+	}
+	replyPayload := append(replyBuf.Bytes(), reqPayload...)
+
+	// 3) Build the incoming SCION/SCMP Echo Reply packet (remote -> local).
+	scmpReply := &slayers.SCMP{TypeCode: slayers.CreateSCMPTypeCode(slayers.SCMPTypeEchoReply, 0)}
+	scionReply, err := BuildSCIONPacket(
+		uint16(mustIA(t, 2, 64497).ISD()), uint64(mustIA(t, 2, 64497).AS()),
+		uint16(mustIA(t, 2, 64497).ISD()), uint64(mustIA(t, 2, 64497).AS()),
+		sameASDst(t), net.ParseIP("fc00:20fb:f100::1"),
+		0, 0,
+		slayers.L4SCMP, scmpReply, replyPayload,
+		path.Path{}, noopLog,
+	)
+	if err != nil {
+		t.Fatalf("BuildSCIONPacket (reply) failed: %v", err)
+	}
+
+	// 4) Wrap in outer IPv6/UDP and run ingress.
+	wrapped := wrapSCIONInOuter(t, sameASDst(t), net.ParseIP("fd42:42:42::72"), scionReply)
+	ipBytes, err := tr.TranslateIngress(wrapped, mustParseIP(t, "fd42:42:42::72"))
+	if err != nil {
+		t.Fatalf("TranslateIngress failed: %v", err)
+	}
+
+	// 5) Verify the reconstructed ICMPv6 Echo Reply.
+	inner := gopacket.NewPacket(ipBytes, layers.LayerTypeIPv6, gopacket.Default)
+	icmpLayer := inner.Layer(layers.LayerTypeICMPv6)
+	if icmpLayer == nil {
+		t.Fatal("no ICMPv6 layer in reconstructed reply")
+	}
+	icmp := icmpLayer.(*layers.ICMPv6)
+	if icmp.TypeCode.Type() != layers.ICMPv6TypeEchoReply {
+		t.Fatalf("reconstructed ICMPv6 type = %v, expected Echo Reply", icmp.TypeCode.Type())
+	}
+	echoLayer := inner.Layer(layers.LayerTypeICMPv6Echo)
+	if echoLayer == nil {
+		t.Fatal("no ICMPv6Echo layer in reconstructed reply")
+	}
+	echo := echoLayer.(*layers.ICMPv6Echo)
+	if echo.Identifier != origID {
+		t.Errorf("reconstructed ICMPv6 identifier = %d, expected original %d", echo.Identifier, origID)
+	}
+	if echo.SeqNumber != seq {
+		t.Errorf("reconstructed ICMPv6 sequence = %d, expected %d", echo.SeqNumber, seq)
+	}
+	// The data block still carries the stashed ID at bytes 16..17; the
+	// original data is otherwise returned unmodified.
+	if got := binary.BigEndian.Uint16(icmp.Payload[4+scmpEchoIdentifierStashOffset : 4+scmpEchoIdentifierStashOffset+2]); got != origID {
+		t.Errorf("reply data stash = %d, expected original ID %d", got, origID)
+	}
+}
+
+// decodeSCMPEchoAndData decodes the SCMPEcho info block and the trailing data
+// block from a SCION/SCMP payload.
+func decodeSCMPEchoAndData(t *testing.T, scionPayload []byte) (*slayers.SCMPEcho, []byte) {
+	t.Helper()
+	var scn slayers.SCION
+	var scmp slayers.SCMP
+
+	parser := gopacket.NewDecodingLayerParser(
+		slayers.LayerTypeSCION,
+		&scn,
+		&scmp,
+	)
+	parser.IgnoreUnsupported = true
+	var decoded []gopacket.LayerType
+	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
+		t.Fatalf("decode SCION+SCMP failed: %v", err)
+	}
+	echo := decodeSCMPEcho(t, scmp.LayerPayload())
+	return echo, echo.Payload
+}
+
+// wrapSCIONInOuter wraps SCION packet bytes in an outer IPv6/UDP underlay.
+func wrapSCIONInOuter(t *testing.T, src, dst net.IP, scionBytes []byte) []byte {
+	t.Helper()
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   64,
+		NextHeader: layers.IPProtocolUDP,
+		SrcIP:      src,
+		DstIP:      dst,
+	}
+	udp := &layers.UDP{SrcPort: layers.UDPPort(DefaultSCIONEndhostPort), DstPort: layers.UDPPort(DefaultSCIONEndhostPort)}
+	udp.SetNetworkLayerForChecksum(ip6)
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, ip6, udp, gopacket.Payload(scionBytes)); err != nil {
+		t.Fatalf("wrap SCION packet in outer underlay: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func TestUnderlayDstPortSeparate(t *testing.T) {
@@ -2096,18 +2499,18 @@ func TestTranslateIngressPassThrough(t *testing.T) {
 	translator.localIA = mustIA(t, 71, 2)
 
 	tests := []struct {
-		name       string
-		pkt        []byte
-		wantNil    bool
-		wantErr    bool
-		wantSame   bool // result should be the same slice as input
+		name     string
+		pkt      []byte
+		wantNil  bool
+		wantErr  bool
+		wantSame bool // result should be the same slice as input
 	}{
 		{
 			name: "ipv6-tcp-pass-through",
 			pkt: func() []byte {
 				pkt := make([]byte, 60)
-				pkt[0] = 0x60            // IPv6
-				pkt[6] = 6               // TCP protocol
+				pkt[0] = 0x60                              // IPv6
+				pkt[6] = 6                                 // TCP protocol
 				binary.BigEndian.PutUint16(pkt[40:42], 80) // dst port
 				return pkt
 			}(),
@@ -2124,7 +2527,7 @@ func TestTranslateIngressPassThrough(t *testing.T) {
 			name: "unknown-ip-version-pass-through",
 			pkt: func() []byte {
 				pkt := make([]byte, 40)
-				pkt[0] = 0x50           // version 5
+				pkt[0] = 0x50 // version 5
 				return pkt
 			}(),
 			wantSame: true,
@@ -2133,8 +2536,8 @@ func TestTranslateIngressPassThrough(t *testing.T) {
 			name: "ipv4-non-udp-pass-through",
 			pkt: func() []byte {
 				pkt := make([]byte, 40)
-				pkt[0] = 0x45           // IPv4, IHL=5
-				pkt[9] = 6              // TCP protocol
+				pkt[0] = 0x45 // IPv4, IHL=5
+				pkt[9] = 6    // TCP protocol
 				return pkt
 			}(),
 			wantSame: true,
@@ -2190,8 +2593,9 @@ func TestTranslateIngressPassThrough(t *testing.T) {
 //
 // This ambiguity will be resolved in Work Package 10 (TranslateIngress disposition refactor).
 func TestTranslateIngressUDPNonSCIONDocumentsAmbiguity(t *testing.T) {
-	translator := &Translator{}
-	translator.localIA = mustIA(t, 71, 2)
+	// Must use NewTranslator so the noop logger is installed; constructing a
+	// bare &Translator{} leaves t.log nil and TranslateIngress panics.
+	translator := NewTranslator(nil, mustIA(t, 71, 2), nil, "", noopLog)
 
 	tests := []struct {
 		name    string
@@ -2202,9 +2606,9 @@ func TestTranslateIngressUDPNonSCIONDocumentsAmbiguity(t *testing.T) {
 			name: "ipv4-udp-empty-payload-returns-error",
 			pkt: func() []byte {
 				pkt := make([]byte, 28)
-				pkt[0] = 0x45            // IPv4, IHL=5
-				pkt[9] = 17              // UDP protocol
-				binary.BigEndian.PutUint16(pkt[2:4], 28)   // total length
+				pkt[0] = 0x45                               // IPv4, IHL=5
+				pkt[9] = 17                                 // UDP protocol
+				binary.BigEndian.PutUint16(pkt[2:4], 28)    // total length
 				binary.BigEndian.PutUint16(pkt[22:24], 443) // dst port
 				return pkt
 			}(),
@@ -2214,9 +2618,9 @@ func TestTranslateIngressUDPNonSCIONDocumentsAmbiguity(t *testing.T) {
 			name: "ipv4-udp-random-payload-passes-through",
 			pkt: func() []byte {
 				pkt := make([]byte, 40)
-				pkt[0] = 0x45            // IPv4, IHL=5
-				pkt[9] = 17              // UDP protocol
-				binary.BigEndian.PutUint16(pkt[2:4], 40)    // total length
+				pkt[0] = 0x45                                 // IPv4, IHL=5
+				pkt[9] = 17                                   // UDP protocol
+				binary.BigEndian.PutUint16(pkt[2:4], 40)      // total length
 				binary.BigEndian.PutUint16(pkt[22:24], 12345) // random dst port
 				// fill payload with random bytes
 				for i := 28; i < 40; i++ {

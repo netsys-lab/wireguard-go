@@ -287,9 +287,9 @@ func TestParseHopPredicate(t *testing.T) {
 		{"1", 1, 0, 0, 0, false},
 		{"666", 666, 0, 0, 0, false}, // valid ISD (fits in uint16)
 		{"1-64512", 1, 64512, 0, 0, false},
-		{"1-64512#20", 1, 64512, 20, 20, false},     // single IF mode
+		{"1-64512#20", 1, 64512, 20, 20, false}, // single IF mode
 		{"1-64512#20,30", 1, 64512, 20, 30, false},
-		{"1-ff00:0:110", 1, 0, 0, 0, false},         // parsed as SCION IA
+		{"1-ff00:0:110", 1, 0, 0, 0, false}, // parsed as SCION IA
 	}
 
 	for _, tt := range tests {

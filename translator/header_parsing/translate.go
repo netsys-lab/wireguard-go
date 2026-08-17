@@ -548,12 +548,16 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 // IPv6 -> SCION
 // returns SCION packet bytes and the UDP next-hop to send to if successful
 //
-// hostPort is the SCION endhost/control port of the local translator. It is
-// used as the outer UDP source port for SCMP/ICMPv6 traffic (which carries no
-// L4 ports) and as a fallback in the same-AS destination-port dispatch. It no
-// longer determines the outer UDP source port of TCP/UDP data flows: that port
-// is derived from the inner L4 source port so the peer can reply to the client
-// port.
+// hostPort is kept for call-site compatibility but no longer drives any port
+// selection:
+//
+//   - The outer UDP source port of TCP/UDP data flows is the inner L4 source
+//     port, so the peer can reply to the client port.
+//   - The outer UDP source port of SCMP/ICMPv6 traffic (which carries no L4
+//     ports) is the well-known SCION end-host/dispatcher port
+//     (DefaultSCIONEndhostPort).
+//   - The same-AS (empty path) outer UDP destination port is the inner L4
+//     destination port for TCP/UDP and DefaultSCIONEndhostPort for SCMP.
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
 	if len(pktData) < 40 {
 		return nil, nil, errors.New("packet too short for IPv6")
@@ -583,12 +587,12 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	var DstPort int
 	var _ = DstPort // suppress unused var warning (DstPort used in other code paths)
 
-	// Outer UDP source port. Defaults to the SCION endhost/control port
-	// (hostPort), which is used for SCMP/ICMPv6 traffic that carries no L4
-	// ports. For TCP/UDP data flows it is overridden below with the inner L4
-	// source port so the receiving side sees a consistent (outer UDP, inner
+	// Outer UDP source port. Defaults to the well-known SCION end-host/
+	// dispatcher port, which is used for SCMP/ICMPv6 traffic that carries no
+	// L4 ports. For TCP/UDP data flows it is overridden below with the inner
+	// L4 source port so the receiving side sees a consistent (outer UDP, inner
 	// TCP/UDP) port pair.
-	outerSrcPort := uint16(hostPort)
+	outerSrcPort := DefaultSCIONEndhostPort
 
 	if !IsSCIONMapped(ip6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
@@ -633,7 +637,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			return nil, nil, fmt.Errorf("decoded IPv4 host is invalid: %s", host)
 		}
 	} else {
-		dstHost = host.To16()
+		// SCION-mapped IPv6 with an interface-style host (no embedded IPv4).
+		// The reference fixtures carry the full SCION-mapped IPv6 as the T16Ip
+		// host, not the bare low-64 interface identifier, so keep the original
+		// destination address instead of the unmapped host.
+		dstHost = ip6.DstIP.To16()
 		if dstHost == nil {
 			return nil, nil, fmt.Errorf("decoded IPv6/interface host is invalid: %s", host)
 		}
@@ -753,12 +761,20 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		icmp := icmpLayer.(*layers.ICMPv6)
 		l4nextHeader = slayers.L4SCMP
 
-		scmpPayload := append([]byte(nil), icmp.Payload...)
-
 		scmpTypeCode := translateICMPv6ToSCMPTypeCode(icmp.TypeCode, t.log)
 
 		scmp := &slayers.SCMP{
 			TypeCode: scmpTypeCode,
+		}
+
+		// The ICMPv6 payload (everything after the 4-byte type/code/checksum)
+		// is the echo info block + data for Echo messages and type-specific
+		// data otherwise. For Echo messages we build the SCMPEcho info block
+		// and carry the original ICMPv6 identifier inside the data block; for
+		// all other ICMPv6 types the payload is passed through unchanged.
+		scmpPayload := append([]byte(nil), icmp.Payload...)
+		if isICMPv6Echo(icmp.TypeCode) {
+			scmpPayload = buildSCMPEchoPayload(scmpTypeCode.Type(), icmp.Payload, t.log)
 		}
 
 		scionBytes, err = BuildSCIONPacket(
@@ -792,12 +808,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	// for proper SCION delivery, not the tunnel peer address.
 	if nextHop == nil {
 		if srcIA == dstIA {
-			port := chooseSameASDispatchPort(
-				innerDstPort,
-				hasInnerDstPort,
-				uint16(hostPort),
-				t.dispatchedPorts,
-			)
+			port := chooseSameASDispatchPort(innerDstPort, hasInnerDstPort)
 
 			nextHop = &net.UDPAddr{
 				IP:   dstHost,
@@ -805,16 +816,12 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			}
 
 			t.log.Infof(
-				scionlog.ComponentPath, "[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v hostPort=%d outerSrcPort=%d dispatched=%d-%d valid=%v",
+				scionlog.ComponentPath, "[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v outerSrcPort=%d",
 				nextHop.String(),
 				port,
 				innerDstPort,
 				hasInnerDstPort,
-				uint16(hostPort),
 				outerSrcPort,
-				t.dispatchedPorts.Start,
-				t.dispatchedPorts.End,
-				t.dispatchedPorts.Valid,
 			)
 		} else {
 			return nil, nil, fmt.Errorf("no nextHop for non-local path srcIA=%s dstIA=%s", srcIA, dstIA)
@@ -999,8 +1006,6 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	var l4Layer gopacket.SerializableLayer
 	var l4Payload []byte
 
-	var forceIPv6 bool
-
 	//Assiging layers Scion, UDP or TCP and Payload
 	for _, layerType := range decoded {
 		// Handle layers
@@ -1013,9 +1018,9 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			l4Payload = []byte(pld)
 
 		case slayers.LayerTypeSCMP:
-			// For SCMP Echo, the bytes after the SCMP header are basically the echo-info:
-			// identifier + sequence + echo data
-			// We can reuse SCMP payload as ICMP payload: SCION / SCMP / SCMPEcho / data -> IPv6 / ICMPv6 / echo-info / data
+			// For SCMP Echo, the bytes after the SCMP header are the echo
+			// info block: identifier + sequence + echo data. It maps 1:1 to
+			// the ICMPv6 payload (identifier + sequence + data).
 			scmpPayload := append([]byte(nil), scmp.LayerPayload()...)
 
 			// Fallback, in case gopacket put something into pld.
@@ -1030,13 +1035,20 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 			icmpTypeCode := translateSCMPTypeCodeToICMPv6(scmp.TypeCode, t.log)
 
+			// SCMP Echo Replies carry the original ICMPv6 identifier stashed
+			// by the egress translation inside the data block; restore it so
+			// the originating ping matches its reply. Echo Requests are left
+			// as-is: their identifier is the sender's dispatcher/underlay port.
+			if scmp.TypeCode.Type() == slayers.SCMPTypeEchoReply {
+				scmpPayload = restoreICMPv6EchoID(scmpPayload, t.log)
+			}
+
 			icmp := &layers.ICMPv6{
 				TypeCode: icmpTypeCode,
 			}
 
 			l4Layer = icmp
 			l4Payload = scmpPayload
-			forceIPv6 = true
 		case layers.LayerTypeTCP:
 			l4Layer = &tcp
 			l4Payload = append([]byte(nil), tcp.Payload...)
@@ -1064,140 +1076,29 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		l4Payload = append([]byte(nil), tcp.Payload...)
 	}
 
-	// ---------------------------- Map SCION dst/src host -> IP -----------------------
+	// ---------------------------- Map SCION hosts -> IP -----------------------
+	// The reconstructed application packet mirrors the SCION packet's hosts
+	// transparently: src = mapped SCION src host, dst = mapped SCION dst host.
+	// Both are canonical SCION-mapped IPv6 addresses (Scitra-conformant); there
+	// is no family branch and no islocal-dependent address handling here.
 	var dst, src net.IP
 
-	islocal := false
-	if scn.DstIA == scn.SrcIA {
-		islocal = true
+	mappedSrc, err := mapSCIONHostToIPv6(scn.SrcIA, scn.SrcAddrType, scn.RawSrcAddr)
+	if err != nil {
+		return nil, fmt.Errorf("map SCION src host to IPv6 failed: %w", err)
 	}
+	src = mappedSrc
 
-	// ---- dst ----
-	isd := int(scn.DstIA.ISD())
-	asn := addr_translation.ASN{Value: uint64(scn.DstIA.AS())}
-	iface := net.IP(scn.RawDstAddr)
-
-	switch scn.DstAddrType {
-	case slayers.T4Ip:
-		if islocal {
-			dst = net.IP(scn.RawDstAddr)
-		} else {
-			//Then it needs to be mapped to a IPv6 Address
-			var err error
-			dst, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
-			if err != nil {
-				return nil, fmt.Errorf("ScionToIP failed: %w", err)
-			}
-		}
-	case slayers.T16Ip:
-		iface := net.IP(scn.RawDstAddr)
-
-		if islocal {
-			if IsSCIONMapped(iface) {
-				_, _, _, _, hostIP, _, err := UnmapIPv6(iface, 8)
-				if err != nil {
-					return nil, fmt.Errorf("unmap dst SCION-mapped IPv6 failed: %w", err)
-				}
-				dst = hostIP
-			} else {
-				dst = iface.To16()
-			}
-		} else {
-			var err error
-			dst, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
-			if err != nil {
-				return nil, fmt.Errorf("ScionToIP dst T16 failed: %w", err)
-			}
-		}
-	default:
-		return nil, errors.New("unsupported destination host type")
+	mappedDst, err := mapSCIONHostToIPv6(scn.DstIA, scn.DstAddrType, scn.RawDstAddr)
+	if err != nil {
+		return nil, fmt.Errorf("map SCION dst host to IPv6 failed: %w", err)
 	}
+	dst = mappedDst
 
-	// must match tunnel endpoint
-	//if !dst.Equal(tunIP) {
-	//return nil, errors.New("packet not for this tunnel endpoint")
-	//}
-	isd = int(scn.SrcIA.ISD())
-	asn = addr_translation.ASN{Value: uint64(scn.SrcIA.AS())}
-	iface = net.IP(scn.RawSrcAddr)
-
-	// ---- src ----
-	switch scn.SrcAddrType {
-	case slayers.T4Ip:
-		//Only if ASN of src and dst are the same - bool local
-		if islocal {
-			src = net.IP(scn.RawSrcAddr)
-		} else {
-			//Then it needs to be mapped to a IPv6 Address
-			var err error
-			src, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
-			if err != nil {
-				return nil, fmt.Errorf("ScionToIP failed: %w", err)
-			}
-		}
-
-	case slayers.T16Ip:
-		iface := net.IP(scn.RawSrcAddr)
-
-		if islocal {
-			if IsSCIONMapped(iface) {
-				_, _, _, _, hostIP, _, err := UnmapIPv6(iface, 8)
-				if err != nil {
-					return nil, fmt.Errorf("unmap src SCION-mapped IPv6 failed: %w", err)
-				}
-				src = hostIP
-			} else {
-				src = iface.To16()
-			}
-		} else {
-			var err error
-			src, err = addr_translation.ScionToIP(isd, asn, 0, 0, iface, 8)
-			if err != nil {
-				return nil, fmt.Errorf("ScionToIP src T16 failed: %w", err)
-			}
-		}
-	default:
-		return nil, errors.New("unsupported source host type")
-	}
-
-	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] mapped SCION hosts to IP src=%s dst=%s isLocal=%v",
+	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] reconstructed IPv6 addresses src=%s dst=%s",
 		ipString(src),
 		ipString(dst),
-		islocal,
 	)
-
-	// --- Force IPv6
-
-	if forceIPv6 {
-		srcMapped, err := addr_translation.ScionToIP(
-			int(scn.SrcIA.ISD()),
-			addr_translation.ASN{Value: uint64(scn.SrcIA.AS())},
-			0,
-			0,
-			net.IP(scn.RawSrcAddr),
-			8,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("SCMP ingress map src to SCION-mapped IPv6 failed: %w", err)
-		}
-
-		dstLocal := tunIP
-		if dstLocal == nil || dstLocal.To4() != nil || dstLocal.To16() == nil {
-			dstLocal, err = IPv6OfInterface(t.ifaceName)
-			if err != nil {
-				return nil, fmt.Errorf("SCMP ingress could not determine local tunnel IPv6: %w", err)
-			}
-		}
-
-		src = srcMapped
-		dst = dstLocal.To16()
-
-		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] force IPv6 for SCMP/ICMP srcMapped=%s dstLocal=%s iface=%s",
-			ipString(src),
-			ipString(dst),
-			t.ifaceName,
-		)
-	}
 
 	// ---- Build IP Packet ----
 
@@ -1212,6 +1113,10 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	dst4 := dst.To4()
 	src4 := src.To4()
 
+	// OUTDATED: This IPv4 rebuild branch is no longer reachable. The address
+	// rule above always reconstructs an IPv6 packet (Scitra-conformant), so src
+	// and dst are never IPv4 and dst4/src4 are always nil. It is kept for
+	// review/rollback context only and must NOT be used as an active path.
 	//If both Src and Dst are IPv4, build IPv4 Packet
 	if dst4 != nil && src4 != nil {
 
@@ -1456,6 +1361,31 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 }
 
+// mapSCIONHostToIPv6 returns the canonical SCION-mapped IPv6 address for a
+// SCION host address as it is carried on the wire:
+//   - T4Ip (IPv4 host)      -> fc<isd><asn>::ffff:IPv4 (via ScionToIP)
+//   - T16Ip already mapped  -> the SCION-mapped IPv6 as-is
+//   - T16Ip interface id    -> fc<isd><asn>::<low64> (via ScionToIP)
+//
+// This is the application-side source address used by TranslateIngress and is
+// independent of whether the packet travelled a same-AS (empty) or inter-AS path.
+func mapSCIONHostToIPv6(ia addr.IA, addrType slayers.AddrType, raw []byte) (net.IP, error) {
+	asn := addr_translation.ASN{Value: uint64(ia.AS())}
+	ip := net.IP(raw)
+
+	switch addrType {
+	case slayers.T4Ip:
+		return addr_translation.ScionToIP(int(ia.ISD()), asn, 0, 0, ip, 8)
+	case slayers.T16Ip:
+		if IsSCIONMapped(ip) {
+			return ip.To16(), nil
+		}
+		return addr_translation.ScionToIP(int(ia.ISD()), asn, 0, 0, ip, 8)
+	default:
+		return nil, errors.New("unsupported source host type")
+	}
+}
+
 // translateICMPv6ToSCMPTypeCode maps ICMPv6 Type+Code to SCMP Type+Code.
 func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode, log *scionlog.Logger) slayers.SCMPTypeCode {
 
@@ -1520,6 +1450,105 @@ func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode, log *sci
 		out = slayers.CreateSCMPTypeCode(slayers.SCMPTypeDestinationUnreachable, slayers.SCMPCodeNoRoute)
 	}
 
+	return out
+}
+
+// SCMPEcho data block offsets used to preserve the original ICMPv6 echo
+// identifier on the SCION wire. SCION routers route SCMP informational
+// requests to the default end-host port (30041) and route replies using the
+// SCMPEcho identifier as the destination port, so the identifier field cannot
+// carry the original ICMPv6 identifier. For echo data blocks of at least 18
+// bytes the original identifier is stashed at bytes 16..17 of the data block
+// and restored on ingress.
+const (
+	scmpEchoIdentifierStashOffset = 16
+	scmpEchoMinStashDataLen       = 18
+)
+
+// isICMPv6Echo reports whether the ICMPv6 type is an Echo Request or an Echo
+// Reply.
+func isICMPv6Echo(tc layers.ICMPv6TypeCode) bool {
+	switch tc.Type() {
+	case layers.ICMPv6TypeEchoRequest, layers.ICMPv6TypeEchoReply:
+		return true
+	}
+	return false
+}
+
+// buildSCMPEchoPayload converts the raw ICMPv6 echo payload
+// (identifier(2) | sequence(2) | data) into the SCMP echo wire format:
+// SCMPEcho info block (identifier(2) | sequence(2)) followed by the data
+// block.
+//
+// The SCMPEcho identifier semantics depend on the direction:
+//
+//   - Echo Request: the identifier is set to DefaultSCIONEndhostPort (the
+//     local SCMP underlay port that replies are routed back to). The original
+//     ICMPv6 identifier is stashed at data bytes 16..17 when the data block
+//     is at least 18 bytes long so the peer can restore it in the reply.
+//   - Echo Reply: the identifier carries the original ICMPv6 identifier (the
+//     request's identifier), which routers use as the reply's destination
+//     port. The data block is returned unmodified: it already holds the
+//     original identifier stashed by the request egress.
+//
+// For short request payloads (< 18 bytes of data) there is no room to stash
+// the identifier, so the original ICMPv6 identifier is kept in the SCMPEcho
+// identifier field instead (documented fallback).
+func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, log *scionlog.Logger) []byte {
+	if len(raw) < 4 {
+		log.Infof(scionlog.ComponentPath, "[ICMP6->SCMP] warning: short ICMPv6 echo payload len=%d, pass-through", len(raw))
+		return raw
+	}
+
+	origID := binary.BigEndian.Uint16(raw[0:2])
+	seq := binary.BigEndian.Uint16(raw[2:4])
+	data := raw[4:]
+
+	echoID := origID
+	if scmpType == slayers.SCMPTypeEchoRequest {
+		echoID = DefaultSCIONEndhostPort
+		if len(data) >= scmpEchoMinStashDataLen {
+			stashed := append([]byte(nil), data...)
+			binary.BigEndian.PutUint16(stashed[scmpEchoIdentifierStashOffset:], origID)
+			data = stashed
+		} else {
+			echoID = origID
+		}
+	}
+
+	echo := &slayers.SCMPEcho{Identifier: echoID, SeqNumber: seq}
+	buf := gopacket.NewSerializeBuffer()
+	if err := echo.SerializeTo(buf, gopacket.SerializeOptions{}); err != nil {
+		log.Infof(scionlog.ComponentPath, "[ICMP6->SCMP] error: SCMPEcho serialize failed err=%v", err)
+		return raw
+	}
+	return append(buf.Bytes(), data...)
+}
+
+// restoreICMPv6EchoID rebuilds the ICMPv6 echo payload of an SCMP Echo Reply
+// received from the network. The SCMP payload is
+// SCMPEcho(identifier | sequence) followed by the data block. For data blocks
+// of at least 18 bytes the original ICMPv6 identifier stashed at data bytes
+// 16..17 by the egress translation is restored into the ICMPv6 identifier
+// field. For shorter payloads the SCMPEcho identifier is used as-is.
+func restoreICMPv6EchoID(payload []byte, log *scionlog.Logger) []byte {
+	if len(payload) < 4 {
+		log.Infof(scionlog.ComponentPath, "[SCMP->ICMP6] warning: short SCMP echo payload len=%d, pass-through", len(payload))
+		return payload
+	}
+
+	id := binary.BigEndian.Uint16(payload[0:2])
+	seq := binary.BigEndian.Uint16(payload[2:4])
+	data := payload[4:]
+
+	if len(data) >= scmpEchoMinStashDataLen {
+		id = binary.BigEndian.Uint16(data[scmpEchoIdentifierStashOffset:])
+	}
+
+	out := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint16(out[0:2], id)
+	binary.BigEndian.PutUint16(out[2:4], seq)
+	copy(out[4:], data)
 	return out
 }
 
@@ -1846,12 +1875,43 @@ func BuildSCIONPacket(
 		}
 
 	case *slayers.SCMP:
+		// gopacket cannot compute the SCMP checksum for SCION packets, so we
+		// serialize the SCMP header (checksum 0) and compute the checksum over
+		// SCMP header + info block + data with the SCION pseudo header
+		// (mirrors the TCP case below). The info block and data are carried in
+		// l4Payload (see buildSCMPEchoPayload).
 		opts := gopacket.SerializeOptions{
 			FixLengths:       true,
 			ComputeChecksums: false,
 		}
 
-		l.SetNetworkLayerForChecksum(pkt)
+		hdrbuf := gopacket.NewSerializeBuffer()
+		if err := l.SerializeTo(hdrbuf, gopacket.SerializeOptions{
+			FixLengths:       true,
+			ComputeChecksums: false,
+		}); err != nil {
+			return nil, fmt.Errorf("serialize SCMP for checksum: %w", err)
+		}
+		scmpBytes := hdrbuf.Bytes()
+
+		upperLen := uint16(len(scmpBytes) + len(l4Payload))
+
+		pseudo, err := buildSCIONPseudoHeader(
+			srcIA, dstIA,
+			srcHost, dstHost,
+			upperLen,
+			slayers.L4SCMP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("build SCION SCMP pseudo header: %w", err)
+		}
+
+		bufForCksum := make([]byte, 0, len(pseudo)+len(scmpBytes)+len(l4Payload))
+		bufForCksum = append(bufForCksum, pseudo...)
+		bufForCksum = append(bufForCksum, scmpBytes...)
+		bufForCksum = append(bufForCksum, l4Payload...)
+
+		l.Checksum = checksum16(bufForCksum)
 
 		if err := gopacket.SerializeLayers(buf, opts,
 			pkt,

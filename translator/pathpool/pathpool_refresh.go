@@ -25,7 +25,7 @@ func (pp *PathPool) SetRefreshCallback(cb RefreshCallback) {
 // destination arrives.
 func (pp *PathPool) PrefetchAsync(pairs []IAPair) {
 	if len(pairs) == 0 {
-	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] PrefetchAsync: no pairs configured")
+		pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] PrefetchAsync: no pairs configured")
 		return
 	}
 
@@ -48,13 +48,13 @@ func (pp *PathPool) RefreshAsync(src, dst addr.IA, reason string) RefreshStatus 
 	pp.known[k] = struct{}{}
 
 	if pp.retriever == nil {
-	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshAsync skipped: retriever nil src=%s dst=%s reason=%s", src, dst, reason)
+		pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshAsync skipped: retriever nil src=%s dst=%s reason=%s", src, dst, reason)
 		pp.mu.Unlock()
 		return RefreshStatus{}
 	}
 
 	if inflight, ok := pp.inflight[k]; ok {
-	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshAsync skipped: already inflight id=%d src=%s dst=%s reason=%s", inflight.id, src, dst, reason)
+		pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshAsync skipped: already inflight id=%d src=%s dst=%s reason=%s", inflight.id, src, dst, reason)
 		pp.mu.Unlock()
 		return RefreshStatus{ID: inflight.id, Started: false}
 	}
@@ -180,7 +180,7 @@ func (pp *PathPool) RefreshKnownPairs(reason string) {
 	pairs := pp.knownPairsSnapshot()
 
 	if len(pairs) == 0 {
-	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshKnownPairs: no known pairs reason=%s", reason)
+		pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] RefreshKnownPairs: no known pairs reason=%s", reason)
 		return
 	}
 

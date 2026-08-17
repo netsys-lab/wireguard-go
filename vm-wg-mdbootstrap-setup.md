@@ -51,20 +51,13 @@ sudo ip -6 route replace fc00::/8 dev wg0
 
 
 ***Step 4: Execute Connectivity Tests (in Terminal 2)***
-Test A: Legacy IP Webpage via Tunnel
+**Test A: Legacy IP Webpage via Tunnel**
 
+# successful
 curl -v http://141.44.25.150/ -H "Host: welcome.scion.host"
-
 # tested with this got full handshake
 curl -v -k https://welcome.scion.host/ --resolve welcome.scion.host:443:141.44.25.150
 
-Expected Output:
-You are currently accessing this page on the legacy Internet.
 
-
-Test B: SCION-Native Webpage via Translation
-
+**Test B: SCION-Native Webpage via Translation**
 curl -v -k --resolve welcome.scion.host:443:[fc04:7800:4a00::ffff:8d2c:1996] https://welcome.scion.host/
-
-Expected Output:
-You are accessing this page via SCION!

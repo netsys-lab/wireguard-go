@@ -12,7 +12,7 @@ import (
 
 // PolicyFile is the top-level JSON structure of a scitra-policy.json file.
 type PolicyFile struct {
-	Matchers []Matcher         `json:"matchers"`
+	Matchers []Matcher          `json:"matchers"`
 	Policies map[string]*Policy `json:"policies"`
 
 	// policyOrder preserves document order for validation of extends/failover.
@@ -31,12 +31,12 @@ type Matcher struct {
 
 // Policy defines filtering and sorting rules for SCION paths.
 type Policy struct {
-	Extends      string       `json:"extends,omitempty"`
-	Failover     string       `json:"failover,omitempty"`
-	ACL          []string     `json:"acl,omitempty"`
-	Sequence     string       `json:"sequence,omitempty"`
+	Extends      string        `json:"extends,omitempty"`
+	Failover     string        `json:"failover,omitempty"`
+	ACL          []string      `json:"acl,omitempty"`
+	Sequence     string        `json:"sequence,omitempty"`
 	Requirements *Requirements `json:"requirements,omitempty"`
-	Ordering     []string     `json:"ordering,omitempty"`
+	Ordering     []string      `json:"ordering,omitempty"`
 }
 
 // Requirements specifies minimum/maximum thresholds for path metadata.

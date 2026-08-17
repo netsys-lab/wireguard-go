@@ -162,7 +162,7 @@ func filterSequence(sequence string, paths []pathpool.CachedPath) []pathpool.Cac
 
 // seqToken is a token in a sequence expression.
 type seqToken struct {
-	predicate HopPredicate
+	predicate  HopPredicate
 	quantifier rune // 0 = exact once, '*' = zero or more, '+' = one or more, '?' = zero or one
 }
 

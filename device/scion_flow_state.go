@@ -32,25 +32,25 @@ const (
 )
 
 type FlowPathDTO struct {
-	Fingerprint  string    `json:"fingerprint"`
-	Display      string    `json:"display,omitempty"`
-	NextHop      string    `json:"nextHop,omitempty"`
-	Expiry       string    `json:"expiry,omitempty"`
-	MTU          *uint16   `json:"mtu,omitempty"`
-	Interfaces   []string  `json:"interfaces,omitempty"`
+	Fingerprint string   `json:"fingerprint"`
+	Display     string   `json:"display,omitempty"`
+	NextHop     string   `json:"nextHop,omitempty"`
+	Expiry      string   `json:"expiry,omitempty"`
+	MTU         *uint16  `json:"mtu,omitempty"`
+	Interfaces  []string `json:"interfaces,omitempty"`
 
-	LatencyMicros    []int64  `json:"latencyMicros,omitempty"`
-	BandwidthKbps    []uint64 `json:"bandwidthKbps,omitempty"`
-	Geo              []GeoDTO  `json:"geo,omitempty"`
-	LinkType         []string  `json:"linkType,omitempty"`
-	InternalHops     []uint32  `json:"internalHops,omitempty"`
-	Notes            []string  `json:"notes,omitempty"`
+	LatencyMicros []int64  `json:"latencyMicros,omitempty"`
+	BandwidthKbps []uint64 `json:"bandwidthKbps,omitempty"`
+	Geo           []GeoDTO `json:"geo,omitempty"`
+	LinkType      []string `json:"linkType,omitempty"`
+	InternalHops  []uint32 `json:"internalHops,omitempty"`
+	Notes         []string `json:"notes,omitempty"`
 
-	TotalLatencyMicros *int64   `json:"totalLatencyMicros,omitempty"`
-	LatencyComplete    *bool    `json:"latencyComplete,omitempty"`
-	BottleneckKbps     *uint64  `json:"bottleneckKbps,omitempty"`
-	BandwidthComplete  *bool    `json:"bandwidthComplete,omitempty"`
-	InterAsLinks       int      `json:"interAsLinks"`
+	TotalLatencyMicros *int64  `json:"totalLatencyMicros,omitempty"`
+	LatencyComplete    *bool   `json:"latencyComplete,omitempty"`
+	BottleneckKbps     *uint64 `json:"bottleneckKbps,omitempty"`
+	BandwidthComplete  *bool   `json:"bandwidthComplete,omitempty"`
+	InterAsLinks       int     `json:"interAsLinks"`
 }
 
 type GeoDTO struct {
@@ -60,13 +60,13 @@ type GeoDTO struct {
 }
 
 type FlowPathsResult struct {
-	FlowID     uint64         `json:"flowId"`
-	State      FlowPathsState `json:"state"`
-	Paths      []FlowPathDTO  `json:"paths"`
-	Error      string         `json:"error,omitempty"`
-	PolicyName string         `json:"policyName,omitempty"`
-	PolicyMode PolicyMode     `json:"policyMode"`
-	PolicyFallbackApplied bool `json:"policyFallbackApplied"`
+	FlowID                uint64         `json:"flowId"`
+	State                 FlowPathsState `json:"state"`
+	Paths                 []FlowPathDTO  `json:"paths"`
+	Error                 string         `json:"error,omitempty"`
+	PolicyName            string         `json:"policyName,omitempty"`
+	PolicyMode            PolicyMode     `json:"policyMode"`
+	PolicyFallbackApplied bool           `json:"policyFallbackApplied"`
 
 	OverrideState        OverrideState `json:"overrideState"`
 	OverrideFingerprint  string        `json:"overrideFingerprint,omitempty"`
