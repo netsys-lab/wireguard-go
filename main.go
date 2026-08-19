@@ -233,6 +233,7 @@ func main() {
 		scionConfig.Enabled = true
 		logger.Verbosef("SCION_ENABLED == true")
 	} else {
+		scionConfig.Enabled = false
 		logger.Verbosef("SCION_ENABLED == false")
 	}
 	logger.Verbosef("scionConfig.policyFile: %v", scionConfig.PolicyFile)
@@ -242,10 +243,9 @@ func main() {
 		if scionConfig.ConfigDir == "" {
 			scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
 		}
-
-		scionConfig.Enabled = true
 	} else {
-		logger.Verbosef("No SCION_BOOTSTRAP_URL!")
+		logger.Verbosef("No SCION_BOOTSTRAP_URL! Set SCION to false")
+		scionConfig.Enabled = false
 	}
 	scionRetryOptions := device.InfiniteSCIONInitRetryOptions()
 	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfig)
@@ -280,9 +280,10 @@ func main() {
 
 	//Tunnel Setup we fetch Bootstrap
 	// Tunnel Setup: fetch SCION bootstrap data through the tunnel and initialize SCION.
-	if bootstrapURL != "" {
+
+	if bootstrapURL != "" && scionConfig.Enabled {
 		go func() {
-			scionConfig.Enabled = true
+			//scionConfig.Enabled = true
 
 			if scionConfig.ConfigDir == "" {
 				scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")

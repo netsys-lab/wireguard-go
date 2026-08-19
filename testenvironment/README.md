@@ -1,267 +1,291 @@
-# SCION-WireGuard Integration Test Environment
+# SCION / WireGuard / Scitra Test Environment
 
-## Overview
-
-This test environment provides a modular setup for testing SCION-aware packet translation and forwarding in wireguard-go. It creates a Linux namespace-based topology with Server and Client namespaces connected via WireGuard, with SCION infrastructure for end-to-end testing.
-
-## CRITICAL: Dependency Order
-
-The setup has specific dependencies that MUST be followed in order:
-
-```
-1. Generate SCION topology (03a)     → Creates gen/ directory
-2. Start Bootstrap server (03b)      → Needs gen/ files
-3. Start WireGuard (04)             → Needs bootstrap for SCION config
-4. Start SCION services (03c)       → Needs WireGuard interfaces to bind to
-```
-
-If you skip steps or run in wrong order, components will fail to start!
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Host Machine                                │
-│                                                                     │
-│  ┌──────────────────────────┐     ┌──────────────────────────┐      │
-│  │      Server Namespace    │     │     Client Namespace     │      │
-│  │                          │     │                          │      │
-│  │  veth-server (10.0.0.1)  │◄───►│  veth-client (10.0.0.2)  │      │
-│  │                          │     │                          │      │
-│  │  wg0 (10.10.10.1/24)     │     │  wg0 (10.10.10.2/32)     │      │
-│  │                          │     │                          │      │
-│  │  wireguard-go (userspace)│     │  wireguard-go (userspace)│      │
-│  │                          │     │                          │      │
-│  │  Bootstrap Server :8042  │     │                          │      │
-│  │  SCION infrastructure    │     │                          │      │
-│  │  - sciond                │     │                          │      │
-│  │  - dispatcher            │     │                          │      │
-│  │  - border router         │     │                          │      │
-│  │                          │     │                          │      │
-│  │  SCION Echo Server       │     │                          │      │
-│  │  (port 30042)            │     │                          │      │
-│  └──────────────────────────┘     └──────────────────────────┘      │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-## Directory Structure
-
-```
-testenv/
-├── config.sh           # Configuration and shared functions
-├── 01-namespaces.sh   # Step 1: Create network namespaces
-├── 02-build.sh       # Step 2: Build components
-├── 03a-topology.sh   # Step 3a: Generate SCION topology (ONLY GENERATE!)
-├── 03b-bootstrap.sh   # Step 3b: Start Bootstrap server
-├── 03c-scion.sh      # Step 3c: Start SCION services (needs WireGuard)
-├── 03-scion.sh       # Wrapper (shows usage)
-├── 04-wireguard.sh   # Step 4: Setup WireGuard (needs bootstrap)
-├── 05-echo.sh        # Step 5: Setup SCION echo server
-├── 06-test.sh        # Step 6: Run tests
-└── testenv.sh       # Master control script
-```
-
-## Quick Start
-
-### Full Setup (DOES THIS IN CORRECT ORDER!)
+## Start
 
 ```bash
-cd /home/paul/Scintra/wireguard-go/testenv
-sudo ./testenv.sh up
+cd testenvironment
+chmod +x testenvironment.bash
+sudo ./testenvironment.bash
 ```
 
-### Manual Step-by-Step
+The normal startup builds and verifies the complete infrastructure **without sending a SCION-mapped IPv6 request through our custom translator**.
+
+## Startup order
+
+```text
+0  Dependencies / Go / SCION tools
+
+1  Create namespaces + veth links
+   ├─ Client
+   ├─ Server
+   └─ ScitraServer
+
+2  Generate SCION topology
+   └─ creates gen/ files needed by SCION and the bootstrap service
+
+3  Refresh wireguard-go build + keys
+   ├─ first check wireguard-go/wireguard-go in the project root
+   ├─ if present: report it and refresh it with go build
+   └─ persistent Go cache means unchanged packages are reused
+
+4  Patch generated SCION addresses
+   ├─ source BRs -> addresses that will exist on wg-server
+   ├─ source daemon -> reachable Server address
+   ├─ target BRs -> Server <-> ScitraServer veth addresses
+   └─ target daemon -> 10.30.34.254:30255
+
+5  Start VANILLA wg-server only
+   ├─ create wg-server
+   ├─ assign 10.0.0.1
+   └─ assign all patched source-BR aliases to wg-server
+
+6  Start SCION infrastructure
+   ├─ clean stale supervisor state
+   ├─ start BRs / control services / daemons
+   ├─ require supervisor services RUNNING
+   ├─ require source daemon listening
+   ├─ require target daemon listening
+   └─ WAIT FOR SCION PATH CONVERGENCE
+      ├─ poll every 5 seconds
+      ├─ allow up to 180 seconds total
+      ├─ require control-plane path 3-64534 -> 1-64512
+      ├─ require control-plane path 1-64512 -> 3-64534
+      ├─ require alive path in both directions
+      └─ require two consecutive alive confirmations before continuing
+
+7  Start bootstrap server
+   ├─ generated topology already exists
+   └─ binds to 10.0.0.1:8042 on wg-server
+
+8  Start and verify TARGET Scitra-TUN in ScitraServer
+   ├─ plain IPv4 website 10.30.34.100:8080
+   ├─ target daemon reachable
+   ├─ bidirectional SCION paths already proven READY in step 6
+   ├─ scitra-tun process alive
+   ├─ TUN interface "scion" exists + UP
+   ├─ expected mapped IPv6 exists
+   ├─ fc00::/8 route exists
+   ├─ SCION website bound to mapped IPv6:8000
+   └─ native SCION ping succeeds
+
+   Then start a SECOND official/reference Scitra-TUN in Server:
+
+      official source Scitra
+              ↓
+            SCION
+              ↓
+      official target Scitra
+              ↓
+        HTTP website :8000
+              ↓
+          return path
+
+   This reference request must succeed BEFORE our custom wg-client exists.
+   The source-side reference Scitra remains running afterwards so the known-good
+   path can be used during side-by-side packet debugging.
+
+9  Start our custom wg-client LAST
+   ├─ configure WireGuard peer
+   ├─ ordinary IPv4 ping to 10.0.0.1 must work
+   ├─ real WireGuard handshake must exist
+   ├─ bootstrap /topology must be reachable through the WG tunnel
+   └─ NO request to fc00::/8 is sent
+
+SETUP READY
+```
+
+The actual system under test is deliberately not called during startup:
+
+```text
+Client IPv6
+  -> OUR translator
+  -> WireGuard
+  -> SCION
+  -> target Scitra-TUN
+  -> SCION website
+```
+
+Run that only with:
 
 ```bash
-cd /home/paul/Scintra/wireguard-go/testenv
-
-# Step 1: Namespaces
-sudo ./01-namespaces.sh up
-
-# Step 2: Build
-sudo ./02-build.sh build
-
-# Step 3a: Generate topology (NOT start!)
-sudo ./03a-topology.sh generate
-
-# Step 3b: Bootstrap server (needs topology)
-sudo ./03b-bootstrap.sh up
-
-# Step 4: WireGuard (needs bootstrap)
-sudo ./04-wireguard.sh up
-
-# Step 3c: SCION services (needs WireGuard!)
-sudo ./03c-scion.sh up
-
-# Step 5: Echo server
-sudo ./05-echo.sh up
-
-# Run tests
-sudo ./06-test.sh test
+sudo ./testenvironment.bash test
 ```
 
-## Why This Order?
 
-### 1. Generate SCION Topology (03a)
-- Creates `gen/` directory with AS configurations
-- Does NOT start any services
-- Takes ~10 seconds
+## Reach the SCION website
 
-### 2. Bootstrap Server (03b)
-- Needs generated topology files to exist
-- Provides SCION certificates to wireguard-go
-- Binds to Server namespace underlay IP (10.0.0.1:8042)
-- wireguard-go uses `SCION_BOOTSTRAP_URL` to fetch config
-
-### 3. WireGuard (04)
-- Starts wireguard-go in both namespaces
-- Uses bootstrap URL to fetch SCION configuration
-- Creates WireGuard interfaces
-- **IMPORTANT**: SCION services need these interfaces to bind to!
-
-### 4. SCION Services (03c)
-- Starts sciond, dispatcher, border routers
-- These services bind to network interfaces (including WireGuard)
-- If WireGuard isn't running, SCION won't start properly
-- Needs ~30 seconds to fully initialize
-
-### 5. Echo Server (05)
-- Simple UDP echo server for testing return path
-- Listens on port 30042 (SCION_UNDERLAY_PORT + 1)
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOG_LEVEL` | `verbose` | Log level (silent/verbose/debug) |
-| `SCION_DIR` | `/home/paul/Scintra/scion` | SCION directory |
-| `SCION_TOPOLOGY` | `topology/tiny-bgp.topo` | Topology file |
-| `SCION_UNDERLAY_PORT` | `30041` | SCION UDP port |
-| `SCION_LOCAL_IA` | `1-64513` | Local SCION IA |
-| `BOOTSTRAP_PORT` | `8042` | Bootstrap server port |
-
-### Network Configuration
-
-- **Server namespace**: 10.0.0.1/24 (veth), 10.10.10.1/24 (WireGuard)
-- **Client namespace**: 10.0.0.2/24 (veth), 10.10.10.2/32 (WireGuard)
-
-## Packet Flow
-
-### Forward Path (Client → Server → SCION)
-
-1. Client sends IP packet with SCION-mapped destination (fc00::/8)
-2. wireguard-go detects SCION-mapped destination in `send.go`
-3. `TranslateEgress` converts IP → encapsulated SCION (IPv6/UDP+SCION)
-4. Packet encrypted and sent through WireGuard tunnel
-5. Server receives in `receive.go`
-6. Detects SCION-mapped destination via `IsSCIONMapped()`
-7. Packet sent to dispatcher via `device.dispatcherConn`
-8. SCION infrastructure routes packet to destination AS
-
-### Return Path (SCION → Server → Client)
-
-1. SCION infrastructure sends response back
-2. `RoutineSCIONIngress` receives SCION packet on listener port
-3. `TranslateIngress` converts SCION → IP
-4. Peer lookup by destination IP
-5. Packet injected into WireGuard tunnel
-6. Client receives IP response
-
-## Log Files
-
-All logs are stored in `/tmp/scion-wg-test/`:
-
-| File | Description |
-|------|-------------|
-| `wg-server.log` | Server wireguard-go output |
-| `wg-client.log` | Client wireguard-go output |
-| `echo-server.log` | SCION echo server output |
-| `bootstrap.log` | Bootstrap server output |
-| `scion-start.log` | SCION startup output |
-
-## Troubleshooting
-
-### Problem: SCION topology generation fails
-
-**Solutions**:
-```bash
-# Clean and regenerate
-cd /home/paul/Scintra/scion
-./scion.sh topo-clean
-sudo /home/paul/Scintra/wireguard-go/testenv/03a-topology.sh generate
-```
-
-### Problem: Bootstrap server won't start
-
-**Symptoms**: Port 8042 not listening
-
-**Solutions**:
-1. Check topology was generated first
-2. Check namespace is running
-3. View logs: `tail -f /tmp/scion-wg-test/bootstrap.log`
-
-### Problem: WireGuard can't connect
-
-**Symptoms**: Ping fails, no tunnel
-
-**Solutions**:
-1. Check bootstrap is running: `sudo ss -lntp | grep 8042`
-2. Check wireguard-go is running: `pgrep -a wireguard-go`
-3. View logs: `tail -f /tmp/scion-wg-test/wg-*.log`
-
-### Problem: SCION services won't start
-
-**Symptoms**: Supervisor shows errors
-
-**Solutions**:
-1. Check WireGuard is UP first: `sudo ip netns exec Server ip link show wg0`
-2. Check topology generated
-3. Check bootstrap is running
-4. View logs: `tail -f /home/paul/Scintra/scion/logs/*.log`
-
-## Running Tests
+Get the target mapped IPv6:
 
 ```bash
-# Run all tests
-sudo ./testenv.sh test
-
-# Basic connectivity only
-sudo ./06-test.sh basic
-
-# View logs
-sudo ./06-test.sh logs
-
-# Check status
-sudo ./testenv.sh status
+TARGET="$(cat .runtime/state/website-ip.txt)"
 ```
 
-## Files Modified
+Known-good path using the source/reference Scitra-TUN:
 
-### wireguard-go Changes
+```bash
+sudo ip netns exec Server \
+  curl -g -6 -v "http://[$TARGET]:8000/"
+```
 
-- `device/send.go`: Added IPv4 SCION-mapped translation
-- `device/device.go`: Added SCION listener and return path handling
-- `main.go`: Added SCION_UNDERLAY_PORT environment variable support
-- `translator/header_parsing/translate_test.go`: Added unit tests
+Actual custom-translator path:
 
-### New Files Created
+```bash
+sudo ip netns exec Client \
+  curl -g -6 -v "http://[$TARGET]:8000/"
+```
 
-- `cmd/scion_echo_server/main.go`: Echo server for return path testing
-- `testenv/*.sh`: Modular test environment scripts
-- Documentation: This file
+The first command should remain usable for the entire lifetime of the environment and acts as the reference baseline.
 
-## Future Enhancements
+## Packet debugging
 
-1. **Automated ICMP→SCMP translation**: Implement full ICMP to SCMP translation
-2. **MTU handling**: Proper fragmentation and path MTU discovery
-3. **Multiple AS support**: Test cross-AS SCION routing
-4. **Performance testing**: Benchmark translation overhead
+See [`DEBUGGING.md`](DEBUGGING.md) for the full side-by-side debugging plan, including:
 
-## References
+- which namespace/interface to capture in Wireshark/tcpdump;
+- reference Scitra capture commands;
+- custom translator/WireGuard capture commands;
+- target Scitra health commands;
+- the stage-by-stage failure-localization flow.
 
-- [SCION Documentation](https://docs.scion.org/)
-- [wireguard-go](https://git.zx2c4.com/wireguard-go/)
-- [SCION Topologies](https://docs.scion.org/en/latest/topo.html)
+## SCION path convergence
+
+A freshly started multi-AS topology may report `no path found` for a while even though all supervisor services and daemons are already running. The setup therefore does not fail on the first lookup anymore.
+
+Default readiness policy:
+
+```text
+poll interval:         5 seconds
+maximum wait:          180 seconds
+query timeout:         8 seconds per showpaths command
+stable confirmations:  2 consecutive rounds
+```
+
+The setup first waits for control-plane paths (`showpaths --refresh --no-probe`) in both directions and then requires probed `Status: alive` paths in both directions twice in a row. It continues immediately once this condition is met; it does not always sleep for the full three minutes.
+
+Override examples:
+
+```bash
+sudo SCION_PATH_READY_TIMEOUT=240 ./testenvironment.bash
+sudo SCION_PATH_READY_INTERVAL=10 ./testenvironment.bash
+```
+
+Detailed attempts are written to:
+
+```text
+.runtime/logs/scion-path-target-to-source.log
+.runtime/logs/scion-path-source-to-target.log
+```
+
+## Why the second Scitra-TUN stays running
+
+The target Scitra-TUN remains running in `ScitraServer` because it is the server-side translator under test infrastructure.
+
+The second source-side Scitra-TUN is a **known-good reference client**. It runs in the `Server` namespace, proves that official Scitra can reach the target Scitra website through the SCION topology and receive the response, and then remains running until the environment is stopped.
+
+It does not interfere with the custom client because the custom client runs in the separate `Client` namespace. Keeping the reference Scitra alive makes it possible to compare a known-good official-Scitra packet path with the custom translator at any time.
+
+## Target ScitraServer interfaces
+
+Before Scitra starts:
+
+```text
+ScitraServer
+├─ lo
+└─ veth-scitra   10.30.34.100/24
+```
+
+`veth-scitra` is the public/SCION-underlay side. Scitra-TUN creates the application-side TUN itself:
+
+```text
+ScitraServer
+├─ lo
+├─ veth-scitra   10.30.34.100/24
+└─ scion         <SCION-mapped IPv6>
+                  └─ fc00::/8 route
+```
+
+Target Scitra is only considered READY when the process, TUN, mapped IPv6, route and SCION connectivity checks all succeed.
+
+## wireguard-go project-root build
+
+The setup explicitly checks:
+
+```text
+<project-root>/wireguard-go
+```
+
+If the binary already exists:
+
+```text
+[OK] Existing wireguard-go binary found in project root: .../wireguard-go
+[INFO] Refreshing it with 'go build' ...
+```
+
+It does **not** blindly trust the old binary. `go build` is executed again so it matches the current source, but the persistent caches in:
+
+```text
+testenvironment/.deps/go-build-cache
+testenvironment/.deps/go-mod-cache
+```
+
+are reused. Therefore unchanged Go packages are not rebuilt from scratch.
+
+## Websites
+
+Plain infrastructure health endpoint:
+
+```text
+http://10.30.34.100:8080/
+```
+
+SCION endpoint:
+
+```text
+3-64534,10.30.34.100
+ -> scion2ip
+ -> mapped IPv6
+ -> TCP/8000
+```
+
+## Commands
+
+```bash
+sudo ./testenvironment.bash
+sudo ./testenvironment.bash status
+sudo ./testenvironment.bash test
+sudo ./testenvironment.bash down
+sudo ./testenvironment.bash clean
+sudo ./testenvironment.bash purge
+sudo ./testenvironment.bash uninstall
+```
+
+## Important logs
+
+```text
+.runtime/logs/
+├── wireguard-build.log
+├── wg-server.log
+├── wg-client.log
+├── scion-start.log
+├── bootstrap.log
+├── plain-website.log
+├── scion-website.log
+├── scitra-tun.log
+├── scion-path-target-to-source.log
+├── scion-path-source-to-target.log
+├── scion-reference-ping.log
+├── reference-source-scitra.log
+├── reference-scion-http.html
+├── reference-scion-http.stderr
+└── curl-e2e.stderr
+```
+
+## Source Control Service across namespaces
+
+For the source AS, the generated non-Docker topology normally advertises its
+Control/Discovery Service on a loopback address such as `127.0.0.44:31000`.
+That address cannot be used by the translator in the separate `Client`
+namespace. During step 4 the testenvironment therefore patches the advertised
+source Control/Discovery Service to `10.0.0.6:<generated-port>`, updates the
+SCION dispatcher service map, and step 5 places `10.0.0.6/32` on `wg-server`.
+Startup verifies both that SCION binds the patched endpoint and that `Client`
+can reach it through WireGuard before declaring the custom client ready.

@@ -7,3 +7,6 @@ wireguard
 testenv/keys/*
 testenv/logs/*
 *.trc
+
+testenvironment/.*
+.vscode/

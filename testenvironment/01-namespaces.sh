@@ -1,242 +1,87 @@
 #!/usr/bin/env bash
-#===============================================================================
-# Step 1: Namespace Setup
-# Creates network namespaces for Server and Client
-#===============================================================================
-
 set -euo pipefail
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
-
 check_root
 
-log_step "Setting up Network Namespaces"
-
-#-------------------------------------------------------------------------------
-# Cleanup existing namespaces
-#-------------------------------------------------------------------------------
-
 cleanup_namespaces() {
-    log_info "Cleaning up existing namespaces..."
-    
-    # Kill processes in namespaces first
-    for ns in "$SERVER_NS" "$CLIENT_NS"; do
+    log_info "Cleaning namespaces..."
+    for ns in "$SCITRA_NS" "$CLIENT_NS" "$SERVER_NS"; do
         if is_namespace_running "$ns"; then
-            sudo ip netns exec "$ns" pkill -9 wireguard-go 2>/dev/null || true
-            sudo ip netns exec "$ns" pkill -9 scion 2>/dev/null || true
+            # Kill every process still attached to the namespace. This also
+            # handles stale supervisor/SCION processes from an interrupted run.
+            mapfile -t _pids < <(ip netns pids "$ns" 2>/dev/null || true)
+            if (( ${#_pids[@]} )); then kill -9 "${_pids[@]}" 2>/dev/null || true; fi
         fi
     done
-    
-    # Delete namespaces
-    sudo ip netns del "$SERVER_NS" 2>/dev/null || true
-    sudo ip netns del "$CLIENT_NS" 2>/dev/null || true
-    
-    # Delete any leftover veth pairs
-    ip link del veth-server 2>/dev/null || true
-    ip link del veth-client 2>/dev/null || true
-    
-    log_success "Cleanup complete"
+    ip netns del "$SCITRA_NS" 2>/dev/null || true
+    ip netns del "$CLIENT_NS" 2>/dev/null || true
+    ip netns del "$SERVER_NS" 2>/dev/null || true
+    ip link del "$SERVER_VETH_IFACE" 2>/dev/null || true
+    ip link del "$CLIENT_VETH_IFACE" 2>/dev/null || true
+    ip link del "$SCITRA_SERVER_IFACE" 2>/dev/null || true
+    ip link del "$SCITRA_HOST_IFACE" 2>/dev/null || true
+    rm -f "$SCITRA_PID_FILE" "$WEBSITE_PID_FILE" "$WEBSITE_IP_FILE"
 }
-
-#-------------------------------------------------------------------------------
-# Create namespaces
-#-------------------------------------------------------------------------------
 
 create_namespaces() {
-    log_info "Creating namespaces: $SERVER_NS, $CLIENT_NS"
-    
-    sudo ip netns add "$SERVER_NS"
-    log_success "Created namespace: $SERVER_NS"
-    
-    sudo ip netns add "$CLIENT_NS"
-    log_success "Created namespace: $CLIENT_NS"
+    for ns in "$SERVER_NS" "$CLIENT_NS" "$SCITRA_NS"; do
+        ip netns add "$ns"
+        ip netns exec "$ns" ip link set lo up
+        log_success "Created $ns"
+    done
 }
 
-#-------------------------------------------------------------------------------
-# Create veth pairs
-#-------------------------------------------------------------------------------
+create_links() {
+    ip link add "$SERVER_VETH_IFACE" type veth peer name "$CLIENT_VETH_IFACE"
+    ip link set "$SERVER_VETH_IFACE" netns "$SERVER_NS"
+    ip link set "$CLIENT_VETH_IFACE" netns "$CLIENT_NS"
 
-create_veth() {
-    log_info "Creating veth pairs..."
-    
-    # Create veth pair: server <-> client
-    sudo ip link add veth-server type veth peer name veth-client
-    log_success "Created veth pair"
-    
-    # Assign to namespaces
-    sudo ip link set veth-server netns "$SERVER_NS"
-    sudo ip link set veth-client netns "$CLIENT_NS"
-    log_success "Assigned veth to namespaces"
+    ip link add "$SCITRA_SERVER_IFACE" type veth peer name "$SCITRA_HOST_IFACE"
+    ip link set "$SCITRA_SERVER_IFACE" netns "$SERVER_NS"
+    ip link set "$SCITRA_HOST_IFACE" netns "$SCITRA_NS"
 }
 
-#-------------------------------------------------------------------------------
-# Configure IP addresses
-#-------------------------------------------------------------------------------
+configure_links() {
+    ip netns exec "$SERVER_NS" ip addr add "$SERVER_VETH_IP" dev "$SERVER_VETH_IFACE"
+    ip netns exec "$SERVER_NS" ip link set "$SERVER_VETH_IFACE" up
+    ip netns exec "$CLIENT_NS" ip addr add "$CLIENT_VETH_IP" dev "$CLIENT_VETH_IFACE"
+    ip netns exec "$CLIENT_NS" ip link set "$CLIENT_VETH_IFACE" up
 
-configure_ips() {
-    log_info "Configuring IP addresses..."
-    
-    # Server namespace
-    sudo ip netns exec "$SERVER_NS" ip addr add "$SERVER_VETH_IP" dev veth-server
-    sudo ip netns exec "$SERVER_NS" ip link set veth-server up
-    sudo ip netns exec "$SERVER_NS" ip link set lo up
-    log_success "Server namespace configured"
-    
-    # Client namespace  
-    sudo ip netns exec "$CLIENT_NS" ip addr add "$CLIENT_VETH_IP" dev veth-client
-    sudo ip netns exec "$CLIENT_NS" ip link set veth-client up
-    sudo ip netns exec "$CLIENT_NS" ip link set lo up
-    log_success "Client namespace configured"
+    # The Server-side veth gets the daemon IP as its primary address. BR aliases
+    # are added after topology generation by 04-topo_change.sh.
+    ip netns exec "$SERVER_NS" ip addr add "$SCITRA_DAEMON_IP/24" dev "$SCITRA_SERVER_IFACE"
+    ip netns exec "$SERVER_NS" ip link set "$SCITRA_SERVER_IFACE" up
+    ip netns exec "$SCITRA_NS" ip addr add "$SCITRA_HOST_IP_CIDR" dev "$SCITRA_HOST_IFACE"
+    ip netns exec "$SCITRA_NS" ip link set "$SCITRA_HOST_IFACE" up
 }
-
-#-------------------------------------------------------------------------------
-# Setup tun device
-#-------------------------------------------------------------------------------
 
 setup_tun() {
-    log_info "Setting up /dev/net/tun in namespaces..."
-    
-    for ns in "$SERVER_NS" "$CLIENT_NS"; do
-        sudo ip netns exec "$ns" bash -c '
-            mkdir -p /dev/net
-            [[ -c /dev/net/tun ]] || mknod /dev/net/tun c 10 200
-            chmod 666 /dev/net/tun
-        '
+    for ns in "$SERVER_NS" "$CLIENT_NS" "$SCITRA_NS"; do
+        ip netns exec "$ns" bash -c 'mkdir -p /dev/net; [[ -c /dev/net/tun ]] || mknod /dev/net/tun c 10 200; chmod 666 /dev/net/tun'
     done
-    
-    log_success "/dev/net/tun configured"
 }
 
-#-------------------------------------------------------------------------------
-# Verify setup
-#-------------------------------------------------------------------------------
-
-verify_setup() {
-    log_info "Verifying namespace setup..."
-    
-    local failed=0
-    
-    # Check namespaces exist
-    for ns in "$SERVER_NS" "$CLIENT_NS"; do
-        if is_namespace_running "$ns"; then
-            log_success "Namespace $ns exists"
-        else
-            log_error "Namespace $ns not found"
-            ((failed++))
-        fi
-    done
-    
-    # Check veth interfaces
-    if sudo ip netns exec "$SERVER_NS" ip link show veth-server &>/dev/null; then
-        log_success "veth-server exists in $SERVER_NS"
-    else
-        log_error "veth-server not found in $SERVER_NS"
-        ((failed++))
-    fi
-    
-    if sudo ip netns exec "$CLIENT_NS" ip link show veth-client &>/dev/null; then
-        log_success "veth-client exists in $CLIENT_NS"
-    else
-        log_error "veth-client not found in $CLIENT_NS"
-        ((failed++))
-    fi
-    
-    # Check IP addresses
-    if sudo ip netns exec "$SERVER_NS" ip addr show veth-server | grep -q "$SERVER_VETH_IP"; then
-        log_success "Server IP configured"
-    else
-        log_error "Server IP not configured"
-        ((failed++))
-    fi
-    
-    if sudo ip netns exec "$CLIENT_NS" ip addr show veth-client | grep -q "$CLIENT_VETH_IP"; then
-        log_success "Client IP configured"
-    else
-        log_error "Client IP not configured"
-        ((failed++))
-    fi
-    
-    if [[ $failed -gt 0 ]]; then
-        log_error "Namespace setup verification failed"
-        return 1
-    fi
-    
-    log_success "All namespace setup verified"
-    return 0
+verify() {
+    for ns in "$SERVER_NS" "$CLIENT_NS" "$SCITRA_NS"; do is_namespace_running "$ns" || return 1; done
+    ip netns exec "$CLIENT_NS" ping -c1 -W1 "${SERVER_VETH_IP%%/*}" >/dev/null
+    ip netns exec "$SCITRA_NS" ping -c1 -W1 "$SCITRA_DAEMON_IP" >/dev/null
+    log_success "Namespace networking verified"
 }
 
-#-------------------------------------------------------------------------------
-# Status
-#-------------------------------------------------------------------------------
-
-show_status() {
-    echo ""
-    echo "=== Namespace Status ==="
-    echo "Namespaces:"
-    ip netns list || echo "  (none)"
-    
-    echo ""
-    echo "Server namespace interfaces:"
-    sudo ip netns exec "$SERVER_NS" ip addr || echo "  (none)"
-    
-    echo ""
-    echo "Client namespace interfaces:"
-    sudo ip netns exec "$CLIENT_NS" ip addr || echo "  (none)"
+status() {
+    ip netns list
+    echo; echo "[$SERVER_NS]"; ip netns exec "$SERVER_NS" ip -br addr || true
+    echo; echo "[$CLIENT_NS]"; ip netns exec "$CLIENT_NS" ip -br addr || true
+    echo; echo "[$SCITRA_NS]"; ip netns exec "$SCITRA_NS" ip -br addr || true
 }
-
-#-------------------------------------------------------------------------------
-# Main
-#-------------------------------------------------------------------------------
-
-cmd_up() {
-    create_directories
-    cleanup_namespaces
-    create_namespaces
-    create_veth
-    configure_ips
-    setup_tun
-    verify_setup
-    show_status
-}
-
-cmd_down() {
-    log_step "Tearing down namespaces"
-    cleanup_namespaces
-    log_success "Namespaces cleaned up"
-}
-
-cmd_status() {
-    show_status
-}
-
-#-------------------------------------------------------------------------------
-# Usage
-#-------------------------------------------------------------------------------
-
-usage() {
-    cat << EOF
-Usage: $0 <command>
-
-Commands:
-    up         Setup namespaces
-    down       Cleanup namespaces
-    status     Show namespace status
-
-Examples:
-    sudo $0 up       # Setup namespaces
-    sudo $0 status   # Show status
-    sudo $0 down     # Cleanup
-EOF
-}
-
-#-------------------------------------------------------------------------------
-# Run
-#-------------------------------------------------------------------------------
 
 case "${1:-}" in
-    up)    cmd_up ;;
-    down)  cmd_down ;;
-    status) cmd_status ;;
-    *)     usage ;;
+    up)
+        log_step "Namespaces"
+        create_directories; cleanup_namespaces; create_namespaces; create_links; configure_links; setup_tun; verify
+        ;;
+    down) cleanup_namespaces ;;
+    status) status ;;
+    *) echo "Usage: $0 {up|down|status}"; exit 2 ;;
 esac

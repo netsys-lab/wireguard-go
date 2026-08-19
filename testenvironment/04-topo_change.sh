@@ -1,41 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/config.sh"
+check_root
 
-source ./config.sh
+log_step "Patch namespace-facing SCION addresses"
+create_directories
 
-: "${SCION_CONFIG_DIR:?SCION_CONFIG_DIR is not set}"
-: "${DEAMON_CONFIG_FILE:?DEAMON_CONFIG_FILE is not set}"
-: "${SERVER_VETH_IP:?SERVER_VETH_IP is not set}"
-: "${SERVER_65413_sciond_addr:?SERVER_65413_sciond_addr is not set}"
-: "${SERVER_NS:?SERVER_NS is not set}"
+OUT_ENV="$(runtime_env_file)"
+python3 "$TESTENV_DIR/tools/patch_topology.py" \
+  --scion-dir "$SCION_DIR" \
+  --source-asn "$SOURCE_ASN" \
+  --target-asn "$TARGET_ASN" \
+  --source-br-primary "${WG_SERVER_IP%%/*}" \
+  --source-daemon-ip "$SOURCE_DAEMON_IP" \
+  --source-control-ip "$SOURCE_CONTROL_IP" \
+  --target-br-first "$SCITRA_BR_FIRST_IP" \
+  --target-daemon-ip "$SCITRA_DAEMON_IP" \
+  --out-env "$OUT_ENV"
 
-GENFILE="$SCION_CONFIG_DIR"
+source "$OUT_ENV"
 
-# BR internal address
-OLD_BR_IP="127.0.0.41"                          # TODO
-NEW_BR_IP="${WG_SERVER_IP%%/*}"                 # usually 10.0.0.1
+# Source daemon is reachable from Client through WireGuard once wg-server exists.
+ip netns exec "$SERVER_NS" ip addr add "$SOURCE_DAEMON_IP/32" dev lo 2>/dev/null || true
 
-# sciond / control / discovery reachable address
-OLD_DAEMON_IP="127.0.0.45"     # TODO
-OLD_CS_IP="127.0.0.44"                         # TODO
-NEW_SERVICE_IP="${SERVER_65413_sciond_addr%%/*}"   # usually 10.0.0.3
+# The source Control/Discovery Service address itself is placed on wg-server in
+# 06-wireguard.sh, because that interface does not exist yet in this step.
+# topology-runtime.env already contains SOURCE_CONTROL_ADDR for later checks.
 
-echo "Patching SCION topology in $GENFILE"
+# Target BR internal addresses must already exist before ./scion.sh run so the
+# routers can bind to them. They all live on the Server side of the Scitra veth.
+for ipaddr in "${TARGET_BR_IPS[@]}"; do
+    ip netns exec "$SERVER_NS" ip addr add "$ipaddr/32" dev "$SCITRA_SERVER_IFACE" 2>/dev/null || true
+done
 
-# BR internal_addr: 127.0.0.25 -> 10.0.0.1
-sed -i.bak "s|${OLD_BR_IP}|${NEW_BR_IP}|g" "$GENFILE/topology.json"
-echo "Replaced BR IP $OLD_BR_IP -> $NEW_BR_IP in topology.json"
-
-# Control + Discovery service: 127.0.0.26:31004 -> 10.0.0.3:31004
-sed -i.bak "s|${OLD_CS_IP}:31000|${NEW_SERVICE_IP}:31000|g" "$GENFILE/topology.json"
-echo "Replaced Control/Discovery $OLD_CS_IP:31000 -> $NEW_SERVICE_IP:31000 in topology.json"
-
-# Make service IP available in Server namespace
-sudo ip netns exec "$SERVER_NS" ip addr add "${NEW_SERVICE_IP}/8" dev lo 2>/dev/null || true
-echo "Added $NEW_SERVICE_IP/8 to lo in namespace $SERVER_NS"
-
-# sciond config: 127.0.0.27:30255 -> 10.0.0.3:30255
-sed -i.bak "s|${OLD_DAEMON_IP}:30255|${NEW_SERVICE_IP}:30255|g" "$DEAMON_CONFIG_FILE"
-echo "Replaced daemon $OLD_DAEMON_IP:30255 -> $NEW_SERVICE_IP:30255 in $DEAMON_CONFIG_FILE"
-
-echo "Done."
+log_success "Topology patched. Runtime addresses written to $OUT_ENV"
