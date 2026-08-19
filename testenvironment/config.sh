@@ -147,7 +147,7 @@ export WG_ENDPOINT="${WG_ENDPOINT:-${SERVER_VETH_IP%%/*}:51820}"
 
 # A normal IPv6 source address for curl. It deliberately does not overlap the
 # SCION-mapped fc00::/8 destination prefix.
-export WG_CLIENT_IPV6="${WG_CLIENT_IPV6:-2001:db8:44:25::70/128}"
+export WG_CLIENT_IPV6="${WG_CLIENT_IPV6:-fc00:10fc::ffff:10.0.0.2/128}"
 
 # Custom translator routing prefix. Scitra-TUN itself uses fc00::/8.
 export WG_SCION_ROUTE_PREFIX="${WG_SCION_ROUTE_PREFIX:-fc00::/8}"
