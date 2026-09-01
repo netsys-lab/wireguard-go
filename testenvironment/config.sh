@@ -289,8 +289,8 @@ SCION checkout:   $SCION_DIR
 SCION source:     $SCION_SOURCE
 Expected ref:     $SCION_REF
 Topology:         $SCION_TOPOLOGY
-Go source:        ${GO_SOURCE:-unconfigured}
-Go binary:        ${GO_BIN:-not configured}
+Go source:        ${GO_SOURCE:-/home/jonas/wg-go-app/wireguard-go}
+Go binary:        ${GO_BIN:-/usr/bin/go}
 
 Namespaces:
   Client:         $CLIENT_NS
