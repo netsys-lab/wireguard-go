@@ -26,6 +26,8 @@ build_wireguard_go() {
     local heartbeat_interval="${BUILD_HEARTBEAT_SECONDS:-5}"
     local started_at=$SECONDS
 
+
+    
     if [[ "$RUN_USER" == root ]]; then
         (
             cd "$REPO_ROOT"
