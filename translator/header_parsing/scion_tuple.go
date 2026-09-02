@@ -257,11 +257,22 @@ func ExtractSCMPInfo(packet []byte) (SCMPInfo, error) {
 	}
 	srcHost, err := rawToNetip(scn.SrcAddrType, scn.RawSrcAddr)
 	if err != nil {
-		return SCMPInfo{}, err
+		return SCMPInfo{}, fmt.Errorf("src host: %w", err)
 	}
 	dstHost, err := rawToNetip(scn.DstAddrType, scn.RawDstAddr)
 	if err != nil {
-		return SCMPInfo{}, err
+		// SVC remote (T4Svc) returns invalid without error above; any
+		// remaining error for Dst is treated as optional – keep src valid
+		// and use invalid DstHost. SCMPInfoKey does not use DstHost.
+		if scn.DstAddrType == slayers.T4Svc {
+			dstHost = netip.Addr{}
+		} else {
+			return SCMPInfo{}, fmt.Errorf("dst host: %w", err)
+		}
+	}
+	// Ensure src is valid (local host required for SCMPInfoKey); dst may be invalid (SVC)
+	if !srcHost.IsValid() && scn.SrcAddrType != slayers.T4Svc {
+		return SCMPInfo{}, fmt.Errorf("src host invalid")
 	}
 	return SCMPInfo{
 		Family:     family,
@@ -343,6 +354,13 @@ func rawToNetip(addrType slayers.AddrType, raw []byte) (netip.Addr, error) {
 			return netip.AddrFrom16(b), nil
 		}
 		return netip.Addr{}, fmt.Errorf("invalid T16Ip %v", raw)
+	case slayers.T4Svc:
+		// SVC destination (e.g. SvcNone 0xffff / SvcWildcard) is not an IP host.
+		// For SCMP informational registration the remote host is irrelevant:
+		// the key is (Family, LocalIA, LocalHost, Identifier, Sequence).
+		// Return invalid Addr without error so callers can keep LocalHost
+		// valid and treat remote as optional.
+		return netip.Addr{}, nil
 	default:
 		return netip.Addr{}, fmt.Errorf("unsupported addr type %v", addrType)
 	}
