@@ -17,6 +17,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/translator/header_parsing"
 )
 
 type QueueHandshakeElement struct {
@@ -517,27 +518,45 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			if device.translator != nil {
 				oldLen := len(elem.packet)
 
-				translated, err := device.translator.TranslateIngress(elem.packet, nil)
-				if err != nil {
-					device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
-					continue
-				}
+				// Classify packet to determine if translation is needed
+				class := header_parsing.ClassifyPacket(elem.packet)
 
-				if translated == nil {
-					device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
-					continue
-				}
+				switch class {
+				case header_parsing.ClassPlainIP:
+					// Plain IP: no translation needed, write directly to TUN
+					device.log.Verbosef("[CLASSIFY-INGRESS] packet classified as PlainIP, skipping translation")
 
-				if !bytes.Equal(translated, elem.packet) {
-					if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
-						device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+				case header_parsing.ClassMappedSCION:
+					// SCION-mapped IPv6: requires translation
+					translated, err := device.translator.TranslateIngress(elem.packet, nil)
+					if err != nil {
+						device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
 						continue
 					}
 
-					copy(elem.buffer[MessageTransportOffsetContent:], translated)
-					elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+					if translated == nil {
+						device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+						continue
+					}
 
-					device.log.Verbosef("[TRANSLATE-INGRESS] translated inbound packet oldLen=%d newLen=%d", oldLen, len(translated))
+					if !bytes.Equal(translated, elem.packet) {
+						if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+							device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+							continue
+						}
+
+						copy(elem.buffer[MessageTransportOffsetContent:], translated)
+						elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+
+						device.log.Verbosef("[TRANSLATE-INGRESS] translated inbound packet oldLen=%d newLen=%d", oldLen, len(translated))
+					}
+
+				case header_parsing.ClassNativeSCION:
+					// Native SCION: forward to local dispatcher/underlay socket
+					// For now, we skip this packet as it should not reach here
+					// (it would have arrived on the underlay socket, not WireGuard)
+					device.log.Verbosef("[CLASSIFY-INGRESS] native SCION on WireGuard ingress (unexpected), skipping")
+					continue
 				}
 			}
 

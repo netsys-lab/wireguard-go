@@ -1,7 +1,6 @@
 package flow
 
 import (
-	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -23,76 +22,6 @@ const (
 	EgressSCION   EgressKind = "scion"
 )
 
-type Flow struct {
-	id        ID
-	ipVersion uint8
-	protocol  uint8
-	endpointA Endpoint
-	endpointB Endpoint
-
-	localEndpoint  Endpoint
-	remoteEndpoint Endpoint
-	scionDstIP     netip.Addr
-
-	status     Status
-	egressKind EgressKind
-	srcIA      string
-	dstIA      string
-	txPackets  uint64
-	txBytes    uint64
-	rxPackets  uint64
-	rxBytes    uint64
-	createdAt  time.Time
-	lastSeen   time.Time
-}
-
-func (f *Flow) snapshot() Snapshot {
-	return Snapshot{
-		ID:             f.id,
-		IPVersion:      f.ipVersion,
-		Protocol:       f.protocol,
-		EndpointA:      f.endpointA,
-		EndpointB:      f.endpointB,
-		LocalEndpoint:  f.localEndpoint,
-		RemoteEndpoint: f.remoteEndpoint,
-		SCIONDstIP:     f.scionDstIP,
-		Status:         f.status,
-		EgressKind:     f.egressKind,
-		SrcIA:          f.srcIA,
-		DstIA:          f.dstIA,
-		TxPackets:      f.txPackets,
-		TxBytes:        f.txBytes,
-		RxPackets:      f.rxPackets,
-		RxBytes:        f.rxBytes,
-		CreatedAt:      f.createdAt,
-		LastSeen:       f.lastSeen,
-	}
-}
-
-// enrichSCIONMetadata copies SCION-specific metadata from a packet into the
-// flow when the corresponding flow fields are still empty (first-writer-wins).
-// It does not change endpointA/endpointB, localEndpoint/remoteEndpoint,
-// counters, or timestamps.
-func (f *Flow) enrichSCIONMetadata(metadata PacketMetadata) {
-	if f.srcIA == "" && metadata.SrcIA != "" {
-		f.srcIA = metadata.SrcIA
-	}
-	if f.dstIA == "" && metadata.DstIA != "" {
-		f.dstIA = metadata.DstIA
-	}
-	if !f.scionDstIP.IsValid() && metadata.SCIONDstIP.IsValid() {
-		f.scionDstIP = metadata.SCIONDstIP
-	}
-}
-
-// setEgressKind sets the egress kind on creation or promotes unknown -> known.
-// It does not silently overwrite a non-unknown kind with a different non-unknown kind.
-func (f *Flow) setEgressKind(kind EgressKind) {
-	if f.egressKind == EgressUnknown || f.egressKind == "" {
-		f.egressKind = kind
-	}
-}
-
 type Manager struct {
 	mu         sync.RWMutex
 	nextID     ID
@@ -111,23 +40,39 @@ func NewManager() *Manager {
 func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKind EgressKind) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 
+	// Phase 1: Try to find existing flow with read lock
+	m.mu.RLock()
+	if flow, ok := m.flowsByKey[key]; ok {
+		// Existing flow: update counters atomically (no lock)
+		flow.txPackets.Add(1)
+		flow.txBytes.Add(uint64(packetLength))
+		flow.lastSeenNano.Store(time.Now().UnixNano())
+		flow.setEgressKind(egressKind)
+		flow.enrichSCIONMetadata(metadata)
+		m.mu.RUnlock()
+		return flow.snapshot(), false
+	}
+	m.mu.RUnlock()
+
+	// Phase 2: Flow not found; acquire exclusive lock to create it
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now()
-
+	// Double-check: another goroutine may have created it while we were unlocked
 	if flow, ok := m.flowsByKey[key]; ok {
-		flow.txPackets++
-		flow.txBytes += uint64(packetLength)
-		flow.lastSeen = now
+		flow.txPackets.Add(1)
+		flow.txBytes.Add(uint64(packetLength))
+		flow.lastSeenNano.Store(time.Now().UnixNano())
 		flow.setEgressKind(egressKind)
 		flow.enrichSCIONMetadata(metadata)
 		return flow.snapshot(), false
 	}
 
+	// Create new flow
 	id := m.nextID
 	m.nextID++
 
+	now := time.Now()
 	flow := &Flow{
 		id:             id,
 		ipVersion:      metadata.IPVersion,
@@ -139,13 +84,16 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 		scionDstIP:     metadata.SCIONDstIP,
 		status:         StatusActive,
 		egressKind:     egressKind,
+		trafficClass:   ClassUnclassified,
 		srcIA:          metadata.SrcIA,
 		dstIA:          metadata.DstIA,
-		txPackets:      1,
-		txBytes:        uint64(packetLength),
 		createdAt:      now,
-		lastSeen:       now,
 	}
+
+	// Initialize atomic counters
+	flow.txPackets.Store(1)
+	flow.txBytes.Store(uint64(packetLength))
+	flow.lastSeenNano.Store(now.UnixNano())
 
 	m.flowsByKey[key] = flow
 	m.flowsByID[id] = flow
@@ -156,23 +104,39 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKind EgressKind) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 
+	// Phase 1: Try to find existing flow with read lock
+	m.mu.RLock()
+	if flow, ok := m.flowsByKey[key]; ok {
+		// Existing flow: update counters atomically (no lock)
+		flow.rxPackets.Add(1)
+		flow.rxBytes.Add(uint64(packetLength))
+		flow.lastSeenNano.Store(time.Now().UnixNano())
+		flow.setEgressKind(egressKind)
+		flow.enrichSCIONMetadata(metadata)
+		m.mu.RUnlock()
+		return flow.snapshot(), false
+	}
+	m.mu.RUnlock()
+
+	// Phase 2: Flow not found; acquire exclusive lock to create it
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now()
-
+	// Double-check: another goroutine may have created it while we were unlocked
 	if flow, ok := m.flowsByKey[key]; ok {
-		flow.rxPackets++
-		flow.rxBytes += uint64(packetLength)
-		flow.lastSeen = now
+		flow.rxPackets.Add(1)
+		flow.rxBytes.Add(uint64(packetLength))
+		flow.lastSeenNano.Store(time.Now().UnixNano())
 		flow.setEgressKind(egressKind)
 		flow.enrichSCIONMetadata(metadata)
 		return flow.snapshot(), false
 	}
 
+	// Create new flow
 	id := m.nextID
 	m.nextID++
 
+	now := time.Now()
 	flow := &Flow{
 		id:             id,
 		ipVersion:      metadata.IPVersion,
@@ -184,13 +148,16 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 		scionDstIP:     metadata.SCIONDstIP,
 		status:         StatusActive,
 		egressKind:     egressKind,
+		trafficClass:   ClassUnclassified,
 		srcIA:          metadata.SrcIA,
 		dstIA:          metadata.DstIA,
-		rxPackets:      1,
-		rxBytes:        uint64(packetLength),
 		createdAt:      now,
-		lastSeen:       now,
 	}
+
+	// Initialize atomic counters
+	flow.rxPackets.Store(1)
+	flow.rxBytes.Store(uint64(packetLength))
+	flow.lastSeenNano.Store(now.UnixNano())
 
 	m.flowsByKey[key] = flow
 	m.flowsByID[id] = flow
