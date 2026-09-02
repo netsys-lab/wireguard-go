@@ -109,6 +109,7 @@ type Device struct {
 
 	scionFlowMu      sync.RWMutex
 	scionFlowStates  map[flow.ID]SCIONEgressState
+	scionFlowIndex   map[SCIONFlowKey]map[flow.ID]struct{}
 	flowOverrideMu   sync.RWMutex
 	flowOverrides    map[flow.ID]string
 	policyEngine     *pathpolicy.Engine
