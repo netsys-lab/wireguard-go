@@ -522,30 +522,146 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 				if ingressClass == header_parsing.ClassPlainIP {
 					device.log.Verbosef("[CLASSIFY-INGRESS] plain IP, skipping SCION handling")
 				} else {
-					// SCION transport: extract tuple and do reverse lookup
-					tup, err := header_parsing.ExtractSCIONTuple(elem.packet)
-					if err != nil {
-						// SCMP or parse error: keep stateless translation for compatibility
-						oldLen := len(elem.packet)
-						translated, err := device.translator.TranslateIngress(elem.packet, nil)
-						if err != nil {
-							device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
-							continue
-						}
-						if translated == nil {
-							device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
-							continue
-						}
-						if !bytes.Equal(translated, elem.packet) {
-							if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
-								device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+					// SCION transport: try SCMP first (informational and errors), then TCP/UDP
+					if scmpInfo, err := header_parsing.ExtractSCMPInfo(elem.packet); err == nil {
+						if scmpInfo.IsError {
+							// SCMP error: correlate via quoted packet
+							if scmpInfo.QuotedTuple != nil {
+								qt := scmpInfo.QuotedTuple
+								snap, res := device.lookupSCIONFlow(qt.Protocol, qt.SrcIA, qt.DstIA, qt.SrcHost, qt.DstHost, qt.SrcPort, qt.DstPort)
+								switch res {
+								case SCIONLookupHit:
+									if snap.TrafficClass == flow.ClassNativeSCION {
+										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] flow=%d class=native protocol=SCMP action=pass-unchanged", snap.ID)
+										// pass original decrypted packet unchanged to TUN
+									} else if snap.TrafficClass == flow.ClassMappedSCION {
+										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] hit flow=%d via=scmp-quote protocol=%d", snap.ID, qt.Protocol)
+										translated, err := device.translator.TranslateIngress(elem.packet, nil)
+										if err != nil {
+											device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+											continue
+										}
+										if translated == nil {
+											device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+											continue
+										}
+										if len(translated) >= 40 && translated[0]>>4 == 6 {
+											newDst := snap.LocalEndpoint.Addr
+											if newDst.IsValid() && !newDst.Is4() {
+												b := newDst.As16()
+												copy(translated[24:40], b[:])
+											}
+										}
+										if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+											device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", len(elem.packet), len(translated))
+											continue
+										}
+										copy(elem.buffer[MessageTransportOffsetContent:], translated)
+										elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION->IP] flow=%d SCMP-error restored dst=%s", snap.ID, snap.LocalEndpoint.Addr.String())
+									} else {
+										oldLen := len(elem.packet)
+										translated, err := device.translator.TranslateIngress(elem.packet, nil)
+										if err != nil {
+											device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+											continue
+										}
+										if translated == nil {
+											device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+											continue
+										}
+										if !bytes.Equal(translated, elem.packet) {
+											if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+												device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+												continue
+											}
+											copy(elem.buffer[MessageTransportOffsetContent:], translated)
+											elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+										}
+									}
+								case SCIONLookupMiss:
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=no-flow protocol=SCMP type=%v id=%d seq=%d", scmpInfo.Type, scmpInfo.Identifier, scmpInfo.Sequence)
+									continue
+								case SCIONLookupAmbiguous:
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=ambiguous-flow protocol=SCMP id=%d seq=%d matches=2", scmpInfo.Identifier, scmpInfo.Sequence)
+									continue
+								}
+							} else {
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=no-quoted protocol=SCMP type=%v", scmpInfo.Type)
 								continue
 							}
-							copy(elem.buffer[MessageTransportOffsetContent:], translated)
-							elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+						} else {
+							// Informational SCMP: Echo/Traceroute
+							snap, res := device.lookupSCMPInfo(scmpInfo.Family, scmpInfo.DstIA, scmpInfo.DstHost, scmpInfo.Identifier, scmpInfo.Sequence)
+							switch res {
+							case SCIONLookupHit:
+								if snap.TrafficClass == flow.ClassNativeSCION {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] flow=%d class=native protocol=SCMP action=pass-unchanged", snap.ID)
+									// pass original packet unchanged to TUN
+								} else if snap.TrafficClass == flow.ClassMappedSCION {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] hit flow=%d class=mapped proto=SCMP type=%v", snap.ID, scmpInfo.Type)
+									var restored []byte
+									var err error
+									if scmpInfo.Family == header_parsing.SCMPFamilyTraceroute {
+										translated, err2 := device.translator.TranslateIngress(elem.packet, nil)
+										if err2 != nil {
+											device.log.Verbosef("[SCMP->ICMP6] translate failed flow=%d err=%v", snap.ID, err2)
+											continue
+										}
+										restored = translated
+										if len(restored) >= 40 && restored[0]>>4 == 6 {
+											newDst := snap.LocalEndpoint.Addr
+											if newDst.IsValid() && !newDst.Is4() {
+												b := newDst.As16()
+												copy(restored[24:40], b[:])
+											}
+										}
+										if len(restored) >= 48 {
+											origID := snap.LocalEndpoint.Port
+											restored[44] = byte(origID >> 8)
+											restored[45] = byte(origID & 0xff)
+										}
+									} else {
+										// Echo: try flow-based, fallback to stateless patch
+										restored, err = device.translator.TranslateIngressWithFlow(elem.packet, snap.LocalEndpoint.Addr, snap.LocalEndpoint.Port, snap.RemoteEndpoint.Addr, snap.RemoteEndpoint.Port)
+										if err != nil {
+											translated, err2 := device.translator.TranslateIngress(elem.packet, nil)
+											if err2 != nil {
+												device.log.Verbosef("[SCMP->ICMP6] translate failed %v", err2)
+												continue
+											}
+											restored = translated
+											if len(restored) >= 40 {
+												newDst := snap.LocalEndpoint.Addr
+												if newDst.IsValid() {
+													b := newDst.As16()
+													copy(restored[24:40], b[:])
+												}
+												origID := snap.LocalEndpoint.Port
+												if len(restored) >= 46 {
+													restored[44] = byte(origID >> 8)
+													restored[45] = byte(origID & 0xff)
+												}
+											}
+										}
+									}
+									if len(restored) > MaxMessageSize-MessageTransportOffsetContent {
+										device.log.Errorf("[SCMP->ICMP6] restored too large flow=%d", snap.ID)
+										continue
+									}
+									copy(elem.buffer[MessageTransportOffsetContent:], restored)
+									elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(restored)]
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCMP->ICMP6] flow=%d type=%v restored dst=%s id=%d", snap.ID, scmpInfo.Type, snap.LocalEndpoint.Addr.String(), snap.LocalEndpoint.Port)
+								}
+							case SCIONLookupMiss:
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=no-flow protocol=SCMP type=%v id=%d seq=%d", scmpInfo.Type, scmpInfo.Identifier, scmpInfo.Sequence)
+								continue
+							case SCIONLookupAmbiguous:
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=ambiguous-flow protocol=SCMP id=%d seq=%d matches=2", scmpInfo.Identifier, scmpInfo.Sequence)
+								continue
+							}
 						}
-					} else {
-						// Only TCP/UDP participate in flow index; SCMP already handled above
+					} else if tup, err := header_parsing.ExtractSCIONTuple(elem.packet); err == nil {
 						if tup.Protocol != flow.ProtocolTCP && tup.Protocol != flow.ProtocolUDP {
 							// stateless for other protos
 							oldLen := len(elem.packet)
@@ -571,12 +687,9 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 							switch res {
 							case SCIONLookupHit:
 								if snap.TrafficClass == flow.ClassNativeSCION {
-									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] flow=%d class=native action=no-translation", snap.ID)
-									// Preserve existing valid forwarding: do not translate, do not write to TUN.
-									// Native SCION forwarding to dispatcher is not yet fully wired; we keep drop-from-TUN.
-									continue
-								}
-								if snap.TrafficClass == flow.ClassMappedSCION {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] flow=%d class=native protocol=TCP/UDP action=pass-unchanged", snap.ID)
+									// pass original decrypted packet unchanged to TUN
+								} else if snap.TrafficClass == flow.ClassMappedSCION {
 									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] hit flow=%d class=mapped", snap.ID)
 									restored, err := device.translator.TranslateIngressWithFlow(elem.packet, snap.LocalEndpoint.Addr, snap.LocalEndpoint.Port, snap.RemoteEndpoint.Addr, snap.RemoteEndpoint.Port)
 									if err != nil {
@@ -640,6 +753,26 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=ambiguous-flow matches=2 proto=%d dstPort=%d", tup.Protocol, tup.DstPort)
 								continue
 							}
+						}
+					} else {
+						// Neither SCMP nor TCP/UDP: fallback stateless for other SCION (e.g., SCMP error without quoted)
+						oldLen := len(elem.packet)
+						translated, err := device.translator.TranslateIngress(elem.packet, nil)
+						if err != nil {
+							device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+							continue
+						}
+						if translated == nil {
+							device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+							continue
+						}
+						if !bytes.Equal(translated, elem.packet) {
+							if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+								device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+								continue
+							}
+							copy(elem.buffer[MessageTransportOffsetContent:], translated)
+							elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
 						}
 					}
 				}
