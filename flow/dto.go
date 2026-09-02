@@ -21,10 +21,11 @@ type FlowDTO struct {
 	RemoteIP   string          `json:"remoteIP,omitempty"`
 	RemotePort uint16          `json:"remotePort,omitempty"`
 	SCIONDstIP string          `json:"scionDstIP,omitempty"`
-	Status     string          `json:"status"`
-	EgressKind string          `json:"egressKind"`
-	SrcIA      string          `json:"srcIA,omitempty"`
-	DstIA      string          `json:"dstIA,omitempty"`
+	Status       string          `json:"status"`
+	EgressKind   string          `json:"egressKind"`
+	TrafficClass uint8           `json:"trafficClass"`
+	SrcIA        string          `json:"srcIA,omitempty"`
+	DstIA        string          `json:"dstIA,omitempty"`
 	TxPackets  uint64          `json:"txPackets"`
 	TxBytes    uint64          `json:"txBytes"`
 	RxPackets  uint64          `json:"rxPackets"`
@@ -64,10 +65,11 @@ func MapSnapshotToDTO(s Snapshot) FlowDTO {
 			Address: s.EndpointB.Addr.String(),
 			Port:    s.EndpointB.Port,
 		},
-		Status:     string(s.Status),
-		EgressKind: string(ek),
-		SrcIA:      s.SrcIA,
-		DstIA:      s.DstIA,
+		Status:       string(s.Status),
+		EgressKind:   string(ek),
+		TrafficClass: uint8(s.TrafficClass),
+		SrcIA:        s.SrcIA,
+		DstIA:        s.DstIA,
 		TxPackets:  s.TxPackets,
 		TxBytes:    s.TxBytes,
 		RxPackets:  s.RxPackets,

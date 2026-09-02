@@ -48,6 +48,7 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 		flow.txBytes.Add(uint64(packetLength))
 		flow.lastSeenNano.Store(time.Now().UnixNano())
 		flow.setEgressKind(egressKind)
+		flow.setTrafficClass(metadata.TrafficClass)
 		flow.enrichSCIONMetadata(metadata)
 		m.mu.RUnlock()
 		return flow.snapshot(), false
@@ -64,6 +65,7 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 		flow.txBytes.Add(uint64(packetLength))
 		flow.lastSeenNano.Store(time.Now().UnixNano())
 		flow.setEgressKind(egressKind)
+		flow.setTrafficClass(metadata.TrafficClass)
 		flow.enrichSCIONMetadata(metadata)
 		return flow.snapshot(), false
 	}
@@ -73,6 +75,12 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 	m.nextID++
 
 	now := time.Now()
+	tc := metadata.TrafficClass
+	if tc == ClassUnclassified {
+		// Default to PlainIP if not classified; caller should set explicitly.
+		// EgressKind remains "scion" vs "ip" for coarse grouping.
+		tc = ClassUnclassified
+	}
 	flow := &Flow{
 		id:             id,
 		ipVersion:      metadata.IPVersion,
@@ -84,7 +92,7 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 		scionDstIP:     metadata.SCIONDstIP,
 		status:         StatusActive,
 		egressKind:     egressKind,
-		trafficClass:   ClassUnclassified,
+		trafficClass:   tc,
 		srcIA:          metadata.SrcIA,
 		dstIA:          metadata.DstIA,
 		createdAt:      now,
@@ -112,6 +120,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 		flow.rxBytes.Add(uint64(packetLength))
 		flow.lastSeenNano.Store(time.Now().UnixNano())
 		flow.setEgressKind(egressKind)
+		flow.setTrafficClass(metadata.TrafficClass)
 		flow.enrichSCIONMetadata(metadata)
 		m.mu.RUnlock()
 		return flow.snapshot(), false
@@ -128,6 +137,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 		flow.rxBytes.Add(uint64(packetLength))
 		flow.lastSeenNano.Store(time.Now().UnixNano())
 		flow.setEgressKind(egressKind)
+		flow.setTrafficClass(metadata.TrafficClass)
 		flow.enrichSCIONMetadata(metadata)
 		return flow.snapshot(), false
 	}
@@ -137,6 +147,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 	m.nextID++
 
 	now := time.Now()
+	tc := metadata.TrafficClass
 	flow := &Flow{
 		id:             id,
 		ipVersion:      metadata.IPVersion,
@@ -148,7 +159,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 		scionDstIP:     metadata.SCIONDstIP,
 		status:         StatusActive,
 		egressKind:     egressKind,
-		trafficClass:   ClassUnclassified,
+		trafficClass:   tc,
 		srcIA:          metadata.SrcIA,
 		dstIA:          metadata.DstIA,
 		createdAt:      now,

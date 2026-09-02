@@ -18,10 +18,11 @@ type Snapshot struct {
 	RemoteEndpoint Endpoint
 	SCIONDstIP     netip.Addr
 
-	Status     Status
-	EgressKind EgressKind
-	SrcIA      string
-	DstIA      string
+	Status       Status
+	EgressKind   EgressKind
+	TrafficClass TrafficClass
+	SrcIA        string
+	DstIA        string
 
 	TxPackets uint64
 	TxBytes   uint64

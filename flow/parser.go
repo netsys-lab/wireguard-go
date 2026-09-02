@@ -21,13 +21,14 @@ var (
 )
 
 type PacketMetadata struct {
-	IPVersion   uint8
-	Protocol    uint8
-	Source      Endpoint
-	Destination Endpoint
-	SrcIA       string     // local SCION AS; empty for IP; set by caller
-	DstIA       string     // remote SCION dst AS; empty for IP; set by caller
-	SCIONDstIP  netip.Addr // authoritative SCION dst IPv4; zero for IP; set by caller
+	IPVersion    uint8
+	Protocol     uint8
+	Source       Endpoint
+	Destination  Endpoint
+	SrcIA        string     // local SCION AS; empty for IP; set by caller
+	DstIA        string     // remote SCION dst AS; empty for IP; set by caller
+	SCIONDstIP   netip.Addr // authoritative SCION dst IPv4; zero for IP; set by caller
+	TrafficClass TrafficClass
 }
 
 func ParsePacketMetadata(packet []byte) (PacketMetadata, error) {

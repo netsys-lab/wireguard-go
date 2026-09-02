@@ -56,6 +56,7 @@ func (f *Flow) snapshot() Snapshot {
 		SCIONDstIP:     f.scionDstIP,
 		Status:         f.status,
 		EgressKind:     f.egressKind,
+		TrafficClass:   f.trafficClass,
 		SrcIA:          f.srcIA,
 		DstIA:          f.dstIA,
 		TxPackets:      f.txPackets.Load(),
