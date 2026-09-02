@@ -7,8 +7,10 @@ import (
 )
 
 const (
-	ProtocolTCP = 6
-	ProtocolUDP = 17
+	ProtocolTCP    = 6
+	ProtocolUDP    = 17
+	ProtocolICMPv6 = 58
+	ProtocolSCMP   = 1 // SCION SCMP informational, used for native SCION flows
 )
 
 var (
@@ -108,23 +110,44 @@ func parseIPv6(packet []byte) (PacketMetadata, error) {
 
 	nextHeader := packet[6]
 
-	if nextHeader != ProtocolTCP && nextHeader != ProtocolUDP {
-		return PacketMetadata{}, ErrIPv6ExtensionHdr
+	if nextHeader == ProtocolTCP || nextHeader == ProtocolUDP {
+		if 40+4 > len(packet) {
+			return PacketMetadata{}, ErrTruncated
+		}
+		srcIP := netip.AddrFrom16([16]byte(packet[8:24]))
+		dstIP := netip.AddrFrom16([16]byte(packet[24:40]))
+		srcPort := binary.BigEndian.Uint16(packet[40:42])
+		dstPort := binary.BigEndian.Uint16(packet[42:44])
+		return PacketMetadata{
+			IPVersion:   6,
+			Protocol:    nextHeader,
+			Source:      Endpoint{Addr: srcIP, Port: srcPort},
+			Destination: Endpoint{Addr: dstIP, Port: dstPort},
+		}, nil
 	}
 
-	if 40+4 > len(packet) {
-		return PacketMetadata{}, ErrTruncated
+	if nextHeader == ProtocolICMPv6 {
+		if 40+8 > len(packet) {
+			return PacketMetadata{}, ErrTruncated
+		}
+		srcIP := netip.AddrFrom16([16]byte(packet[8:24]))
+		dstIP := netip.AddrFrom16([16]byte(packet[24:40]))
+		icmpType := packet[40]
+		// For Echo Request/Reply, use Identifier as port for both endpoints to keep request/reply same Flow
+		var identifier uint16
+		if icmpType == 128 || icmpType == 129 { // Echo Request/Reply
+			if 40+6 <= len(packet) {
+				identifier = binary.BigEndian.Uint16(packet[44:46])
+			}
+		}
+		// Use identifier for both src and dst port to ensure canonical key stability
+		return PacketMetadata{
+			IPVersion:   6,
+			Protocol:    ProtocolICMPv6,
+			Source:      Endpoint{Addr: srcIP, Port: identifier},
+			Destination: Endpoint{Addr: dstIP, Port: identifier},
+		}, nil
 	}
 
-	srcIP := netip.AddrFrom16([16]byte(packet[8:24]))
-	dstIP := netip.AddrFrom16([16]byte(packet[24:40]))
-	srcPort := binary.BigEndian.Uint16(packet[40:42])
-	dstPort := binary.BigEndian.Uint16(packet[42:44])
-
-	return PacketMetadata{
-		IPVersion:   6,
-		Protocol:    nextHeader,
-		Source:      Endpoint{Addr: srcIP, Port: srcPort},
-		Destination: Endpoint{Addr: dstIP, Port: dstPort},
-	}, nil
+	return PacketMetadata{}, ErrIPv6ExtensionHdr
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/scionproto/scion/pkg/addr"
 	"golang.zx2c4.com/wireguard/flow"
 	"golang.zx2c4.com/wireguard/scionlog"
+	"golang.zx2c4.com/wireguard/translator/header_parsing"
 )
 
 type FlowPathsState string
@@ -231,6 +232,93 @@ func (device *Device) lookupSCIONFlow(proto uint8, srcIA, dstIA addr.IA, srcHost
 	key := makeSCIONFlowKey(proto, srcIA, srcHost, srcPort, dstIA, dstHost, dstPort)
 	device.scionFlowMu.RLock()
 	set, ok := device.scionFlowIndex[key]
+	var id flow.ID
+	var n int
+	if ok {
+		n = len(set)
+		for k := range set {
+			id = k
+			break
+		}
+	}
+	device.scionFlowMu.RUnlock()
+	if !ok || n == 0 {
+		return flow.Snapshot{}, SCIONLookupMiss
+	}
+	if n > 1 {
+		return flow.Snapshot{}, SCIONLookupAmbiguous
+	}
+	snap, ok := device.flowManager.GetByID(id)
+	if !ok {
+		return flow.Snapshot{}, SCIONLookupMiss
+	}
+	return snap, SCIONLookupHit
+}
+
+const (
+	SCMPFamilyEcho       = header_parsing.SCMPFamilyEcho
+	SCMPFamilyTraceroute = header_parsing.SCMPFamilyTraceroute
+)
+
+type SCMPInfoKey struct {
+	Family     header_parsing.SCMPInfoFamily
+	LocalIA    addr.IA
+	LocalHost  netip.Addr
+	Identifier uint16
+	Sequence   uint16
+}
+
+func (device *Device) rememberSCMPInfo(flowID flow.ID, family header_parsing.SCMPInfoFamily, localIA addr.IA, localHost netip.Addr, identifier, sequence uint16) {
+	if !localHost.IsValid() {
+		return
+	}
+	key := SCMPInfoKey{Family: family, LocalIA: localIA, LocalHost: localHost, Identifier: identifier, Sequence: sequence}
+	device.scionFlowMu.Lock()
+	defer device.scionFlowMu.Unlock()
+	if device.scmpInfoIndex == nil {
+		device.scmpInfoIndex = make(map[SCMPInfoKey]map[flow.ID]struct{})
+	}
+	set, ok := device.scmpInfoIndex[key]
+	if !ok {
+		set = make(map[flow.ID]struct{})
+		device.scmpInfoIndex[key] = set
+	}
+	if _, exists := set[flowID]; exists {
+		return
+	}
+	set[flowID] = struct{}{}
+	if device.scionLog != nil {
+		if len(set) == 1 {
+			device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] register flow=%d class=%s proto=SCMP family=%d id=%d seq=%d local=%s,%s", flowID, trafficClassStringForFlow(flowID, device), family, identifier, sequence, localIA, localHost.String())
+		} else {
+			device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] AMBIGUOUS SCMP key family=%d local=%s,%s id=%d seq=%d matches=%d", family, localIA, localHost.String(), identifier, sequence, len(set))
+		}
+	}
+}
+
+func trafficClassStringForFlow(flowID flow.ID, device *Device) string {
+	if snap, ok := device.flowManager.GetByID(flowID); ok {
+		switch snap.TrafficClass {
+		case flow.ClassPlainIP:
+			return "plain"
+		case flow.ClassMappedSCION:
+			return "mapped"
+		case flow.ClassNativeSCION:
+			return "native"
+		default:
+			return "unclassified"
+		}
+	}
+	return "unknown"
+}
+
+func (device *Device) lookupSCMPInfo(family header_parsing.SCMPInfoFamily, localIA addr.IA, localHost netip.Addr, identifier, sequence uint16) (flow.Snapshot, SCIONLookupResult) {
+	if !localHost.IsValid() {
+		return flow.Snapshot{}, SCIONLookupMiss
+	}
+	key := SCMPInfoKey{Family: family, LocalIA: localIA, LocalHost: localHost, Identifier: identifier, Sequence: sequence}
+	device.scionFlowMu.RLock()
+	set, ok := device.scmpInfoIndex[key]
 	var id flow.ID
 	var n int
 	if ok {

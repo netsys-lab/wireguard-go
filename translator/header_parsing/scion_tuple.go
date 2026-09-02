@@ -137,6 +137,196 @@ func ExtractSCIONTuple(packet []byte) (SCIONTuple, error) {
 	}, nil
 }
 
+// SCMPInfoFamily distinguishes Echo vs Traceroute
+type SCMPInfoFamily uint8
+
+const (
+	SCMPFamilyEcho       SCMPInfoFamily = 0
+	SCMPFamilyTraceroute SCMPInfoFamily = 1
+)
+
+type SCMPInfo struct {
+	Family     SCMPInfoFamily
+	Identifier uint16
+	Sequence   uint16
+	SrcIA      addr.IA
+	DstIA      addr.IA
+	SrcHost    netip.Addr
+	DstHost    netip.Addr
+	Type       slayers.SCMPType
+	IsError    bool
+	// For errors, QuotedTuple is the offending packet's tuple (TCP/UDP SCION)
+	QuotedTuple *SCIONTuple
+}
+
+// ExtractSCMPInfo parses outer SCMP packet and returns SCMP informational identity.
+// For informational Echo/Traceroute, it extracts Identifier/Sequence and family.
+// For SCMP errors, it extracts quoted SCION tuple if present.
+func ExtractSCMPInfo(packet []byte) (SCMPInfo, error) {
+	if len(packet) < 20 {
+		return SCMPInfo{}, fmt.Errorf("packet too short")
+	}
+	version := packet[0] >> 4
+	var scionPayload []byte
+	switch version {
+	case 4:
+		pkt := gopacket.NewPacket(packet, layers.LayerTypeIPv4, gopacket.Default)
+		udpLayer := pkt.Layer(layers.LayerTypeUDP)
+		if udpLayer == nil {
+			return SCMPInfo{}, fmt.Errorf("no UDP")
+		}
+		udp := udpLayer.(*layers.UDP)
+		scionPayload = udp.Payload
+	case 6:
+		pkt := gopacket.NewPacket(packet, layers.LayerTypeIPv6, gopacket.Default)
+		udpLayer := pkt.Layer(layers.LayerTypeUDP)
+		if udpLayer == nil {
+			return SCMPInfo{}, fmt.Errorf("no UDP")
+		}
+		udp := udpLayer.(*layers.UDP)
+		scionPayload = udp.Payload
+	default:
+		return SCMPInfo{}, fmt.Errorf("unknown IP version")
+	}
+	if len(scionPayload) == 0 {
+		return SCMPInfo{}, fmt.Errorf("no SCION payload")
+	}
+	var scn slayers.SCION
+	var scmp slayers.SCMP
+	var pld gopacket.Payload
+	parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scn, &scmp, &pld)
+	parser.IgnoreUnsupported = true
+	var decoded []gopacket.LayerType
+	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
+		return SCMPInfo{}, fmt.Errorf("SCION decode: %w", err)
+	}
+	foundSCMP := false
+	for _, lt := range decoded {
+		if lt == slayers.LayerTypeSCMP {
+			foundSCMP = true
+			break
+		}
+	}
+	if !foundSCMP {
+		return SCMPInfo{}, fmt.Errorf("not SCMP")
+	}
+	scmpType := scmp.TypeCode.Type()
+	isError := scmpType != slayers.SCMPTypeEchoRequest && scmpType != slayers.SCMPTypeEchoReply && scmpType != slayers.SCMPTypeTracerouteRequest && scmpType != slayers.SCMPTypeTracerouteReply
+	var family SCMPInfoFamily
+	switch scmpType {
+	case slayers.SCMPTypeEchoRequest, slayers.SCMPTypeEchoReply:
+		family = SCMPFamilyEcho
+	case slayers.SCMPTypeTracerouteRequest, slayers.SCMPTypeTracerouteReply:
+		family = SCMPFamilyTraceroute
+	default:
+		if isError {
+			// For errors, try to extract quoted tuple from payload
+			quoted := []byte(pld)
+			if len(quoted) == 0 {
+				quoted = scmp.LayerPayload()
+			}
+			var qt *SCIONTuple
+			if len(quoted) > 0 {
+				if tup, err := parseQuotedSCION(quoted); err == nil {
+					qt = &tup
+				} else if tup2, err2 := parseQuotedSCION(scmp.LayerPayload()); err2 == nil {
+					qt = &tup2
+				}
+			}
+			srcHost, _ := rawToNetip(scn.SrcAddrType, scn.RawSrcAddr)
+			dstHost, _ := rawToNetip(scn.DstAddrType, scn.RawDstAddr)
+			// For errors, identifier/sequence not used for key, set 0
+			return SCMPInfo{Family: SCMPFamilyEcho, Identifier: 0, Sequence: 0, SrcIA: scn.SrcIA, DstIA: scn.DstIA, SrcHost: srcHost, DstHost: dstHost, Type: scmpType, IsError: true, QuotedTuple: qt}, nil
+		}
+		return SCMPInfo{}, fmt.Errorf("unsupported SCMP type %v", scmpType)
+	}
+	// Informational: identifier/sequence from echo payload (4 bytes: id, seq)
+	pldBytes := []byte(pld)
+	if len(pldBytes) < 4 {
+		// Try scmp LayerPayload as well
+		pldBytes = scmp.LayerPayload()
+	}
+	var identifier, sequence uint16
+	if len(pldBytes) >= 4 {
+		identifier = binary.BigEndian.Uint16(pldBytes[0:2])
+		sequence = binary.BigEndian.Uint16(pldBytes[2:4])
+	} else if len(scmp.LayerPayload()) >= 4 {
+		b := scmp.LayerPayload()
+		identifier = binary.BigEndian.Uint16(b[0:2])
+		sequence = binary.BigEndian.Uint16(b[2:4])
+	}
+	srcHost, err := rawToNetip(scn.SrcAddrType, scn.RawSrcAddr)
+	if err != nil {
+		return SCMPInfo{}, err
+	}
+	dstHost, err := rawToNetip(scn.DstAddrType, scn.RawDstAddr)
+	if err != nil {
+		return SCMPInfo{}, err
+	}
+	return SCMPInfo{
+		Family:     family,
+		Identifier: identifier,
+		Sequence:   sequence,
+		SrcIA:      scn.SrcIA,
+		DstIA:      scn.DstIA,
+		SrcHost:    srcHost,
+		DstHost:    dstHost,
+		Type:       scmpType,
+		IsError:    false,
+	}, nil
+}
+
+func parseQuotedSCION(quoted []byte) (SCIONTuple, error) {
+	if len(quoted) < 1 {
+		return SCIONTuple{}, fmt.Errorf("quoted too short")
+	}
+	// Quoted is SCION packet bytes (SCION header + L4)
+	var scn slayers.SCION
+	var udp slayers.UDP
+	var tcp layers.TCP
+	var pld gopacket.Payload
+	parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scn, &udp, &tcp, &pld)
+	parser.IgnoreUnsupported = true
+	var decoded []gopacket.LayerType
+	if err := parser.DecodeLayers(quoted, &decoded); err != nil {
+		return SCIONTuple{}, err
+	}
+	var proto uint8
+	var srcPort, dstPort uint16
+	for _, lt := range decoded {
+		switch lt {
+		case slayers.LayerTypeSCIONUDP:
+			proto = 17
+			srcPort = udp.SrcPort
+			dstPort = udp.DstPort
+		case layers.LayerTypeTCP:
+			proto = 6
+			srcPort = uint16(tcp.SrcPort)
+			dstPort = uint16(tcp.DstPort)
+		}
+	}
+	if proto == 0 && scn.NextHdr == slayers.L4TCP {
+		raw := []byte(pld)
+		if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err == nil {
+			proto = 6
+			srcPort = uint16(tcp.SrcPort)
+			dstPort = uint16(tcp.DstPort)
+		}
+	}
+	if proto != 6 && proto != 17 {
+		return SCIONTuple{}, fmt.Errorf("quoted not TCP/UDP")
+	}
+	srcHost, err := rawToNetip(scn.SrcAddrType, scn.RawSrcAddr)
+	if err != nil {
+		return SCIONTuple{}, err
+	}
+	dstHost, err := rawToNetip(scn.DstAddrType, scn.RawDstAddr)
+	if err != nil {
+		return SCIONTuple{}, err
+	}
+	return SCIONTuple{Protocol: proto, SrcIA: scn.SrcIA, DstIA: scn.DstIA, SrcHost: srcHost, DstHost: dstHost, SrcPort: srcPort, DstPort: dstPort}, nil
+}
+
 func rawToNetip(addrType slayers.AddrType, raw []byte) (netip.Addr, error) {
 	ip := net.IP(raw)
 	switch addrType {
