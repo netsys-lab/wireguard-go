@@ -1361,6 +1361,176 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 }
 
+// TranslateIngressWithFlow performs SCION->IP restoration using Flow endpoints.
+// Restored IP src = remoteAddr:remotePort (Flow.RemoteEndpoint)
+// Restored IP dst = localAddr:localPort (Flow.LocalEndpoint)
+// It parses the outer SCION transport and rebuilds the inner IP packet with
+// the original endpoints, preserving TCP/UDP ports and checksums from the
+// Flow (exact reverse: B:b -> A:a).
+func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Addr, localPort uint16, remoteAddr netip.Addr, remotePort uint16) ([]byte, error) {
+	if len(pktData) == 0 {
+		return nil, fmt.Errorf("empty packet")
+	}
+	// Reuse outer parsing/decoding but build inner from Flow
+	firstNibble := pktData[0] >> 4
+	var pkt gopacket.Packet
+	switch firstNibble {
+	case 4:
+		pkt = gopacket.NewPacket(pktData, layers.LayerTypeIPv4, gopacket.Default)
+		ip4Layer := pkt.Layer(layers.LayerTypeIPv4)
+		if ip4Layer == nil {
+			return nil, fmt.Errorf("no IPv4 layer")
+		}
+		ip4 := ip4Layer.(*layers.IPv4)
+		if ip4.Protocol != layers.IPProtocolUDP {
+			return nil, fmt.Errorf("outer IPv4 not UDP")
+		}
+	case 6:
+		pkt = gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
+		ip6Layer := pkt.Layer(layers.LayerTypeIPv6)
+		if ip6Layer == nil {
+			return nil, fmt.Errorf("no IPv6 layer")
+		}
+		ip6 := ip6Layer.(*layers.IPv6)
+		if ip6.NextHeader != layers.IPProtocolUDP {
+			return nil, fmt.Errorf("outer IPv6 not UDP")
+		}
+	default:
+		return nil, fmt.Errorf("unknown outer IP version")
+	}
+	udpLayer := pkt.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		return nil, fmt.Errorf("no outer UDP")
+	}
+	udpOuter := udpLayer.(*layers.UDP)
+	scionPayload := udpOuter.Payload
+	if len(scionPayload) == 0 {
+		return nil, fmt.Errorf("no SCION payload")
+	}
+	var scn slayers.SCION
+	var udp slayers.UDP
+	var tcp layers.TCP
+	var scmp slayers.SCMP
+	var pld gopacket.Payload
+	parser := gopacket.NewDecodingLayerParser(slayers.LayerTypeSCION, &scn, &udp, &tcp, &scmp, &pld)
+	parser.IgnoreUnsupported = true
+	var decoded []gopacket.LayerType
+	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
+		return nil, fmt.Errorf("SCION decode failed: %w", err)
+	}
+	var l4Layer gopacket.SerializableLayer
+	var l4Payload []byte
+	for _, layerType := range decoded {
+		switch layerType {
+		case slayers.LayerTypeSCION:
+			continue
+		case slayers.LayerTypeSCIONUDP:
+			l4Layer = &udp
+			l4Payload = []byte(pld)
+		case slayers.LayerTypeSCMP:
+			// SCMP should not use flow restoration; fallback to stateless
+			return nil, fmt.Errorf("SCMP not restorable via Flow")
+		case layers.LayerTypeTCP:
+			l4Layer = &tcp
+			l4Payload = append([]byte(nil), tcp.Payload...)
+		}
+	}
+	if l4Layer == nil && scn.NextHdr == slayers.L4TCP {
+		raw := []byte(pld)
+		if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err == nil {
+			l4Layer = &tcp
+			l4Payload = append([]byte(nil), tcp.Payload...)
+		}
+	}
+	if l4Layer == nil {
+		return nil, fmt.Errorf("no L4 for flow restore")
+	}
+	// Build restored inner IP using Flow endpoints
+	var srcIP net.IP
+	var dstIP net.IP
+	if remoteAddr.IsValid() {
+		if remoteAddr.Is4() {
+			b := remoteAddr.As4()
+			srcIP = net.IP(b[:])
+		} else {
+			b := remoteAddr.As16()
+			srcIP = net.IP(b[:])
+		}
+	}
+	if localAddr.IsValid() {
+		if localAddr.Is4() {
+			b := localAddr.As4()
+			dstIP = net.IP(b[:])
+		} else {
+			b := localAddr.As16()
+			dstIP = net.IP(b[:])
+		}
+	}
+	// Ensure 16-byte for IPv6
+	if srcIP != nil && srcIP.To4() == nil {
+		srcIP = srcIP.To16()
+	}
+	if dstIP != nil && dstIP.To4() == nil {
+		dstIP = dstIP.To16()
+	}
+	t.log.Infof(scionlog.ComponentPath, "[SCION->IP] flow restore src=%s:%d dst=%s:%d", ipString(srcIP), remotePort, ipString(dstIP), localPort)
+	// Build inner IPv6 (or IPv4 if both are v4? For now always IPv6 as per current architecture, but support both)
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}
+	// Decide IPv4 vs IPv6 inner based on restored addresses
+	isV4 := srcIP != nil && srcIP.To4() != nil && dstIP != nil && dstIP.To4() != nil
+	if isV4 {
+		ip4 := &layers.IPv4{Version: 4, IHL: 5, TTL: 64, SrcIP: srcIP.To4(), DstIP: dstIP.To4()}
+		switch l := l4Layer.(type) {
+		case *slayers.UDP:
+			ip4.Protocol = layers.IPProtocolUDP
+			inner := &layers.UDP{SrcPort: layers.UDPPort(remotePort), DstPort: layers.UDPPort(localPort)}
+			inner.SetNetworkLayerForChecksum(ip4)
+			if err := gopacket.SerializeLayers(buf, opts, ip4, inner, gopacket.Payload(l4Payload)); err != nil {
+				return nil, err
+			}
+			_ = l
+			return buf.Bytes(), nil
+		case *layers.TCP:
+			ip4.Protocol = layers.IPProtocolTCP
+			inner := &layers.TCP{SrcPort: layers.TCPPort(remotePort), DstPort: layers.TCPPort(localPort), Seq: tcp.Seq, Ack: tcp.Ack, SYN: tcp.SYN, ACK: tcp.ACK, FIN: tcp.FIN, RST: tcp.RST, PSH: tcp.PSH, URG: tcp.URG, ECE: tcp.ECE, CWR: tcp.CWR, NS: tcp.NS, Window: tcp.Window, Options: tcp.Options}
+			inner.SetNetworkLayerForChecksum(ip4)
+			if err := gopacket.SerializeLayers(buf, opts, ip4, inner, gopacket.Payload(l4Payload)); err != nil {
+				return nil, err
+			}
+			return buf.Bytes(), nil
+		}
+	} else {
+		ip6 := &layers.IPv6{Version: 6, SrcIP: srcIP, DstIP: dstIP, HopLimit: 64, FlowLabel: scn.FlowID, TrafficClass: scn.TrafficClass}
+		switch l4Layer.(type) {
+		case *slayers.UDP:
+			ip6.NextHeader = layers.IPProtocolUDP
+			innerUDP := &layers.UDP{SrcPort: layers.UDPPort(remotePort), DstPort: layers.UDPPort(localPort)}
+			innerUDP.SetNetworkLayerForChecksum(ip6)
+			if err := gopacket.SerializeLayers(buf, opts, ip6, innerUDP, gopacket.Payload(l4Payload)); err != nil {
+				return nil, err
+			}
+			return buf.Bytes(), nil
+		case *layers.TCP:
+			ip6.NextHeader = layers.IPProtocolTCP
+			innerTCP := &layers.TCP{SrcPort: layers.TCPPort(remotePort), DstPort: layers.TCPPort(localPort), Seq: tcp.Seq, Ack: tcp.Ack, SYN: tcp.SYN, ACK: tcp.ACK, FIN: tcp.FIN, RST: tcp.RST, PSH: tcp.PSH, URG: tcp.URG, ECE: tcp.ECE, CWR: tcp.CWR, NS: tcp.NS, Window: tcp.Window, Options: tcp.Options}
+			for i, opt := range innerTCP.Options {
+				if opt.OptionType == layers.TCPOptionKindMSS {
+					newMSS := computeMSS(1480)
+					opt.OptionData = []byte{byte(newMSS >> 8), byte(newMSS)}
+					innerTCP.Options[i] = opt
+				}
+			}
+			innerTCP.SetNetworkLayerForChecksum(ip6)
+			if err := gopacket.SerializeLayers(buf, opts, ip6, innerTCP, gopacket.Payload(l4Payload)); err != nil {
+				return nil, err
+			}
+			return buf.Bytes(), nil
+		}
+	}
+	return nil, fmt.Errorf("unsupported L4 for restore")
+}
+
 // mapSCIONHostToIPv6 returns the canonical SCION-mapped IPv6 address for a
 // SCION host address as it is carried on the wire:
 //   - T4Ip (IPv4 host)      -> fc<isd><asn>::ffff:IPv4 (via ScionToIP)

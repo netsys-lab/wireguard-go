@@ -17,6 +17,8 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/flow"
+	"golang.zx2c4.com/wireguard/scionlog"
 	"golang.zx2c4.com/wireguard/translator/header_parsing"
 )
 
@@ -516,47 +518,130 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			}
 
 			if device.translator != nil {
-				oldLen := len(elem.packet)
-
-				// Classify packet to determine if translation is needed
-				class := header_parsing.ClassifyPacket(elem.packet)
-
-				switch class {
-				case header_parsing.ClassPlainIP:
-					// Plain IP: no translation needed, write directly to TUN
-					device.log.Verbosef("[CLASSIFY-INGRESS] packet classified as PlainIP, skipping translation")
-
-				case header_parsing.ClassMappedSCION:
-					// SCION-mapped IPv6: requires translation
-					translated, err := device.translator.TranslateIngress(elem.packet, nil)
+				ingressClass := header_parsing.ClassifyIngress(elem.packet)
+				if ingressClass == header_parsing.ClassPlainIP {
+					device.log.Verbosef("[CLASSIFY-INGRESS] plain IP, skipping SCION handling")
+				} else {
+					// SCION transport: extract tuple and do reverse lookup
+					tup, err := header_parsing.ExtractSCIONTuple(elem.packet)
 					if err != nil {
-						device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
-						continue
-					}
-
-					if translated == nil {
-						device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
-						continue
-					}
-
-					if !bytes.Equal(translated, elem.packet) {
-						if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
-							device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+						// SCMP or parse error: keep stateless translation for compatibility
+						oldLen := len(elem.packet)
+						translated, err := device.translator.TranslateIngress(elem.packet, nil)
+						if err != nil {
+							device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
 							continue
 						}
-
-						copy(elem.buffer[MessageTransportOffsetContent:], translated)
-						elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
-
-						device.log.Verbosef("[TRANSLATE-INGRESS] translated inbound packet oldLen=%d newLen=%d", oldLen, len(translated))
+						if translated == nil {
+							device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+							continue
+						}
+						if !bytes.Equal(translated, elem.packet) {
+							if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+								device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+								continue
+							}
+							copy(elem.buffer[MessageTransportOffsetContent:], translated)
+							elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+						}
+					} else {
+						// Only TCP/UDP participate in flow index; SCMP already handled above
+						if tup.Protocol != flow.ProtocolTCP && tup.Protocol != flow.ProtocolUDP {
+							// stateless for other protos
+							oldLen := len(elem.packet)
+							translated, err := device.translator.TranslateIngress(elem.packet, nil)
+							if err != nil {
+								device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+								continue
+							}
+							if translated == nil {
+								device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+								continue
+							}
+							if !bytes.Equal(translated, elem.packet) {
+								if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+									device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+									continue
+								}
+								copy(elem.buffer[MessageTransportOffsetContent:], translated)
+								elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+							}
+						} else {
+							snap, res := device.lookupSCIONFlow(tup.Protocol, tup.SrcIA, tup.DstIA, tup.SrcHost, tup.DstHost, tup.SrcPort, tup.DstPort)
+							switch res {
+							case SCIONLookupHit:
+								if snap.TrafficClass == flow.ClassNativeSCION {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] flow=%d class=native action=no-translation", snap.ID)
+									// Preserve existing valid forwarding: do not translate, do not write to TUN.
+									// Native SCION forwarding to dispatcher is not yet fully wired; we keep drop-from-TUN.
+									continue
+								}
+								if snap.TrafficClass == flow.ClassMappedSCION {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] hit flow=%d class=mapped", snap.ID)
+									restored, err := device.translator.TranslateIngressWithFlow(elem.packet, snap.LocalEndpoint.Addr, snap.LocalEndpoint.Port, snap.RemoteEndpoint.Addr, snap.RemoteEndpoint.Port)
+									if err != nil {
+										device.log.Verbosef("[SCION->IP] restore failed flow=%d err=%v", snap.ID, err)
+										continue
+									}
+									if len(restored) > MaxMessageSize-MessageTransportOffsetContent {
+										device.log.Errorf("[SCION->IP] restored too large flow=%d len=%d", snap.ID, len(restored))
+										continue
+									}
+									copy(elem.buffer[MessageTransportOffsetContent:], restored)
+									elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(restored)]
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION->IP] flow=%d restored %s:%d -> %s:%d", snap.ID, snap.RemoteEndpoint.Addr.String(), snap.RemoteEndpoint.Port, snap.LocalEndpoint.Addr.String(), snap.LocalEndpoint.Port)
+								} else {
+									// Unclassified: fallback stateless
+									oldLen := len(elem.packet)
+									translated, err := device.translator.TranslateIngress(elem.packet, nil)
+									if err != nil {
+										device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+										continue
+									}
+									if translated == nil {
+										device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+										continue
+									}
+									if !bytes.Equal(translated, elem.packet) {
+										if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+											device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+											continue
+										}
+										copy(elem.buffer[MessageTransportOffsetContent:], translated)
+										elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+									}
+								}
+							case SCIONLookupMiss:
+								if header_parsing.IsTranslatedIngressPort(tup.DstPort) {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] no-flow dstPort=%d action=translate", tup.DstPort)
+									oldLen := len(elem.packet)
+									translated, err := device.translator.TranslateIngress(elem.packet, nil)
+									if err != nil {
+										device.log.Verbosef("[TRANSLATE-INGRESS] failed, dropping inbound packet from %v: %v", peer, err)
+										continue
+									}
+									if translated == nil {
+										device.log.Verbosef("[TRANSLATE-INGRESS] returned nil, dropping inbound packet from %v", peer)
+										continue
+									}
+									if !bytes.Equal(translated, elem.packet) {
+										if len(translated) > MaxMessageSize-MessageTransportOffsetContent {
+											device.log.Errorf("[TRANSLATE-INGRESS] translated packet too large oldLen=%d newLen=%d", oldLen, len(translated))
+											continue
+										}
+										copy(elem.buffer[MessageTransportOffsetContent:], translated)
+										elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
+									}
+								} else {
+									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=no-flow-no-allowed-port proto=%d dstPort=%d", tup.Protocol, tup.DstPort)
+									continue
+								}
+							case SCIONLookupAmbiguous:
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=ambiguous-flow matches=2 proto=%d dstPort=%d", tup.Protocol, tup.DstPort)
+								continue
+							}
+						}
 					}
-
-				case header_parsing.ClassNativeSCION:
-					// Native SCION: forward to local dispatcher/underlay socket
-					// For now, we skip this packet as it should not reach here
-					// (it would have arrived on the underlay socket, not WireGuard)
-					device.log.Verbosef("[CLASSIFY-INGRESS] native SCION on WireGuard ingress (unexpected), skipping")
-					continue
 				}
 			}
 
