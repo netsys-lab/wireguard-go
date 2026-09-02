@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -26,6 +27,20 @@ import (
 	"golang.zx2c4.com/wireguard/translator/pathpool"
 	"golang.zx2c4.com/wireguard/tun"
 )
+
+func ipToNetipAddr(ip net.IP) netip.Addr {
+	if ip4 := ip.To4(); ip4 != nil {
+		var b [4]byte
+		copy(b[:], ip4)
+		return netip.AddrFrom4(b)
+	}
+	if ip16 := ip.To16(); ip16 != nil {
+		var b [16]byte
+		copy(b[:], ip16)
+		return netip.AddrFrom16(b)
+	}
+	return netip.Addr{}
+}
 
 /* Outbound flow
  *
@@ -277,9 +292,43 @@ func (device *Device) RoutineReadFromTUN() {
 				}
 				dst := elem.packet[IPv4offsetDst : IPv4offsetDst+net.IPv4len]
 				peer = device.allowedips.Lookup(dst)
-
-				if device.flowManager != nil {
+				// Check for native SCION outer before normal IP flow creation
+				egressClass := flow.TrafficClass(header_parsing.ClassifyEgress(pkt))
+				if egressClass == flow.ClassNativeSCION {
+					// Native SCION over IPv4: extract tuple, register flow
+					if device.flowManager != nil {
+						if tup, err := header_parsing.ExtractSCIONTuple(pkt); err == nil {
+							md := flow.PacketMetadata{
+								IPVersion:    4,
+								Protocol:     tup.Protocol,
+								Source:       flow.Endpoint{Addr: tup.SrcHost, Port: tup.SrcPort},
+								Destination:  flow.Endpoint{Addr: tup.DstHost, Port: tup.DstPort},
+								SrcIA:        tup.SrcIA.String(),
+								DstIA:        tup.DstIA.String(),
+								TrafficClass: flow.ClassNativeSCION,
+							}
+							// EgressKind scion for native
+							snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
+							if created {
+								device.log.Verbosef("Flow created: id=%d egress=%s class=native protocol=%s", snap.ID, snap.EgressKind, snap.ProtocolName())
+							}
+							device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] register flow=%d class=native scion=%s,%s:%d -> %s,%s:%d", snap.ID, tup.SrcIA, tup.SrcHost.String(), tup.SrcPort, tup.DstIA, tup.DstHost.String(), tup.DstPort)
+							device.rememberSCIONFlow(snap.ID, tup.Protocol, tup.SrcIA, tup.DstIA, tup.SrcHost, tup.DstHost, tup.SrcPort, tup.DstPort)
+							// Native egress still needs SCIONEgressState for path UI if needed
+							device.rememberSCIONEgress(snap.ID, tup.SrcIA, tup.DstIA)
+						} else if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+							md.TrafficClass = flow.ClassNativeSCION
+							snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
+							if created {
+								device.log.Verbosef("Flow created: id=%d egress=%s class=native", snap.ID, snap.EgressKind)
+							}
+							_ = snap
+							_ = created
+						}
+					}
+				} else if device.flowManager != nil {
 					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						md.TrafficClass = flow.ClassPlainIP
 						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
 							device.log.Verbosef(
 								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
@@ -312,7 +361,7 @@ func (device *Device) RoutineReadFromTUN() {
 						"[SCION-EGRESS] packetId=%d event=peer-selected-original-dst lookupDst=%s",
 						packetID, dstIP.String())
 
-					//Flow Manager with Scion call
+					//Flow Manager with Scion call - mapped
 					if device.flowManager != nil {
 						if md, err := flow.ParsePacketMetadata(pkt); err == nil {
 							var scionSrcIA, scionDstIA addr.IA
@@ -324,17 +373,36 @@ func (device *Device) RoutineReadFromTUN() {
 								scionSrcIA = mapped.SrcIA
 								scionDstIA = mapped.DstIA
 							}
+							md.TrafficClass = flow.ClassMappedSCION
 							snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
 							if created {
 								device.log.Verbosef(
-									"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+									"Flow created: id=%d egress=%s class=mapped protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
 									snap.ID, snap.EgressKind, snap.ProtocolName(),
 									snap.EndpointA, snap.EndpointB,
 									snap.TxPackets, snap.TxBytes,
 								)
 							}
+							if snap.TrafficClass == flow.ClassMappedSCION {
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] register flow=%d class=mapped scion=%s -> %s", snap.ID, scionSrcIA, scionDstIA)
+							}
 							if mapErr == nil {
 								device.rememberSCIONEgress(snap.ID, scionSrcIA, scionDstIA)
+							}
+							// Register actual SCION wire tuple for reverse lookup
+							if mapErr == nil && (md.Protocol == flow.ProtocolTCP || md.Protocol == flow.ProtocolUDP) {
+								// Resolve actual src host (translator reachable)
+								var srcHostIP net.IP
+								if ip4, err := device.translator.WGSrcIPv4(); err == nil {
+									srcHostIP = ip4
+								} else {
+									srcHostIP = net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
+								}
+								srcHost := ipToNetipAddr(srcHostIP)
+								dstHost := mapped.Host
+								if srcHost.IsValid() && dstHost.IsValid() {
+									device.rememberSCIONFlow(snap.ID, md.Protocol, scionSrcIA, scionDstIA, srcHost, dstHost, md.Source.Port, md.Destination.Port)
+								}
 							}
 						} else {
 							device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=scion err=%v packetLen=%d ipVersion=6", err, len(pkt))
@@ -377,22 +445,56 @@ func (device *Device) RoutineReadFromTUN() {
 					sizes[i] = len(newpkt)
 					device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] packetId=%d event=outer-built bytes=%d duration=%v", packetID, len(newpkt), translateDur)
 				} else {
-					// Not SCION-mapped - normal lookup
-					peer = device.allowedips.Lookup(dst)
-
-					//Flow manager if Ipv6 and not scion
-					if device.flowManager != nil {
-						if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-							if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
-								device.log.Verbosef(
-									"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
-									snap.ID, snap.EgressKind, snap.ProtocolName(),
-									snap.EndpointA, snap.EndpointB,
-									snap.TxPackets, snap.TxBytes,
-								)
+					// Not SCION-mapped - check native SCION outer vs plain
+					egressClass2 := flow.TrafficClass(header_parsing.ClassifyEgress(pkt))
+					if egressClass2 == flow.ClassNativeSCION {
+						peer = device.allowedips.Lookup(dst)
+						if device.flowManager != nil {
+							if tup, err := header_parsing.ExtractSCIONTuple(pkt); err == nil {
+								md := flow.PacketMetadata{
+									IPVersion:    6,
+									Protocol:     tup.Protocol,
+									Source:       flow.Endpoint{Addr: tup.SrcHost, Port: tup.SrcPort},
+									Destination:  flow.Endpoint{Addr: tup.DstHost, Port: tup.DstPort},
+									SrcIA:        tup.SrcIA.String(),
+									DstIA:        tup.DstIA.String(),
+									TrafficClass: flow.ClassNativeSCION,
+								}
+								snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
+								if created {
+									device.log.Verbosef("Flow created: id=%d egress=%s class=native", snap.ID, snap.EgressKind)
+								}
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] register flow=%d class=native scion=%s,%s:%d -> %s,%s:%d", snap.ID, tup.SrcIA, tup.SrcHost.String(), tup.SrcPort, tup.DstIA, tup.DstHost.String(), tup.DstPort)
+								device.rememberSCIONFlow(snap.ID, tup.Protocol, tup.SrcIA, tup.DstIA, tup.SrcHost, tup.DstHost, tup.SrcPort, tup.DstPort)
+								device.rememberSCIONEgress(snap.ID, tup.SrcIA, tup.DstIA)
+							} else if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+								md.TrafficClass = flow.ClassNativeSCION
+								snap, _ := device.flowManager.ObserveTx(md, len(pkt), "scion")
+								_ = snap
+							} else {
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=native err=%v", err)
 							}
-						} else {
-							device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=ip err=%v packetLen=%d ipVersion=6", err, len(pkt))
+						}
+						// For native, peer lookup already done via dst (outer IP) – keep peer for forwarding without translation
+						// Skip translation attempt; native packet will be handled as is (no ReadOutboundPacket)
+						// Fall through to peer queuing with original pkt (no translation)
+					} else {
+						peer = device.allowedips.Lookup(dst)
+						//Flow manager if Ipv6 and not scion
+						if device.flowManager != nil {
+							if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+								md.TrafficClass = flow.ClassPlainIP
+								if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {
+									device.log.Verbosef(
+										"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
+										snap.ID, snap.EgressKind, snap.ProtocolName(),
+										snap.EndpointA, snap.EndpointB,
+										snap.TxPackets, snap.TxBytes,
+									)
+								}
+							} else {
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[FLOW] event=parse-failed egress=ip err=%v packetLen=%d ipVersion=6", err, len(pkt))
+							}
 						}
 					}
 
@@ -404,6 +506,7 @@ func (device *Device) RoutineReadFromTUN() {
 				//Flow Manager Kind Unknow if not v6 or v4
 				if device.flowManager != nil {
 					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+						md.TrafficClass = flow.ClassPlainIP
 						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "unknown"); created {
 							device.log.Verbosef(
 								"Flow created: id=%d egress=%s protocol=%s endpoint_a=%s endpoint_b=%s tx_packets=%d tx_bytes=%d",
