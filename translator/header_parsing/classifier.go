@@ -65,7 +65,7 @@ func ClassifyEgress(packet []byte) uint8 {
 	if version == 6 && len(packet) >= 40 {
 		if packet[24] == 0xfc {
 			nextHeader := packet[6]
-			if nextHeader == 6 || nextHeader == 17 {
+			if nextHeader == 6 || nextHeader == 17 || nextHeader == 58 {
 				return ClassMappedSCION
 			}
 		}
@@ -137,99 +137,66 @@ func ClassifyPacket(packet []byte) uint8 {
 }
 
 // isNativeSCIONPacket detects outer IPv4/UDP/SCION or IPv6/UDP/SCION
-// with accepted port and SCION common header version 0.
+// with valid SCION header. For egress native detection, destination port is
+// NOT required to be 30041 – any router port (31002/31004/...) with valid SCION
+// is native. We use authoritative SCION decode to avoid false positives.
 func isNativeSCIONPacket(packet []byte) bool {
-	if len(packet) < 20 {
-		return false
-	}
-	version := packet[0] >> 4
-	if version == 4 {
-		return isNativeSCIONOverIPv4(packet)
-	}
-	if version == 6 {
-		return isNativeSCIONOverIPv6(packet)
-	}
-	return false
+	return isValidOuterSCION(packet)
 }
 
 func isNativeSCIONOverIPv4(packet []byte) bool {
-	if len(packet) < 20 {
-		return false
-	}
-	ihl := int(packet[0]&0x0f) * 4
-	if ihl < 20 || ihl > len(packet) {
-		return false
-	}
-	if packet[9] != 17 { // UDP
-		return false
-	}
-	if len(packet) < ihl+8 {
-		return false
-	}
-	dstPort := binary.BigEndian.Uint16(packet[ihl+2 : ihl+4])
-	if !isNativeSCIONPort(dstPort) {
-		return false
-	}
-	payloadOff := ihl + 8
-	if len(packet) < payloadOff+1 {
-		return false
-	}
-	return packet[payloadOff]>>4 == 0
+	return isValidOuterSCION(packet)
 }
 
 func isNativeSCIONOverIPv6(packet []byte) bool {
-	if len(packet) < 40 {
-		return false
-	}
-	if packet[6] != 17 {
-		return false
-	}
-	if len(packet) < 44 {
-		return false
-	}
-	dstPort := binary.BigEndian.Uint16(packet[42:44])
-	if !isNativeSCIONPort(dstPort) {
-		return false
-	}
-	payloadOff := 40 + 8
-	if len(packet) < payloadOff+1 {
-		return false
-	}
-	return packet[payloadOff]>>4 == 0
+	return isValidOuterSCION(packet)
 }
 
 func isSCIONTransport(packet []byte) bool {
+	return isValidOuterSCION(packet)
+}
+
+func isValidOuterSCION(packet []byte) bool {
 	if len(packet) < 20 {
 		return false
 	}
 	version := packet[0] >> 4
-	var payloadOff int
-	var udpDstPort uint16
-	if version == 4 {
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return false
+		}
 		ihl := int(packet[0]&0x0f) * 4
-		if ihl < 20 || ihl > len(packet) || packet[9] != 17 {
+		if ihl < 20 || ihl > len(packet) {
+			return false
+		}
+		if packet[9] != 17 {
 			return false
 		}
 		if len(packet) < ihl+8 {
 			return false
 		}
-		udpDstPort = binary.BigEndian.Uint16(packet[ihl+2 : ihl+4])
-		payloadOff = ihl + 8
-	} else if version == 6 {
-		if len(packet) < 40 || packet[6] != 17 {
+		payloadOff := ihl + 8
+		if len(packet) < payloadOff+1 {
+			return false
+		}
+		return packet[payloadOff]>>4 == 0
+	case 6:
+		if len(packet) < 40 {
+			return false
+		}
+		if packet[6] != 17 {
 			return false
 		}
 		if len(packet) < 44 {
 			return false
 		}
-		udpDstPort = binary.BigEndian.Uint16(packet[42:44])
-		payloadOff = 40 + 8
-	} else {
+		payloadOff := 40 + 8
+		if len(packet) < payloadOff+1 {
+			return false
+		}
+		return packet[payloadOff]>>4 == 0
+	default:
 		return false
 	}
-	_ = udpDstPort
-	if len(packet) < payloadOff+1 {
-		return false
-	}
-	return packet[payloadOff]>>4 == 0
 }
