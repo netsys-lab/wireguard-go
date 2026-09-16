@@ -4,7 +4,7 @@ name: Integration Tests
 # or when a pull request is opened/updated against the main branch.
 on:
   push:
-    branches: [ "**" ]
+    branches: [ "feature/integration-tests-and-ci" ]
   pull_request:
     branches: [ "main" ]
 
