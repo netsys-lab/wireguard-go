@@ -52,7 +52,7 @@ export SCION_DIR
 # Check Python dependencies for SCION topogen
 if ! python3 -c 'import toml, yaml, plumbum, supervisor, supervisorwildcards, six' 2>/dev/null; then
     log_error "Missing Python dependencies for SCION."
-    log_error "Please ensure you have installed the requirements for topogen.py (e.g. pip install -r env/pip3/requirements.txt)."
+    log_error "Please ensure you have installed the requirements for topogen.py (e.g. pip install -r tools/env/pip3/requirements.txt)."
     exit 1
 fi
 

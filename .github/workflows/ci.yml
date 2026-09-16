@@ -29,7 +29,7 @@ jobs:
         git clone https://github.com/scionproto/scion.git /home/runner/scion
         cd /home/runner/scion
         go build -o bin/ ./router/... ./control/... ./dispatcher/... ./daemon/... ./scion/... ./scion-pki/...
-        python3 -m pip install -r env/pip3/requirements.txt
+        python3 -m pip install --break-system-packages -r tools/env/pip3/requirements.txt
 
     # 4. Install Scitra-TUN components
     - name: Install Scitra-TUN
