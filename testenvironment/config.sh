@@ -44,26 +44,9 @@ if [[ -d "$SCION_PYTHON_DEPS_DIR" ]]; then
     export PYTHONPATH="$SCION_PYTHON_DEPS_DIR${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
-# SCION can either be managed by this test environment or supplied by the user.
-# A persisted selection wins over the initial default on later script invocations.
-_scion_dir_from_env="${SCION_DIR:-}"
-_scion_source_from_env="${SCION_SOURCE:-}"
-if [[ -f "$SCION_STATE_FILE" && ( -z "$_scion_source_from_env" || "$_scion_source_from_env" == "unconfigured" ) ]]; then
-    # shellcheck disable=SC1090
-    source "$SCION_STATE_FILE"
-fi
-if [[ -z "${SCION_DIR:-}" ]]; then
-    export SCION_DIR="$SCION_MANAGED_DIR"
-fi
-if [[ -z "${SCION_SOURCE:-}" ]]; then
-    if [[ -n "$_scion_dir_from_env" && "$_scion_dir_from_env" != "$SCION_MANAGED_DIR" ]]; then
-        export SCION_SOURCE="external"
-    elif [[ -d "$SCION_MANAGED_DIR/.git" ]]; then
-        export SCION_SOURCE="managed"
-    else
-        export SCION_SOURCE="unconfigured"
-    fi
-fi
+# SCION directory must be provided by the user via environment variable.
+# Fallback to the scion checkout in the parent Scintra workspace if not provided.
+export SCION_DIR="${SCION_DIR:-$(realpath "$SCRIPT_DIR/../../scion" 2>/dev/null || echo "$HOME/scion")}"
 export SCION_TOPOLOGY="${SCION_TOPOLOGY:-$TESTENV_DIR/topology/scion-ring-3isd.topo}"
 
 # Optional translator path policy. Reuse one from the repository/SCION checkout
@@ -192,35 +175,9 @@ export REFERENCE_SCITRA_IP_FILE="${REFERENCE_SCITRA_IP_FILE:-$STATE_DIR/referenc
 # -----------------------------------------------------------------------------
 # Dependency management
 # -----------------------------------------------------------------------------
-# Minimum Go version required by the pinned SCION checkout. If the system Go is
-# missing or too old, the user can choose between a test-local Go under .deps/go,
-# a system-wide Go under /usr/local/go, or another existing Go installation.
-export GO_VERSION="${GO_VERSION:-1.24.2}"
-export MANAGED_GO_VERSION="${MANAGED_GO_VERSION:-1.24.12}"
-export MANAGED_GO_DIR="${MANAGED_GO_DIR:-$DEPS_DIR/go}"
-export SYSTEM_GO_DIR="${SYSTEM_GO_DIR:-/usr/local/go}"
-export SYSTEM_GO_PROFILE="${SYSTEM_GO_PROFILE:-/etc/profile.d/go-testenvironment.sh}"
-_go_bin_from_env="${GO_BIN:-}"
-_go_source_from_env="${GO_SOURCE:-}"
-if [[ -f "$GO_STATE_FILE" && -z "$_go_bin_from_env" && -z "$_go_source_from_env" ]]; then
-    # shellcheck disable=SC1090
-    source "$GO_STATE_FILE"
-fi
+export GO_VERSION="${GO_VERSION:-1.21.0}"
 if [[ -z "${GO_BIN:-}" ]]; then
     export GO_BIN="$(command -v go 2>/dev/null || true)"
-fi
-if [[ -z "${GO_SOURCE:-}" ]]; then
-    if [[ -n "$_go_bin_from_env" ]]; then
-        export GO_SOURCE="external"
-    elif [[ "$GO_BIN" == "$MANAGED_GO_DIR/bin/go" ]]; then
-        export GO_SOURCE="managed"
-    elif [[ "$GO_BIN" == "$SYSTEM_GO_DIR/bin/go" && -f "$SYSTEM_GO_MARKER" ]]; then
-        export GO_SOURCE="system-managed"
-    elif [[ -n "$GO_BIN" ]]; then
-        export GO_SOURCE="system"
-    else
-        export GO_SOURCE="unconfigured"
-    fi
 fi
 
 # Go module/build caches used by this testenvironment are isolated under .deps,
@@ -288,10 +245,7 @@ Repository:       $REPO_ROOT
 Test environment: $TESTENV_DIR
 Runtime:          $RUNTIME_DIR
 SCION checkout:   $SCION_DIR
-SCION source:     $SCION_SOURCE
-Expected ref:     $SCION_REF
 Topology:         $SCION_TOPOLOGY
-Go source:        ${GO_SOURCE:-/home/jonas/wg-go-app/wireguard-go}
 Go binary:        ${GO_BIN:-/usr/bin/go}
 
 Namespaces:

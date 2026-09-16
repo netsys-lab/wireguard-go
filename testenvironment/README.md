@@ -1,11 +1,65 @@
 # SCION / WireGuard / Scitra Test Environment
 
-## Start
+This directory provides a local, reproducible sandbox to build, deploy, and verify our extended `wireguard-go` implementation and its translation layer.
+
+Instead of running invasive system-wide installation scripts, this setup relies on isolated Linux network namespaces (`ip netns`) and assumes standard build tools are already present on your host.
+
+---
+
+## Prerequisites
+
+Ensure the following tools and repositories are configured on your Linux system (Ubuntu/Debian recommended) before starting the test environment.
+
+### 1. Standard Host Packages
+Install standard networking and build utilities:
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git iproute2 iputils-ping wireguard-tools socat xxd jq python3 python3-pip python3-yaml supervisor procps tar gzip tcpdump netcat-openbsd
+```
+
+### 2. Go Toolchain (>= 1.21)
+The test environment requires Go 1.21 or newer to compile `wireguard-go`.
+```bash
+# E.g., install via snap or download from go.dev
+sudo snap install go --classic
+```
+
+### 3. SCION Source Checkout
+The test topology relies on SCION's local generator (`topogen.py`). You must clone SCION and build the required binaries:
+```bash
+git clone https://github.com/scionproto/scion.git
+cd scion
+# Build required binaries
+go build -o bin/ ./router/... ./control/... ./dispatcher/... ./daemon/... ./scion/... ./scion-pki/...
+# Prepare Python dependencies for topogen.py
+python3 -m pip install -r env/pip3/requirements.txt
+```
+When running the setup, provide the path to this checkout via the `SCION_DIR` environment variable.
+
+### 4. Scitra-TUN Translation Layer
+Install the Scitra-TUN components required for the reference target side:
+```bash
+# Add the custom APT repository for Scitra
+sudo curl -fsSL https://lcschulz.de/scion/gpg/scion-lcschulz -o /usr/share/keyrings/scion-lcschulz.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/scion-lcschulz.gpg] https://lcschulz.de/scion/apt $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/scion-lcschulz.list
+
+# Install packages
+sudo apt-get update
+sudo apt-get install -y scitra-tun scion++-tools
+```
+
+---
+
+## Quickstart
+
+Once all prerequisites are met, run the setup script. Be sure to provide the `SCION_DIR` path!
 
 ```bash
 cd testenvironment
 chmod +x testenvironment.bash
-sudo ./testenvironment.bash
+
+# Export your SCION directory path or provide it inline
+sudo SCION_DIR=/path/to/your/scion ./testenvironment.bash
 ```
 
 The normal startup builds and verifies the complete infrastructure **without sending a SCION-mapped IPv6 request through our custom translator**.
@@ -13,7 +67,8 @@ The normal startup builds and verifies the complete infrastructure **without sen
 ## Startup order
 
 ```text
-0  Dependencies / Go / SCION tools
+0  Dependencies / Pre-flight check
+   └─ Fails fast if any prerequisite from above is missing
 
 1  Create namespaces + veth links
    ├─ Client
@@ -254,8 +309,6 @@ sudo ./testenvironment.bash status
 sudo ./testenvironment.bash test
 sudo ./testenvironment.bash down
 sudo ./testenvironment.bash clean
-sudo ./testenvironment.bash purge
-sudo ./testenvironment.bash uninstall
 ```
 
 ## Important logs
