@@ -1,7 +1,5 @@
-name: Integration Tests
+name: CI Pipeline
 
-# This workflow runs automatically whenever code is pushed to any branch,
-# or when a pull request is opened/updated against the main branch.
 on:
   push:
     branches: [ "feature/integration-tests-and-ci" ]
@@ -9,28 +7,54 @@ on:
     branches: [ "main" ]
 
 jobs:
-  test:
+  unit-tests:
+    name: Build & Unit Tests
     runs-on: ubuntu-24.04
-    
     steps:
-    # 1. Check out our wireguard-go repository
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1.5 Setup Go and automatically cache Go modules (used when building wireguard-go)
     - name: Setup Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.24.x'
         cache: true
 
-    # 2. Install prerequisites (Go is usually pre-installed on GitHub runners, but we ensure packages are there)
+    - name: Run Unit Tests
+      run: go test -v ./...
+
+    - name: Build wireguard-go
+      run: go build -v -o wireguard-go .
+
+    - name: Upload wireguard-go Binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: wireguard-go-binary
+        path: wireguard-go
+        retention-days: 1
+
+  integration-tests:
+    name: Integration Tests
+    needs: unit-tests
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Download wireguard-go Binary
+      uses: actions/download-artifact@v4
+      with:
+        name: wireguard-go-binary
+        path: .
+
+    - name: Make Binary Executable
+      run: chmod +x wireguard-go
+
     - name: Install Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y ca-certificates curl git iproute2 iputils-ping wireguard-tools socat xxd jq python3 python3-pip python3-yaml supervisor procps tar gzip tcpdump netcat-openbsd iperf3
 
-    # 3. Cache the SCION binaries so we don't have to recompile it every time
     - name: Cache SCION
       id: cache-scion
       uses: actions/cache@v4
@@ -38,7 +62,6 @@ jobs:
         path: /home/runner/scion
         key: ${{ runner.os }}-scion-v1
 
-    # 4. Download and build SCION (only if it wasn't restored from cache)
     - name: Setup SCION Source
       if: steps.cache-scion.outputs.cache-hit != 'true'
       run: |
@@ -51,7 +74,6 @@ jobs:
         ln -sf $(which supervisord) bin/supervisord
         ln -sf $(which supervisorctl) bin/supervisorctl
 
-    # 4. Install Scitra-TUN components
     - name: Install Scitra-TUN
       run: |
         sudo curl -fsSL https://lcschulz.de/scion/gpg/scion-lcschulz -o /usr/share/keyrings/scion-lcschulz.gpg
@@ -59,15 +81,14 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y scitra-tun scion++-tools
 
-    # 5. Start the test environment explicitly to capture logs if it fails
     - name: Start Test Environment
       env:
         SCION_DIR: /home/runner/scion
+        SKIP_WG_BUILD: "1"
       run: |
         cd testenvironment
-        sudo -E env "PATH=$PATH" ./testenvironment.bash up
+        sudo -E env "PATH=$PATH" "SKIP_WG_BUILD=$SKIP_WG_BUILD" ./testenvironment.bash up
 
-    # 6. Run the Integration Tests
     - name: Run Integration Test Suite
       env:
         SCION_DIR: /home/runner/scion

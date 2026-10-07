@@ -22,7 +22,13 @@ func TestFormatting(t *testing.T) {
 			t.Errorf("unable to walk %s: %v", path, err)
 			return nil
 		}
-		if d.IsDir() || filepath.Ext(path) != ".go" {
+		if d.IsDir() {
+			if d.Name() == "testenvironment" || d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" {
 			return nil
 		}
 		wg.Add(1)

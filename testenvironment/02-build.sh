@@ -11,6 +11,14 @@ REPO_WG_BINARY="$REPO_ROOT/wireguard-go"
 build_wireguard_go() {
     [[ -f "$REPO_ROOT/go.mod" ]] || { log_error "go.mod not found at repository root: $REPO_ROOT"; return 1; }
     log_info "Building custom wireguard-go from $REPO_ROOT"
+    
+    if [[ "${SKIP_WG_BUILD:-0}" == "1" && -f "$REPO_WG_BINARY" ]]; then
+        log_success "SKIP_WG_BUILD is set. Using pre-built wireguard-go binary from $REPO_WG_BINARY"
+        mkdir -p "$BIN_DIR"
+        ln -sfn "$REPO_WG_BINARY" "$BIN_DIR/wireguard-go"
+        return 0
+    fi
+
     if [[ -f "$REPO_WG_BINARY" ]]; then
         log_success "Existing wireguard-go binary found in project root: $REPO_WG_BINARY"
         log_info "Refreshing it with 'go build'; Go reuses its persistent build cache and recompiles only what changed."
