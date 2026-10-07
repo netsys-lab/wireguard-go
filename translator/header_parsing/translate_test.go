@@ -2197,108 +2197,27 @@ func TestSCMPOuterSrcPortUsesDispatcherPort(t *testing.T) {
 		t.Errorf("same-AS dispatch port = %d, expected dispatcher port %d (SCMP has no inner L4 port)", nextHop.Port, DefaultSCIONEndhostPort)
 	}
 
-	// Verify the SCMPEcho info block: identifier carries the original ICMPv6
-	// echo ID (short-payload fallback), sequence is preserved.
+	// Verify the SCMPEcho info block: identifier is the dispatcher port, sequence is preserved.
 	scmpEcho := decodeSCMPEchoFromOuter(t, out)
-	if scmpEcho.Identifier != echoID {
-		t.Errorf("SCMPEcho Identifier = %d, expected original ICMPv6 echo ID %d (short-payload fallback)", scmpEcho.Identifier, echoID)
+	if scmpEcho.Identifier != DefaultSCIONEndhostPort {
+		t.Errorf("SCMPEcho Identifier = %d, expected dispatcher port %d", scmpEcho.Identifier, DefaultSCIONEndhostPort)
 	}
 	if scmpEcho.SeqNumber != 1 {
 		t.Errorf("SCMPEcho SeqNumber = %d, expected 1", scmpEcho.SeqNumber)
 	}
 }
 
-func TestSCMPEchoRequestStashesOriginalID(t *testing.T) {
-	// Egress Echo Request with a data block >= 18 bytes: the SCMPEcho
-	// identifier is the well-known end-host/dispatcher port and the original
-	// ICMPv6 identifier is stashed at data bytes 16..17.
-	const origID uint16 = 4242
-	const seq uint16 = 7
-
-	data := bytes.Repeat([]byte{0xAB}, 32)
-	binary.BigEndian.PutUint16(data[16:18], 0xBEEF) // payload content that gets overwritten by the stash
-
-	echoReq := make([]byte, 4+len(data))
-	binary.BigEndian.PutUint16(echoReq[0:2], origID)
-	binary.BigEndian.PutUint16(echoReq[2:4], seq)
-	copy(echoReq[4:], data)
-
-	scmpPayload := buildSCMPEchoPayload(slayers.SCMPTypeEchoRequest, echoReq, noopLog)
-
-	if len(scmpPayload) != 4+len(data) {
-		t.Fatalf("unexpected SCMP payload len %d, want %d", len(scmpPayload), 4+len(data))
-	}
-	if id := binary.BigEndian.Uint16(scmpPayload[0:2]); id != DefaultSCIONEndhostPort {
-		t.Errorf("SCMPEcho Identifier = %d, expected dispatcher port %d", id, DefaultSCIONEndhostPort)
-	}
-	if s := binary.BigEndian.Uint16(scmpPayload[2:4]); s != seq {
-		t.Errorf("SCMPEcho SeqNumber = %d, expected %d", s, seq)
-	}
-	if stashed := binary.BigEndian.Uint16(scmpPayload[4+scmpEchoIdentifierStashOffset : 4+scmpEchoIdentifierStashOffset+2]); stashed != origID {
-		t.Errorf("stashed original ID = %d, expected %d", stashed, origID)
-	}
-}
-
-func TestSCMPEchoShortPayloadKeepsOriginalID(t *testing.T) {
-	// Egress Echo Request with a data block < 18 bytes: there is no room to
-	// stash the original identifier, so it is kept in the SCMPEcho identifier
-	// field (documented fallback) and the data is unchanged.
-	const origID uint16 = 9999
-	const seq uint16 = 3
-
-	echoReq := make([]byte, 4+4)
-	binary.BigEndian.PutUint16(echoReq[0:2], origID)
-	binary.BigEndian.PutUint16(echoReq[2:4], seq)
-	copy(echoReq[4:], []byte("data"))
-
-	scmpPayload := buildSCMPEchoPayload(slayers.SCMPTypeEchoRequest, echoReq, noopLog)
-
-	if id := binary.BigEndian.Uint16(scmpPayload[0:2]); id != origID {
-		t.Errorf("SCMPEcho Identifier = %d, expected original ICMPv6 ID %d (short-payload fallback)", id, origID)
-	}
-	if !bytes.Equal(scmpPayload[4:], echoReq[4:]) {
-		t.Errorf("short-payload data was modified")
-	}
-}
-
-func TestSCMPEchoReplyKeepsRequestID(t *testing.T) {
-	// Egress Echo Reply: the SCMPEcho identifier must carry the original
-	// ICMPv6 identifier (the request's identifier) so routers route the reply
-	// to the correct destination port, and the data must be returned
-	// unmodified.
-	const reqID uint16 = 5555
-	const seq uint16 = 9
-
-	reply := make([]byte, 4+32)
-	binary.BigEndian.PutUint16(reply[0:2], reqID)
-	binary.BigEndian.PutUint16(reply[2:4], seq)
-	for i := 4; i < len(reply); i++ {
-		reply[i] = byte(i)
-	}
-
-	scmpPayload := buildSCMPEchoPayload(slayers.SCMPTypeEchoReply, reply, noopLog)
-
-	if id := binary.BigEndian.Uint16(scmpPayload[0:2]); id != reqID {
-		t.Errorf("SCMPEcho Identifier = %d, expected request ID %d", id, reqID)
-	}
-	if s := binary.BigEndian.Uint16(scmpPayload[2:4]); s != seq {
-		t.Errorf("SCMPEcho SeqNumber = %d, expected %d", s, seq)
-	}
-	if !bytes.Equal(scmpPayload[4:], reply[4:]) {
-		t.Errorf("reply data was modified; must be returned unmodified")
-	}
-}
-
 func TestSCMPEchoRoundTrip(t *testing.T) {
 	// Full round trip of a ping: ICMPv6 Echo Request -> SCMP Echo Request
 	// (dispatcher port + stashed ID) -> SCMP Echo Reply (echoed) -> ICMPv6
-	// Echo Reply with the original identifier restored.
+	// Echo Reply with the original identifier restored via icmpStash.
 	const origID uint16 = 4242
 	const seq uint16 = 7
 
 	data := bytes.Repeat([]byte{0xCD}, 32)
 
 	tr := newSameASTranslator(t)
+	srcIP := mustParseIP(t, "fd42:42:42::72")
 
 	// 1) Egress: ICMPv6 Echo Request -> SCION/SCMP Echo Request.
 	req := buildIPv6Packet(t, layers.IPProtocolICMPv6, sameASDst(t),
@@ -2306,7 +2225,7 @@ func TestSCMPEchoRoundTrip(t *testing.T) {
 		&layers.ICMPv6Echo{Identifier: origID, SeqNumber: seq},
 		gopacket.Payload(data))
 
-	outReq, _, err := tr.TranslateEgress(req, mustParseIP(t, "fd42:42:42::72"), 35000, emptyPathCallback)
+	outReq, _, err := tr.TranslateEgress(req, srcIP, 35000, emptyPathCallback)
 	if err != nil {
 		t.Fatalf("TranslateEgress (request) failed: %v", err)
 	}
@@ -2315,12 +2234,6 @@ func TestSCMPEchoRoundTrip(t *testing.T) {
 	scmpEchoReq, reqPayload := decodeSCMPEchoAndData(t, outerReq.Payload)
 	if scmpEchoReq.Identifier != DefaultSCIONEndhostPort {
 		t.Fatalf("SCMP Echo Request identifier = %d, expected dispatcher port %d", scmpEchoReq.Identifier, DefaultSCIONEndhostPort)
-	}
-	if len(reqPayload) < 4+scmpEchoMinStashDataLen {
-		t.Fatalf("request data too short for stash: %d", len(reqPayload))
-	}
-	if got := binary.BigEndian.Uint16(reqPayload[scmpEchoIdentifierStashOffset:]); got != origID {
-		t.Fatalf("request data does not carry original ID: got %d want %d", got, origID)
 	}
 
 	// 2) Remote SCION SCMP responder echoes identifier + seq + data.
@@ -2346,8 +2259,8 @@ func TestSCMPEchoRoundTrip(t *testing.T) {
 	}
 
 	// 4) Wrap in outer IPv6/UDP and run ingress.
-	wrapped := wrapSCIONInOuter(t, sameASDst(t), net.ParseIP("fd42:42:42::72"), scionReply)
-	ipBytes, err := tr.TranslateIngress(wrapped, mustParseIP(t, "fd42:42:42::72"))
+	wrapped := wrapSCIONInOuter(t, sameASDst(t), srcIP, scionReply)
+	ipBytes, err := tr.TranslateIngress(wrapped, srcIP)
 	if err != nil {
 		t.Fatalf("TranslateIngress failed: %v", err)
 	}
@@ -2372,11 +2285,6 @@ func TestSCMPEchoRoundTrip(t *testing.T) {
 	}
 	if echo.SeqNumber != seq {
 		t.Errorf("reconstructed ICMPv6 sequence = %d, expected %d", echo.SeqNumber, seq)
-	}
-	// The data block still carries the stashed ID at bytes 16..17; the
-	// original data is otherwise returned unmodified.
-	if got := binary.BigEndian.Uint16(icmp.Payload[4+scmpEchoIdentifierStashOffset : 4+scmpEchoIdentifierStashOffset+2]); got != origID {
-		t.Errorf("reply data stash = %d, expected original ID %d", got, origID)
 	}
 }
 

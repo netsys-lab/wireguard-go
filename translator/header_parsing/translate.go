@@ -1678,7 +1678,7 @@ func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, srcIP net.IP, l
 	echoID := origID
 	if scmpType == slayers.SCMPTypeEchoRequest {
 		echoID = DefaultSCIONEndhostPort
-		
+
 		icmpStashMu.Lock()
 		icmpStash[seq] = icmpStashEntry{
 			origID: origID,

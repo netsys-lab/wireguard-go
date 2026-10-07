@@ -36,7 +36,7 @@ func checkAndGeneratePTB(pkt []byte) []byte {
 		} else if mf || offset > 0 {
 			needsPTB = true
 		}
-		
+
 		if !needsPTB {
 			return nil
 		}
@@ -49,10 +49,10 @@ func checkAndGeneratePTB(pkt []byte) []byte {
 		if len(pkt) < payloadLen {
 			payloadLen = len(pkt)
 		}
-		
+
 		outLen := 20 + 8 + payloadLen
 		out := make([]byte, outLen)
-		
+
 		out[0] = 0x45
 		out[1] = 0x00
 		binary.BigEndian.PutUint16(out[2:4], uint16(outLen))
@@ -60,28 +60,28 @@ func checkAndGeneratePTB(pkt []byte) []byte {
 		binary.BigEndian.PutUint16(out[6:8], 0)
 		out[8] = 64
 		out[9] = 1
-		
+
 		copy(out[12:16], pkt[16:20])
 		copy(out[16:20], pkt[12:16])
-		
+
 		binary.BigEndian.PutUint16(out[10:12], calcChecksum(out[0:20]))
-		
+
 		out[20] = 3
 		out[21] = 4
 		binary.BigEndian.PutUint16(out[24:26], 0)
 		binary.BigEndian.PutUint16(out[26:28], SCIONEffectiveMTU)
-		
+
 		copy(out[28:], pkt[:payloadLen])
-		
+
 		binary.BigEndian.PutUint16(out[22:24], calcChecksum(out[20:]))
-		
+
 		return out
-		
+
 	} else if version == 6 {
 		if len(pkt) < ipv6.HeaderLen {
 			return nil
 		}
-		
+
 		needsPTB := false
 		if len(pkt) > SCIONEffectiveMTU {
 			needsPTB = true
@@ -91,51 +91,51 @@ func checkAndGeneratePTB(pkt []byte) []byte {
 				needsPTB = true
 			}
 		}
-		
+
 		if !needsPTB {
 			return nil
 		}
-		
+
 		nextHeader := pkt[6]
 		if nextHeader == 58 /* IPPROTO_ICMPV6 */ {
 			return nil
 		}
-		
+
 		payloadLen := len(pkt)
-		if 40 + 8 + payloadLen > 1280 {
+		if 40+8+payloadLen > 1280 {
 			payloadLen = 1280 - 40 - 8
 		}
-		
+
 		outLen := 40 + 8 + payloadLen
 		out := make([]byte, outLen)
-		
+
 		binary.BigEndian.PutUint32(out[0:4], 0x60000000)
-		binary.BigEndian.PutUint16(out[4:6], uint16(8 + payloadLen))
+		binary.BigEndian.PutUint16(out[4:6], uint16(8+payloadLen))
 		out[6] = 58
 		out[7] = 64
-		
+
 		copy(out[8:24], pkt[24:40])
 		copy(out[24:40], pkt[8:24])
-		
+
 		out[40] = 2
 		out[41] = 0
 		binary.BigEndian.PutUint32(out[44:48], SCIONEffectiveMTU)
-		
+
 		copy(out[48:], pkt[:payloadLen])
-		
+
 		pseudoLen := 16 + 16 + 4 + 4
-		pseudo := make([]byte, pseudoLen + 8 + payloadLen)
+		pseudo := make([]byte, pseudoLen+8+payloadLen)
 		copy(pseudo[0:16], out[8:24])
 		copy(pseudo[16:32], out[24:40])
-		binary.BigEndian.PutUint32(pseudo[32:36], uint32(8 + payloadLen))
+		binary.BigEndian.PutUint32(pseudo[32:36], uint32(8+payloadLen))
 		pseudo[39] = 58
 		copy(pseudo[40:], out[40:])
-		
+
 		binary.BigEndian.PutUint16(out[42:44], calcChecksum(pseudo))
-		
+
 		return out
 	}
-	
+
 	return nil
 }
 
