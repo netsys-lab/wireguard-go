@@ -34,12 +34,15 @@ failed=0
 for test_script in "$SCRIPT_DIR"/tests/*.sh; do
     echo -n "Running $(basename "$test_script") ... "
     
-    # Run the test
-    if bash "$test_script" >/dev/null 2>&1; then
+    # Run the test and capture output
+    if output=$(bash "$test_script" 2>&1); then
         echo -e "\e[32m[PASS]\e[0m"
         passed=$((passed + 1))
     else
         echo -e "\e[31m[FAIL]\e[0m"
+        echo -e "\n--- Test Output ---"
+        echo "$output"
+        echo -e "-------------------\n"
         failed=$((failed + 1))
     fi
 done
