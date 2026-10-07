@@ -11,4 +11,4 @@ fi
 # -c 3: Send 3 packets
 # -W 2: 2 seconds timeout for response
 # Exit code 0 means at least one response was received
-ip netns exec Client ping -c 3 -W 2 "$TARGET_IP"
+ip netns exec Client ping -c 10 -W 2 "$TARGET_IP"

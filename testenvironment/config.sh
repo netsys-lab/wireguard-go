@@ -46,7 +46,7 @@ fi
 
 # SCION directory must be provided by the user via environment variable.
 # Fallback to the scion checkout in the parent Scintra workspace if not provided.
-export SCION_DIR="${SCION_DIR:-$(realpath "$SCRIPT_DIR/../../scion" 2>/dev/null || echo "$HOME/scion")}"
+export SCION_DIR="${SCION_DIR:-$(realpath "$SCRIPT_DIR_CONFIG/../../scion" 2>/dev/null || echo "$HOME/scion")}"
 export SCION_TOPOLOGY="${SCION_TOPOLOGY:-$TESTENV_DIR/topology/scion-ring-3isd.topo}"
 
 # Optional translator path policy. Reuse one from the repository/SCION checkout

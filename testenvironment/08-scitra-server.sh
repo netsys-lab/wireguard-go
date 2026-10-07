@@ -99,7 +99,7 @@ start_and_verify_scitra() {
         export SCION_DAEMON_ADDRESS='$SCITRA_DAEMON_ADDR'
         nohup scitra-tun '$SCITRA_HOST_IFACE' '$SCITRA_HOST_IP' \\
             -d '$SCITRA_DAEMON_ADDR' \\
-            --ports '$SCITRA_PORT' \\
+            --ports '$SCITRA_PORT' 32001 32003 \\
             --scmp \\
             --log-level debug \\
             > '$LOGS_DIR/scitra-tun.log' 2>&1 &
@@ -138,7 +138,7 @@ start_and_verify_scitra() {
     log_success "Expected mapped IPv6 is present on '$SCITRA_TUN_IFACE': $mapped"
 
     # 5) Scitra documents that fc00::/8 is routed through its TUN interface.
-    if ! ip netns exec "$SCITRA_NS" ip -6 route show | grep -Eq "^fc00::/8 .*dev $SCITRA_TUN_IFACE([[:space:]]|$)"; then
+    if ! wait_for 10 "Scitra route fc00::/8" "ip netns exec '$SCITRA_NS' ip -6 route show | grep -Eq '^fc00::/8 .*dev $SCITRA_TUN_IFACE([[:space:]]|$)'"; then
         log_error "Expected route fc00::/8 via '$SCITRA_TUN_IFACE' is missing"
         ip netns exec "$SCITRA_NS" ip -6 route show >&2 || true
         return 1

@@ -298,6 +298,15 @@ func (device *Device) RoutineReadFromTUN() {
 				egressClass := flow.TrafficClass(header_parsing.ClassifyEgress(pkt))
 				// Checkpoint A — classification (non-plain only)
 				if egressClass != flow.ClassPlainIP {
+					if ptb := checkAndGeneratePTB(pkt); ptb != nil {
+						device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] IPv4 MTU exceeded, dropping packet and sending PTB len=%d", len(pkt))
+						ptbBuf := make([]byte, offset+len(ptb))
+						copy(ptbBuf[offset:], ptb)
+						if _, err := device.tun.device.Write([][]byte{ptbBuf}, offset); err != nil {
+							device.log.Errorf("Failed to write PTB to TUN: %v", err)
+						}
+						continue
+					}
 					ihl := int(pkt[0]&0x0f) * 4
 					var outerSrc, outerDst string
 					if len(pkt) >= 20 && ihl >= 20 && len(pkt) >= ihl+4 {
@@ -420,6 +429,15 @@ func (device *Device) RoutineReadFromTUN() {
 				dstIP := net.IP(dst)
 				peer = device.allowedips.Lookup(dst)
 				if device.translator != nil && header_parsing.IsSCIONMapped(dstIP) {
+					if ptb := checkAndGeneratePTB(pkt); ptb != nil {
+						device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] IPv6 MTU exceeded, dropping packet and sending PTB len=%d", len(pkt))
+						ptbBuf := make([]byte, offset+len(ptb))
+						copy(ptbBuf[offset:], ptb)
+						if _, err := device.tun.device.Write([][]byte{ptbBuf}, offset); err != nil {
+							device.log.Errorf("Failed to write PTB to TUN: %v", err)
+						}
+						continue
+					}
 					if peer == nil {
 						device.scionLog.Errorf(scionlog.ComponentEgressLifecycle,
 							"[SCION-EGRESS] packetId=%d event=peer-lookup-failed lookupStage=before-translation lookupDst=%s",

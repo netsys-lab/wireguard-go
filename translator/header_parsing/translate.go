@@ -774,7 +774,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		// all other ICMPv6 types the payload is passed through unchanged.
 		scmpPayload := append([]byte(nil), icmp.Payload...)
 		if isICMPv6Echo(icmp.TypeCode) {
-			scmpPayload = buildSCMPEchoPayload(scmpTypeCode.Type(), icmp.Payload, t.log)
+			scmpPayload = buildSCMPEchoPayload(scmpTypeCode.Type(), icmp.Payload, ip6.SrcIP, t.log)
 		}
 
 		scionBytes, err = BuildSCIONPacket(
@@ -1005,6 +1005,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	var l4Layer gopacket.SerializableLayer
 	var l4Payload []byte
+	var restoredDstIP net.IP
 
 	//Assiging layers Scion, UDP or TCP and Payload
 	for _, layerType := range decoded {
@@ -1040,7 +1041,7 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			// the originating ping matches its reply. Echo Requests are left
 			// as-is: their identifier is the sender's dispatcher/underlay port.
 			if scmp.TypeCode.Type() == slayers.SCMPTypeEchoReply {
-				scmpPayload = restoreICMPv6EchoID(scmpPayload, t.log)
+				scmpPayload, restoredDstIP = restoreICMPv6EchoID(scmpPayload, t.log)
 			}
 
 			icmp := &layers.ICMPv6{
@@ -1094,6 +1095,11 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		return nil, fmt.Errorf("map SCION dst host to IPv6 failed: %w", err)
 	}
 	dst = mappedDst
+
+	if restoredDstIP != nil {
+		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] overriding stateless dst=%s with restored client IP=%s", ipString(dst), ipString(restoredDstIP))
+		dst = restoredDstIP
+	}
 
 	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] reconstructed IPv6 addresses src=%s dst=%s",
 		ipString(src),
@@ -1624,15 +1630,16 @@ func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode, log *sci
 }
 
 // SCMPEcho data block offsets used to preserve the original ICMPv6 echo
-// identifier on the SCION wire. SCION routers route SCMP informational
-// requests to the default end-host port (30041) and route replies using the
-// SCMPEcho identifier as the destination port, so the identifier field cannot
-// carry the original ICMPv6 identifier. For echo data blocks of at least 18
-// bytes the original identifier is stashed at bytes 16..17 of the data block
-// and restored on ingress.
-const (
-	scmpEchoIdentifierStashOffset = 16
-	scmpEchoMinStashDataLen       = 18
+// carry the original ICMPv6 identifier. The original identifier and source IP
+// are saved in a memory cache and restored on ingress.
+type icmpStashEntry struct {
+	origID uint16
+	srcIP  net.IP
+}
+
+var (
+	icmpStashMu sync.Mutex
+	icmpStash   = make(map[uint16]icmpStashEntry)
 )
 
 // isICMPv6Echo reports whether the ICMPv6 type is an Echo Request or an Echo
@@ -1654,17 +1661,11 @@ func isICMPv6Echo(tc layers.ICMPv6TypeCode) bool {
 //
 //   - Echo Request: the identifier is set to DefaultSCIONEndhostPort (the
 //     local SCMP underlay port that replies are routed back to). The original
-//     ICMPv6 identifier is stashed at data bytes 16..17 when the data block
-//     is at least 18 bytes long so the peer can restore it in the reply.
+//     ICMPv6 identifier is saved in a memory cache so it can be restored.
 //   - Echo Reply: the identifier carries the original ICMPv6 identifier (the
 //     request's identifier), which routers use as the reply's destination
-//     port. The data block is returned unmodified: it already holds the
-//     original identifier stashed by the request egress.
-//
-// For short request payloads (< 18 bytes of data) there is no room to stash
-// the identifier, so the original ICMPv6 identifier is kept in the SCMPEcho
-// identifier field instead (documented fallback).
-func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, log *scionlog.Logger) []byte {
+//     port.
+func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, srcIP net.IP, log *scionlog.Logger) []byte {
 	if len(raw) < 4 {
 		log.Infof(scionlog.ComponentPath, "[ICMP6->SCMP] warning: short ICMPv6 echo payload len=%d, pass-through", len(raw))
 		return raw
@@ -1677,13 +1678,14 @@ func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, log *scionlog.L
 	echoID := origID
 	if scmpType == slayers.SCMPTypeEchoRequest {
 		echoID = DefaultSCIONEndhostPort
-		if len(data) >= scmpEchoMinStashDataLen {
-			stashed := append([]byte(nil), data...)
-			binary.BigEndian.PutUint16(stashed[scmpEchoIdentifierStashOffset:], origID)
-			data = stashed
-		} else {
-			echoID = origID
+		
+		icmpStashMu.Lock()
+		icmpStash[seq] = icmpStashEntry{
+			origID: origID,
+			srcIP:  srcIP,
 		}
+		icmpStashMu.Unlock()
+		log.Infof(scionlog.ComponentPath, "[ICMP6->SCMP] Stashing origID=%d srcIP=%s for seq=%d", origID, srcIP, seq)
 	}
 
 	echo := &slayers.SCMPEcho{Identifier: echoID, SeqNumber: seq}
@@ -1697,29 +1699,36 @@ func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, log *scionlog.L
 
 // restoreICMPv6EchoID rebuilds the ICMPv6 echo payload of an SCMP Echo Reply
 // received from the network. The SCMP payload is
-// SCMPEcho(identifier | sequence) followed by the data block. For data blocks
-// of at least 18 bytes the original ICMPv6 identifier stashed at data bytes
-// 16..17 by the egress translation is restored into the ICMPv6 identifier
-// field. For shorter payloads the SCMPEcho identifier is used as-is.
-func restoreICMPv6EchoID(payload []byte, log *scionlog.Logger) []byte {
+// SCMPEcho(identifier | sequence) followed by the data block.
+// The original ICMPv6 identifier and original client IP are restored from the memory cache.
+func restoreICMPv6EchoID(payload []byte, log *scionlog.Logger) ([]byte, net.IP) {
 	if len(payload) < 4 {
 		log.Infof(scionlog.ComponentPath, "[SCMP->ICMP6] warning: short SCMP echo payload len=%d, pass-through", len(payload))
-		return payload
+		return payload, nil
 	}
 
 	id := binary.BigEndian.Uint16(payload[0:2])
 	seq := binary.BigEndian.Uint16(payload[2:4])
 	data := payload[4:]
 
-	if len(data) >= scmpEchoMinStashDataLen {
-		id = binary.BigEndian.Uint16(data[scmpEchoIdentifierStashOffset:])
+	var origSrcIP net.IP
+
+	icmpStashMu.Lock()
+	if entry, ok := icmpStash[seq]; ok {
+		id = entry.origID
+		origSrcIP = entry.srcIP
+		delete(icmpStash, seq)
+		log.Infof(scionlog.ComponentPath, "[SCMP->ICMP6] Restored origID=%d srcIP=%s for seq=%d", id, origSrcIP, seq)
+	} else {
+		log.Infof(scionlog.ComponentPath, "[SCMP->ICMP6] Cache MISS for seq=%d! Using id=%d", seq, id)
 	}
+	icmpStashMu.Unlock()
 
 	out := make([]byte, 4+len(data))
 	binary.BigEndian.PutUint16(out[0:2], id)
 	binary.BigEndian.PutUint16(out[2:4], seq)
 	copy(out[4:], data)
-	return out
+	return out, origSrcIP
 }
 
 // translateSCMPTypeCodeToICMPv6 maps SCMP Type+Code back to ICMPv6 Type+Code.

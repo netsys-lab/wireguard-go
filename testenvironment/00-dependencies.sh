@@ -7,7 +7,7 @@ check_root
 log_step "Dependencies / Pre-flight check"
 
 # Check standard host packages
-for cmd in ip wg socat jq python3 tcpdump nc curl git supervisorctl supervisord; do
+for cmd in ip wg socat jq python3 tcpdump nc curl git supervisorctl supervisord iperf3; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         log_error "Missing prerequisite: $cmd"
         log_error "Please install it. See README.md for the required packages."
