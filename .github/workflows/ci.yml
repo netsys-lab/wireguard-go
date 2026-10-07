@@ -55,11 +55,19 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y scitra-tun scion++-tools
 
-    # 5. Run the Integration Tests
-    # We export SCION_DIR to point to the folder where we cloned SCION in step 3
+    # 5. Start the test environment explicitly to capture logs if it fails
+    - name: Start Test Environment
+      env:
+        SCION_DIR: /home/runner/scion
+      run: |
+        cd testenvironment
+        sudo -E env "PATH=$PATH" ./testenvironment.bash up
+
+    # 6. Run the Integration Tests
     - name: Run Integration Test Suite
       env:
         SCION_DIR: /home/runner/scion
       run: |
         cd integration-tests
-        sudo -E ./run_all.sh
+        # We can just run the test scripts directly, or let run_all.sh verify the environment is up
+        sudo -E env "PATH=$PATH" ./run_all.sh

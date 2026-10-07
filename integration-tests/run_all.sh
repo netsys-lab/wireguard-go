@@ -16,8 +16,8 @@ echo "============================================================"
 
 # Ensure testenvironment is running
 echo "[INFO] Ensuring test environment is up..."
-if ! "$TESTENV_DIR/testenvironment.bash" up >/dev/null 2>&1; then
-    echo "[ERROR] Failed to start testenvironment. Please run 'sudo ./testenvironment.bash up' manually to debug."
+if ! "$TESTENV_DIR/testenvironment.bash" up; then
+    echo "[ERROR] Failed to start testenvironment. See output above for details."
     exit 1
 fi
 
