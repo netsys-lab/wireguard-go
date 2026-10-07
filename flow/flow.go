@@ -10,10 +10,10 @@ import (
 type TrafficClass uint8
 
 const (
-	ClassPlainIP       TrafficClass = 0
-	ClassMappedSCION   TrafficClass = 1
-	ClassNativeSCION   TrafficClass = 2
-	ClassUnclassified  TrafficClass = 255
+	ClassPlainIP      TrafficClass = 0
+	ClassMappedSCION  TrafficClass = 1
+	ClassNativeSCION  TrafficClass = 2
+	ClassUnclassified TrafficClass = 255
 )
 
 type Flow struct {
@@ -27,12 +27,12 @@ type Flow struct {
 	remoteEndpoint Endpoint
 	scionDstIP     netip.Addr
 
-	status        Status
-	egressKind    EgressKind
-	trafficClass  TrafficClass
-	srcIA         string
-	dstIA         string
-	createdAt     time.Time
+	status       Status
+	egressKind   EgressKind
+	trafficClass TrafficClass
+	srcIA        string
+	dstIA        string
+	createdAt    time.Time
 
 	// Atomic counters for lock-free updates
 	txPackets atomic.Uint64

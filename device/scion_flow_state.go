@@ -217,7 +217,7 @@ func trafficClassString(proto uint8, flowID flow.ID, device *Device) string {
 type SCIONLookupResult int
 
 const (
-	SCIONLookupMiss       SCIONLookupResult = iota
+	SCIONLookupMiss SCIONLookupResult = iota
 	SCIONLookupHit
 	SCIONLookupAmbiguous
 )

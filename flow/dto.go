@@ -11,27 +11,27 @@ type FlowEndpointDTO struct {
 }
 
 type FlowDTO struct {
-	ID         uint64          `json:"id"`
-	IPVersion  uint8           `json:"ipVersion"`
-	Protocol   uint8           `json:"protocol"`
-	EndpointA  FlowEndpointDTO `json:"endpointA"`
-	EndpointB  FlowEndpointDTO `json:"endpointB"`
-	LocalIP    string          `json:"localIP,omitempty"`
-	LocalPort  uint16          `json:"localPort,omitempty"`
-	RemoteIP   string          `json:"remoteIP,omitempty"`
-	RemotePort uint16          `json:"remotePort,omitempty"`
-	SCIONDstIP string          `json:"scionDstIP,omitempty"`
+	ID           uint64          `json:"id"`
+	IPVersion    uint8           `json:"ipVersion"`
+	Protocol     uint8           `json:"protocol"`
+	EndpointA    FlowEndpointDTO `json:"endpointA"`
+	EndpointB    FlowEndpointDTO `json:"endpointB"`
+	LocalIP      string          `json:"localIP,omitempty"`
+	LocalPort    uint16          `json:"localPort,omitempty"`
+	RemoteIP     string          `json:"remoteIP,omitempty"`
+	RemotePort   uint16          `json:"remotePort,omitempty"`
+	SCIONDstIP   string          `json:"scionDstIP,omitempty"`
 	Status       string          `json:"status"`
 	EgressKind   string          `json:"egressKind"`
 	TrafficClass uint8           `json:"trafficClass"`
 	SrcIA        string          `json:"srcIA,omitempty"`
 	DstIA        string          `json:"dstIA,omitempty"`
-	TxPackets  uint64          `json:"txPackets"`
-	TxBytes    uint64          `json:"txBytes"`
-	RxPackets  uint64          `json:"rxPackets"`
-	RxBytes    uint64          `json:"rxBytes"`
-	CreatedAt  string          `json:"createdAt"`
-	LastSeen   string          `json:"lastSeen"`
+	TxPackets    uint64          `json:"txPackets"`
+	TxBytes      uint64          `json:"txBytes"`
+	RxPackets    uint64          `json:"rxPackets"`
+	RxBytes      uint64          `json:"rxBytes"`
+	CreatedAt    string          `json:"createdAt"`
+	LastSeen     string          `json:"lastSeen"`
 }
 
 type FlowListResponse struct {
@@ -70,12 +70,12 @@ func MapSnapshotToDTO(s Snapshot) FlowDTO {
 		TrafficClass: uint8(s.TrafficClass),
 		SrcIA:        s.SrcIA,
 		DstIA:        s.DstIA,
-		TxPackets:  s.TxPackets,
-		TxBytes:    s.TxBytes,
-		RxPackets:  s.RxPackets,
-		RxBytes:    s.RxBytes,
-		CreatedAt:  s.CreatedAt.Format(time.RFC3339Nano),
-		LastSeen:   s.LastSeen.Format(time.RFC3339Nano),
+		TxPackets:    s.TxPackets,
+		TxBytes:      s.TxBytes,
+		RxPackets:    s.RxPackets,
+		RxBytes:      s.RxBytes,
+		CreatedAt:    s.CreatedAt.Format(time.RFC3339Nano),
+		LastSeen:     s.LastSeen.Format(time.RFC3339Nano),
 	}
 	if s.LocalEndpoint.Addr.IsValid() {
 		dto.LocalIP = s.LocalEndpoint.Addr.String()

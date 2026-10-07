@@ -7,9 +7,9 @@ import (
 // TrafficClass constants for packet classification.
 // Values mirror flow.ClassPlainIP etc. Use uint8 to avoid import cycle.
 const (
-	ClassPlainIP       uint8 = 0
-	ClassMappedSCION   uint8 = 1
-	ClassNativeSCION   uint8 = 2
+	ClassPlainIP     uint8 = 0
+	ClassMappedSCION uint8 = 1
+	ClassNativeSCION uint8 = 2
 )
 
 // nativeSCIONPorts is the explicit accepted SCION transport port set.

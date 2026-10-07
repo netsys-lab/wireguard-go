@@ -109,5 +109,3 @@ func TestTranslateIngressWithFlow_UDP_Restore(t *testing.T) {
 		t.Fatalf("ports %d->%d", u.SrcPort, u.DstPort)
 	}
 }
-
-

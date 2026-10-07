@@ -342,60 +342,60 @@ func (device *Device) RoutineReadFromTUN() {
 							device.rememberSCIONFlow(snap.ID, tup.Protocol, tup.SrcIA, tup.DstIA, tup.SrcHost, tup.DstHost, tup.SrcPort, tup.DstPort)
 							// Native egress still needs SCIONEgressState for path UI if needed
 							device.rememberSCIONEgress(snap.ID, tup.SrcIA, tup.DstIA)
+						} else {
+							// Try SCMP informational (Traceroute/Echo) before generic fallback
+							scmpInfo, scmpErr := header_parsing.ExtractSCMPInfo(pkt)
+							if scmpErr == nil && !scmpInfo.IsError {
+								// Checkpoint B — SCMP parsed success
+								familyStr := "unknown"
+								switch scmpInfo.Family {
+								case header_parsing.SCMPFamilyTraceroute:
+									familyStr = "traceroute"
+								case header_parsing.SCMPFamilyEcho:
+									familyStr = "echo"
+								}
+								typeStr := "request"
+								if scmpInfo.Type == slayers.SCMPTypeTracerouteReply || scmpInfo.Type == slayers.SCMPTypeEchoReply {
+									typeStr = "reply"
+								}
+								device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] SCMP parsed family=%s type=%s id=%d seq=%d", familyStr, typeStr, scmpInfo.Identifier, scmpInfo.Sequence)
+								md := flow.PacketMetadata{
+									IPVersion:    4,
+									Protocol:     flow.ProtocolSCMP,
+									Source:       flow.Endpoint{Addr: scmpInfo.SrcHost, Port: scmpInfo.Identifier},
+									Destination:  flow.Endpoint{Addr: scmpInfo.DstHost, Port: scmpInfo.Identifier},
+									SrcIA:        scmpInfo.SrcIA.String(),
+									DstIA:        scmpInfo.DstIA.String(),
+									TrafficClass: flow.ClassNativeSCION,
+								}
+								snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
+								// Checkpoint C — Flow after ObserveTx
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] flow=%d class=native egress=scion protocol=SCMP", snap.ID)
+								if created {
+									device.log.Verbosef("Flow created: id=%d egress=%s class=native SCMP", snap.ID, snap.EgressKind)
+								}
+								device.rememberSCMPInfo(snap.ID, scmpInfo.Family, scmpInfo.SrcIA, scmpInfo.SrcHost, scmpInfo.Identifier, scmpInfo.Sequence)
+								// Checkpoint D — index registration
+								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] register flow=%d protocol=SCMP family=%s id=%d seq=%d", snap.ID, familyStr, scmpInfo.Identifier, scmpInfo.Sequence)
+								device.rememberSCIONEgress(snap.ID, scmpInfo.SrcIA, scmpInfo.DstIA)
 							} else {
-								// Try SCMP informational (Traceroute/Echo) before generic fallback
-								scmpInfo, scmpErr := header_parsing.ExtractSCMPInfo(pkt)
-								if scmpErr == nil && !scmpInfo.IsError {
-									// Checkpoint B — SCMP parsed success
-									familyStr := "unknown"
-									switch scmpInfo.Family {
-									case header_parsing.SCMPFamilyTraceroute:
-										familyStr = "traceroute"
-									case header_parsing.SCMPFamilyEcho:
-										familyStr = "echo"
-									}
-									typeStr := "request"
-									if scmpInfo.Type == slayers.SCMPTypeTracerouteReply || scmpInfo.Type == slayers.SCMPTypeEchoReply {
-										typeStr = "reply"
-									}
-									device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] SCMP parsed family=%s type=%s id=%d seq=%d", familyStr, typeStr, scmpInfo.Identifier, scmpInfo.Sequence)
-									md := flow.PacketMetadata{
-										IPVersion:    4,
-										Protocol:     flow.ProtocolSCMP,
-										Source:       flow.Endpoint{Addr: scmpInfo.SrcHost, Port: scmpInfo.Identifier},
-										Destination:  flow.Endpoint{Addr: scmpInfo.DstHost, Port: scmpInfo.Identifier},
-										SrcIA:        scmpInfo.SrcIA.String(),
-										DstIA:        scmpInfo.DstIA.String(),
-										TrafficClass: flow.ClassNativeSCION,
-									}
+								if scmpErr != nil {
+									// Checkpoint B — SCMP parse-failed
+									device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] SCMP parse-failed err=%v", scmpErr)
+								}
+								if md, err := flow.ParsePacketMetadata(pkt); err == nil {
+									md.TrafficClass = flow.ClassNativeSCION
 									snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
-									// Checkpoint C — Flow after ObserveTx
-									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] flow=%d class=native egress=scion protocol=SCMP", snap.ID)
 									if created {
-										device.log.Verbosef("Flow created: id=%d egress=%s class=native SCMP", snap.ID, snap.EgressKind)
+										device.log.Verbosef("Flow created: id=%d egress=%s class=native", snap.ID, snap.EgressKind)
 									}
-									device.rememberSCMPInfo(snap.ID, scmpInfo.Family, scmpInfo.SrcIA, scmpInfo.SrcHost, scmpInfo.Identifier, scmpInfo.Sequence)
-									// Checkpoint D — index registration
-									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] register flow=%d protocol=SCMP family=%s id=%d seq=%d", snap.ID, familyStr, scmpInfo.Identifier, scmpInfo.Sequence)
-									device.rememberSCIONEgress(snap.ID, scmpInfo.SrcIA, scmpInfo.DstIA)
-								} else {
-									if scmpErr != nil {
-										// Checkpoint B — SCMP parse-failed
-										device.scionLog.Debugf(scionlog.ComponentEgressLifecycle, "[SCION-EGRESS] SCMP parse-failed err=%v", scmpErr)
-									}
-									if md, err := flow.ParsePacketMetadata(pkt); err == nil {
-										md.TrafficClass = flow.ClassNativeSCION
-										snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
-										if created {
-											device.log.Verbosef("Flow created: id=%d egress=%s class=native", snap.ID, snap.EgressKind)
-										}
-										_ = snap
-										_ = created
-									}
+									_ = snap
+									_ = created
 								}
 							}
 						}
-					} else if device.flowManager != nil {
+					}
+				} else if device.flowManager != nil {
 					if md, err := flow.ParsePacketMetadata(pkt); err == nil {
 						md.TrafficClass = flow.ClassPlainIP
 						if snap, created := device.flowManager.ObserveTx(md, len(pkt), "ip"); created {

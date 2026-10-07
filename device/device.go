@@ -107,13 +107,13 @@ type Device struct {
 	flowManager  *flow.Manager
 	pendingSCION *PendingSCIONQueue
 
-	scionFlowMu      sync.RWMutex
-	scionFlowStates  map[flow.ID]SCIONEgressState
-	scionFlowIndex   map[SCIONFlowKey]map[flow.ID]struct{}
-	scmpInfoIndex    map[SCMPInfoKey]map[flow.ID]struct{}
-	flowOverrideMu   sync.RWMutex
-	flowOverrides    map[flow.ID]string
-	policyEngine     *pathpolicy.Engine
+	scionFlowMu     sync.RWMutex
+	scionFlowStates map[flow.ID]SCIONEgressState
+	scionFlowIndex  map[SCIONFlowKey]map[flow.ID]struct{}
+	scmpInfoIndex   map[SCMPInfoKey]map[flow.ID]struct{}
+	flowOverrideMu  sync.RWMutex
+	flowOverrides   map[flow.ID]string
+	policyEngine    *pathpolicy.Engine
 
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
 	// It is assigned only to SCION-mapped egress packets accepted from TUN
@@ -843,15 +843,15 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 	}
 
 	return FlowPathsResult{
-		FlowID:     uint64(flowID),
-		State:      FlowPathsReady,
-		Paths:      dtos,
-		PolicyName: policyName,
-		PolicyMode: policyMode,
+		FlowID:                uint64(flowID),
+		State:                 FlowPathsReady,
+		Paths:                 dtos,
+		PolicyName:            policyName,
+		PolicyMode:            policyMode,
 		PolicyFallbackApplied: policyFallback,
-		OverrideState:        overrideState,
-		OverrideFingerprint:  overrideFingerprint,
-		EffectiveFingerprint: effectiveFingerprint,
+		OverrideState:         overrideState,
+		OverrideFingerprint:   overrideFingerprint,
+		EffectiveFingerprint:  effectiveFingerprint,
 	}
 }
 

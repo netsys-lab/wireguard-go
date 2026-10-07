@@ -35,8 +35,8 @@ func TestClassifyPacketPlainIPv6(t *testing.T) {
 func TestClassifyPacketMappedSCION(t *testing.T) {
 	// IPv6 packet with SCION-mapped prefix (fc00::)
 	pkt := make([]byte, 48)
-	pkt[0] = 0x60 // version=6
-	pkt[6] = 17   // UDP
+	pkt[0] = 0x60  // version=6
+	pkt[6] = 17    // UDP
 	pkt[24] = 0xfc // SCION-mapped prefix fc00::
 
 	// UDP header and minimal SCION payload
@@ -56,8 +56,8 @@ func TestClassifyPacketMappedSCION(t *testing.T) {
 func TestClassifyPacketNativeSCION(t *testing.T) {
 	// IPv6 packet with non-SCION-mapped address but UDP on port 30041
 	pkt := make([]byte, 48)
-	pkt[0] = 0x60 // version=6
-	pkt[6] = 17   // UDP
+	pkt[0] = 0x60  // version=6
+	pkt[6] = 17    // UDP
 	pkt[24] = 0x20 // non-SCION prefix (e.g., 2001:db8::)
 
 	// UDP destination port 30041 (SCION dispatcher)
@@ -88,8 +88,8 @@ func TestClassifyPacketTruncated(t *testing.T) {
 func TestClassifyPacketSCIONMappedWithoutUDP(t *testing.T) {
 	// SCION-mapped IPv6 destination but not UDP
 	pkt := make([]byte, 40)
-	pkt[0] = 0x60 // version=6
-	pkt[6] = 58   // ICMPv6, not UDP
+	pkt[0] = 0x60  // version=6
+	pkt[6] = 58    // ICMPv6, not UDP
 	pkt[24] = 0xfc // SCION-mapped prefix
 
 	class := ClassifyPacket(pkt)
@@ -103,8 +103,8 @@ func TestClassifyPacketSCIONMappedWithoutUDP(t *testing.T) {
 func TestClassifyPacketNativeSCIONWithDispatchPortRange(t *testing.T) {
 	// IPv6 packet with UDP port in native SCION dispatch range (30041-32767)
 	pkt := make([]byte, 48)
-	pkt[0] = 0x60 // version=6
-	pkt[6] = 17   // UDP
+	pkt[0] = 0x60  // version=6
+	pkt[6] = 17    // UDP
 	pkt[24] = 0x20 // non-SCION prefix
 
 	// UDP destination port in dispatch range
@@ -125,8 +125,8 @@ func TestClassifyPacketNativeSCIONWithDispatchPortRange(t *testing.T) {
 func TestClassifyPacketInvalidSCIONVersion(t *testing.T) {
 	// IPv6 SCION-mapped with invalid SCION version in payload
 	pkt := make([]byte, 48)
-	pkt[0] = 0x60 // version=6
-	pkt[6] = 17   // UDP
+	pkt[0] = 0x60  // version=6
+	pkt[6] = 17    // UDP
 	pkt[24] = 0xfc // SCION-mapped prefix
 
 	// SCION version=1 (invalid, should be 0)
@@ -152,8 +152,8 @@ func TestClassifyPacketRealPacketScenarios(t *testing.T) {
 			name: "IPv4 TCP",
 			pktFunc: func() []byte {
 				pkt := make([]byte, 40)
-				pkt[0] = 0x45       // IPv4, IHL=5
-				pkt[9] = 6          // TCP
+				pkt[0] = 0x45 // IPv4, IHL=5
+				pkt[9] = 6    // TCP
 				copy(pkt[16:20], []byte{192, 0, 2, 1})
 				copy(pkt[20:24], []byte{192, 0, 2, 2})
 				return pkt
@@ -164,8 +164,8 @@ func TestClassifyPacketRealPacketScenarios(t *testing.T) {
 			name: "IPv6 standard (non-mapped)",
 			pktFunc: func() []byte {
 				pkt := make([]byte, 40)
-				pkt[0] = 0x60 // IPv6
-				pkt[6] = 17   // UDP
+				pkt[0] = 0x60  // IPv6
+				pkt[6] = 17    // UDP
 				pkt[24] = 0x20 // Address starts with 2001 or similar
 				return pkt
 			},
@@ -175,8 +175,8 @@ func TestClassifyPacketRealPacketScenarios(t *testing.T) {
 			name: "SCION-mapped IPv6",
 			pktFunc: func() []byte {
 				pkt := make([]byte, 50)
-				pkt[0] = 0x60 // IPv6
-				pkt[6] = 17   // UDP
+				pkt[0] = 0x60  // IPv6
+				pkt[6] = 17    // UDP
 				pkt[24] = 0xfc // SCION-mapped fc00::
 				pkt[48] = 0x00 // SCION version=0
 				return pkt
@@ -199,8 +199,8 @@ func TestClassifyPacketRealPacketScenarios(t *testing.T) {
 func BenchmarkClassifyPacket(b *testing.B) {
 	// Create a SCION-mapped IPv6 packet
 	pkt := make([]byte, 48)
-	pkt[0] = 0x60 // version=6
-	pkt[6] = 17   // UDP
+	pkt[0] = 0x60  // version=6
+	pkt[6] = 17    // UDP
 	pkt[24] = 0xfc // SCION-mapped prefix
 	pkt[48] = 0x00 // SCION version=0
 
