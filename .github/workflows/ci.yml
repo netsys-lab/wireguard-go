@@ -46,6 +46,10 @@ jobs:
         cd /home/runner/scion
         go build -o bin/ ./router/... ./control/... ./dispatcher/... ./daemon/... ./scion/... ./scion-pki/...
         python3 -m pip install --break-system-packages -r tools/env/pip3/requirements.txt
+        # scion.sh expects these tools in the bin/ folder
+        ln -sf ../tools/topogen.py bin/topogen
+        ln -sf $(which supervisord) bin/supervisord
+        ln -sf $(which supervisorctl) bin/supervisorctl
 
     # 4. Install Scitra-TUN components
     - name: Install Scitra-TUN
@@ -69,5 +73,4 @@ jobs:
         SCION_DIR: /home/runner/scion
       run: |
         cd integration-tests
-        # We can just run the test scripts directly, or let run_all.sh verify the environment is up
         sudo -E env "PATH=$PATH" ./run_all.sh

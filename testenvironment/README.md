@@ -32,7 +32,11 @@ cd scion
 # Build required binaries
 go build -o bin/ ./router/... ./control/... ./dispatcher/... ./daemon/... ./scion/... ./scion-pki/...
 # Prepare Python dependencies for topogen.py
-python3 -m pip install -r env/pip3/requirements.txt
+python3 -m pip install --break-system-packages -r tools/env/pip3/requirements.txt
+# Create symlinks expected by scion.sh
+ln -sf ../tools/topogen.py bin/topogen
+ln -sf $(which supervisord) bin/supervisord
+ln -sf $(which supervisorctl) bin/supervisorctl
 ```
 When running the setup, provide the path to this checkout via the `SCION_DIR` environment variable.
 
