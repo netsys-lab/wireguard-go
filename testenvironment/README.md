@@ -17,8 +17,8 @@ sudo apt-get update
 sudo apt-get install -y ca-certificates curl git iproute2 iputils-ping wireguard-tools socat xxd jq python3 python3-pip python3-yaml supervisor procps tar gzip tcpdump netcat-openbsd
 ```
 
-### 2. Go Toolchain (>= 1.21)
-The test environment requires Go 1.21 or newer to compile `wireguard-go`.
+### 2. Go Toolchain (>= 1.24)
+The test environment requires Go 1.24 or newer to compile `wireguard-go`.
 ```bash
 # E.g., install via snap or download from go.dev
 sudo snap install go --classic
