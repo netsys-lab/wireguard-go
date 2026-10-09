@@ -1643,8 +1643,9 @@ const (
 )
 
 type icmpStashEntry struct {
-	origID uint16
-	srcIP  net.IP
+	origID    uint16
+	srcIP     net.IP
+	origBytes [2]byte
 }
 
 var (
@@ -1689,10 +1690,17 @@ func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, srcIP net.IP, l
 	if scmpType == slayers.SCMPTypeEchoRequest {
 		echoID = DefaultSCIONEndhostPort
 
+		var origBytes [2]byte
+		if len(data) >= scmpEchoMinStashDataLen {
+			origBytes[0] = data[scmpEchoIdentifierStashOffset]
+			origBytes[1] = data[scmpEchoIdentifierStashOffset+1]
+		}
+
 		icmpStashMu.Lock()
 		icmpStash[seq] = icmpStashEntry{
-			origID: origID,
-			srcIP:  srcIP,
+			origID:    origID,
+			srcIP:     srcIP,
+			origBytes: origBytes,
 		}
 		icmpStashMu.Unlock()
 		log.Infof(scionlog.ComponentPath, "[ICMP6->SCMP] Stashing origID=%d srcIP=%s for seq=%d", origID, srcIP, seq)
@@ -1739,6 +1747,12 @@ func restoreICMPv6EchoID(payload []byte, log *scionlog.Logger) ([]byte, net.IP) 
 	if entry, ok := icmpStash[seq]; ok {
 		id = entry.origID
 		origSrcIP = entry.srcIP
+
+		if len(data) >= scmpEchoMinStashDataLen {
+			data[scmpEchoIdentifierStashOffset] = entry.origBytes[0]
+			data[scmpEchoIdentifierStashOffset+1] = entry.origBytes[1]
+		}
+
 		delete(icmpStash, seq)
 		log.Infof(scionlog.ComponentPath, "[SCMP->ICMP6] Restored origID=%d srcIP=%s for seq=%d", id, origSrcIP, seq)
 	} else {
