@@ -94,4 +94,26 @@ jobs:
         SCION_DIR: /home/runner/scion
       run: |
         cd integration-tests
-        sudo -E env "PATH=$PATH" ./run_all.sh
+        # Start a background tcpdump capture on the veth interfaces and wg-client
+        sudo tcpdump -i any -w /tmp/ci-capture.pcap -U &
+        TCPDUMP_PID=$!
+        
+        sudo -E env "PATH=$PATH" ./run_all.sh || export TEST_FAILED=1
+        
+        # Stop tcpdump
+        sudo kill $TCPDUMP_PID || true
+        sleep 2
+        
+        if [ "${TEST_FAILED:-0}" = "1" ]; then
+          exit 1
+        fi
+
+    - name: Upload Test Logs on Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs
+        path: |
+          testenvironment/.runtime/logs/
+          /tmp/ci-capture.pcap
+        retention-days: 5
