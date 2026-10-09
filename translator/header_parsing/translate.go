@@ -1630,8 +1630,18 @@ func translateICMPv6ToSCMPTypeCode(icmp6TypeCode layers.ICMPv6TypeCode, log *sci
 }
 
 // SCMPEcho data block offsets used to preserve the original ICMPv6 echo
+// identifier on the SCION wire. SCION routers route SCMP informational
+// requests to the default end-host port (30041) and route replies using the
+// SCMPEcho identifier as the destination port, so the identifier field cannot
 // carry the original ICMPv6 identifier. The original identifier and source IP
-// are saved in a memory cache and restored on ingress.
+// are saved in a memory cache and restored on ingress. For cross-compatibility
+// with legacy C++ Scitra translators, the original identifier is ALSO stashed
+// at bytes 16..17 of the data block if the data is long enough.
+const (
+	scmpEchoIdentifierStashOffset = 16
+	scmpEchoMinStashDataLen       = 18
+)
+
 type icmpStashEntry struct {
 	origID uint16
 	srcIP  net.IP
@@ -1686,6 +1696,14 @@ func buildSCMPEchoPayload(scmpType slayers.SCMPType, raw []byte, srcIP net.IP, l
 		}
 		icmpStashMu.Unlock()
 		log.Infof(scionlog.ComponentPath, "[ICMP6->SCMP] Stashing origID=%d srcIP=%s for seq=%d", origID, srcIP, seq)
+
+		if len(data) >= scmpEchoMinStashDataLen {
+			stashed := append([]byte(nil), data...)
+			binary.BigEndian.PutUint16(stashed[scmpEchoIdentifierStashOffset:], origID)
+			data = stashed
+		} else {
+			echoID = origID
+		}
 	}
 
 	echo := &slayers.SCMPEcho{Identifier: echoID, SeqNumber: seq}
@@ -1710,6 +1728,10 @@ func restoreICMPv6EchoID(payload []byte, log *scionlog.Logger) ([]byte, net.IP) 
 	id := binary.BigEndian.Uint16(payload[0:2])
 	seq := binary.BigEndian.Uint16(payload[2:4])
 	data := payload[4:]
+
+	if len(data) >= scmpEchoMinStashDataLen {
+		id = binary.BigEndian.Uint16(data[scmpEchoIdentifierStashOffset:])
+	}
 
 	var origSrcIP net.IP
 

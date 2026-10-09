@@ -2197,10 +2197,11 @@ func TestSCMPOuterSrcPortUsesDispatcherPort(t *testing.T) {
 		t.Errorf("same-AS dispatch port = %d, expected dispatcher port %d (SCMP has no inner L4 port)", nextHop.Port, DefaultSCIONEndhostPort)
 	}
 
-	// Verify the SCMPEcho info block: identifier is the dispatcher port, sequence is preserved.
+	// Verify the SCMPEcho info block: identifier carries the original ICMPv6
+	// echo ID (short-payload fallback), sequence is preserved.
 	scmpEcho := decodeSCMPEchoFromOuter(t, out)
-	if scmpEcho.Identifier != DefaultSCIONEndhostPort {
-		t.Errorf("SCMPEcho Identifier = %d, expected dispatcher port %d", scmpEcho.Identifier, DefaultSCIONEndhostPort)
+	if scmpEcho.Identifier != echoID {
+		t.Errorf("SCMPEcho Identifier = %d, expected original ICMPv6 echo ID %d (short-payload fallback)", scmpEcho.Identifier, echoID)
 	}
 	if scmpEcho.SeqNumber != 1 {
 		t.Errorf("SCMPEcho SeqNumber = %d, expected 1", scmpEcho.SeqNumber)
