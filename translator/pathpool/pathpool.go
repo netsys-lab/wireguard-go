@@ -2,12 +2,47 @@ package pathpool
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/snet"
+	"golang.zx2c4.com/wireguard/scionlog"
+)
+
+// contextKeyRefreshID is the context key for carrying refreshId through the
+// path resolution pipeline so that sub-phases (LocalIA, Interfaces, Paths)
+// can log correlated events.
+type contextKeyRefreshID struct{}
+
+// ContextWithRefreshID returns a context carrying the given refresh ID.
+func ContextWithRefreshID(ctx context.Context, id uint64) context.Context {
+	return context.WithValue(ctx, contextKeyRefreshID{}, id)
+}
+
+// RefreshIDFromContext extracts the refresh ID from a context.
+// Returns 0, false if no refresh ID is present.
+func RefreshIDFromContext(ctx context.Context) (uint64, bool) {
+	id, ok := ctx.Value(contextKeyRefreshID{}).(uint64)
+	return id, ok
+}
+
+var (
+	// ErrPathPending means no valid cached path is currently available,
+	// but an async refresh has been scheduled.
+	ErrPathPending = errors.New("path refresh pending")
+
+	// ErrNoPaths means the retriever completed successfully but returned no paths.
+	ErrNoPaths = errors.New("path refresh returned no paths")
+)
+
+const (
+	defaultRefreshInterval     = 2 * time.Minute
+	defaultRefreshBeforeExpiry = 30 * time.Second
+	defaultQueryTimeout        = 30 * time.Second
 )
 
 // PathRetriever defines the interface for fetching paths from a daemon/network.
@@ -16,12 +51,37 @@ type PathRetriever interface {
 	RetrievePaths(ctx context.Context, src, dst addr.IA) ([]snet.Path, error)
 }
 
-// key identifies a path pool entry (by source/destination IA pair)
+// IAPair identifies a source/destination IA pair.
+// Startup prefetch and periodic refresh operate on these pairs.
+type IAPair struct {
+	Src addr.IA
+	Dst addr.IA
+}
+
+// RefreshCallback is called after a successful async path refresh.
+// The Device uses this to flush queued packets for the refreshed IA pair.
+type RefreshCallback func(src, dst addr.IA)
+
+// RefreshStatus reports the state of an async path refresh.
+type RefreshStatus struct {
+	ID      uint64 // monotonic refresh ID assigned to this refresh
+	Started bool   // true if a new refresh was started; false if already inflight
+}
+
+// inflightRefresh tracks an in-progress path refresh for one IA pair.
+type inflightRefresh struct {
+	id        uint64
+	startedAt time.Time
+}
+
+// key identifies a path pool entry by source/destination IA pair.
 type key struct {
-	src, dst addr.IA
+	src addr.IA
+	dst addr.IA
 }
 
 // CachedPath is a lightweight wrapper around snet.Path with metadata.
+// This is what the translator uses after fetching paths from the pool.
 type CachedPath struct {
 	Src         addr.IA
 	Dst         addr.IA
@@ -31,105 +91,221 @@ type CachedPath struct {
 	Expiry      time.Time
 }
 
-// pathsEntry represents cached paths and metadata
+// pathsEntry represents cached paths and metadata for one IA pair.
 type pathsEntry struct {
 	paths       []CachedPath
 	lastRefresh time.Time
+	lastError   error
 }
 
-// PathPool caches snet.Path objects between ISD-AS pairs.
+// PathPool caches SCION paths between IA pairs.
+// It returns cached paths immediately and refreshes paths asynchronously.
 type PathPool struct {
-	mu        sync.Mutex
-	cache     map[key]*pathsEntry
+	mu       sync.Mutex
+	cache    map[key]*pathsEntry
+	inflight map[key]*inflightRefresh
+	known    map[key]struct{}
+
 	closed    chan struct{}
-	retriever PathRetriever // logic to fetch paths if missing
+	retriever PathRetriever
+
+	onRefresh RefreshCallback
+
+	log *scionlog.Logger
+
+	refreshIDCounter    uint64
+	refreshInterval     time.Duration
+	refreshBeforeExpiry time.Duration
+	queryTimeout        time.Duration
 }
 
-// NewPathPool creates a new path pool.
-// If retriever is provided, the pool will automatically fetch paths on cache miss.
-func NewPathPool(retriever PathRetriever) *PathPool {
-	pp := &PathPool{
-		cache:     make(map[key]*pathsEntry),
-		closed:    make(chan struct{}),
-		retriever: retriever,
+// NewPathPool creates a PathPool and starts its background maintenance loops.
+// The pool stores cached SCION paths by src/dst IA pair and can refresh paths
+// asynchronously through the configured PathRetriever.
+func NewPathPool(retriever PathRetriever, log *scionlog.Logger) *PathPool {
+	if log == nil {
+		log = scionlog.NewLogger(
+			func(string, ...any) {},
+			func(string, ...any) {},
+		)
 	}
+
+	pp := &PathPool{
+		cache:               make(map[key]*pathsEntry),
+		inflight:            make(map[key]*inflightRefresh),
+		known:               make(map[key]struct{}),
+		closed:              make(chan struct{}),
+		retriever:           retriever,
+		log:                 log,
+		refreshInterval:     defaultRefreshInterval,
+		refreshBeforeExpiry: defaultRefreshBeforeExpiry,
+		queryTimeout:        defaultQueryTimeout,
+	}
+
 	go pp.cleanupLoop()
+	go pp.refreshLoop()
+
 	return pp
 }
 
-// Add manually adds paths to the pool
+// Add manually appends paths to the cache without replacing existing entries.
+// This is useful for tests or manual insertion. Normal refresh logic replaces
+// old paths instead of appending.
 func (pp *PathPool) Add(src, dst addr.IA, paths []snet.Path) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
 	k := key{src: src, dst: dst}
+	pp.known[k] = struct{}{}
+
 	entry, ok := pp.cache[k]
 	if !ok {
 		entry = &pathsEntry{}
 		pp.cache[k] = entry
 	}
+
 	for _, p := range paths {
 		wrapped := WrapSnetPath(src, dst, p)
 		if !contains(entry.paths, wrapped.Fingerprint) {
 			entry.paths = append(entry.paths, wrapped)
 		}
 	}
+
 	entry.lastRefresh = time.Now()
+	entry.lastError = nil
+
+	pp.log.Infof(scionlog.ComponentPath, "[PATHPOOL] Add: src=%s dst=%s added=%d total=%d", src, dst, len(paths), len(entry.paths))
 }
 
-// Get retrieves valid paths for a given src/dst pair.
-// If paths are missing or expired, it attempts to fetch them using the retriever.
-func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
-	// 1. Try to get from cache
+// GetCached performs a cache-only lookup for valid paths.
+// It never fetches paths from the network. Expired paths are removed lazily,
+// and a copy of the valid cached paths is returned to the caller.
+func (pp *PathPool) GetCached(src, dst addr.IA) []CachedPath {
+	k := key{src: src, dst: dst}
+
 	pp.mu.Lock()
-	entry, ok := pp.cache[key{src, dst}]
+	defer pp.mu.Unlock()
+
+	pp.known[k] = struct{}{}
+
+	entry, ok := pp.cache[k]
+	if !ok || len(entry.paths) == 0 {
+		return nil
+	}
+
+	valid := filterValid(entry.paths)
+	entry.paths = valid
+
+	if len(valid) == 0 {
+		return nil
+	}
+
+	result := make([]CachedPath, len(valid))
+	copy(result, valid)
+	return result
+}
+
+type PathStatus int
+
+const (
+	PathStatusCached PathStatus = iota
+	PathStatusPending
+	PathStatusEmpty
+	PathStatusError
+)
+
+// GetStatus is a pure read that returns the cache state for an IA pair.
+// It never triggers a refresh or side effect.
+func (pp *PathPool) GetStatus(src, dst addr.IA) PathStatus {
+	k := key{src: src, dst: dst}
+
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	entry, ok := pp.cache[k]
+	if !ok {
+		if pp.inflight[k] != nil {
+			return PathStatusPending
+		}
+		return PathStatusPending
+	}
+
+	valid := filterValid(entry.paths)
+	if len(valid) > 0 {
+		return PathStatusCached
+	}
+
+	if pp.inflight[k] != nil {
+		return PathStatusPending
+	}
+
+	if entry.lastError != nil {
+		return PathStatusError
+	}
+
+	return PathStatusEmpty
+}
+
+// Get retrieves currently valid cached paths for a src/dst IA pair.
+// If no valid path is cached, it schedules an async refresh and returns
+// ErrPathPending instead of blocking on network path retrieval.
+//
+// If valid paths exist but are close to expiry, the valid paths are returned
+// immediately and a background refresh is scheduled.
+func (pp *PathPool) Get(ctx context.Context, src, dst addr.IA) ([]CachedPath, error) {
+	_ = ctx
+
+	k := key{src: src, dst: dst}
+
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] event=cache-lookup src=%s dst=%s", src, dst)
+
+	lookupStart := time.Now()
+
+	pp.mu.Lock()
+
+	pp.known[k] = struct{}{}
+
+	entry, ok := pp.cache[k]
 
 	var valid []CachedPath
+	var refreshSoon bool
+
 	if ok && len(entry.paths) > 0 {
-		// Perform lazy cleanup and check if we have valid paths
 		valid = filterValid(entry.paths)
-		entry.paths = valid // update cache with filtered list
+		entry.paths = valid
+
+		if len(valid) > 0 {
+			refreshSoon = shouldRefreshSoon(valid, pp.refreshBeforeExpiry)
+		}
 	}
+
 	pp.mu.Unlock()
 
-	// If we found valid paths, return them immediately
+	lookupDur := time.Since(lookupStart)
+
 	if len(valid) > 0 {
-		// Return a copy to ensure thread safety for the caller
+		pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] event=cache-hit src=%s dst=%s valid=%d refreshSoon=%v elapsedMs=%d",
+			src, dst, len(valid), refreshSoon, lookupDur.Milliseconds())
+
+		if refreshSoon {
+			pp.RefreshAsync(src, dst, "expiry-soon")
+		}
+
 		result := make([]CachedPath, len(valid))
 		copy(result, valid)
 		return result, nil
 	}
 
-	// 2. Cache Miss: Retrieve from network
-	// We do this OUTSIDE the lock to avoid blocking other cache reads/writes
-	if pp.retriever == nil {
-		return nil, nil
-	}
+	pp.log.Infof(scionlog.ComponentPath, "[SCION-PATH] event=cache-miss src=%s dst=%s elapsedMs=%d",
+		src, dst, lookupDur.Milliseconds())
 
-	// RetrievePaths implementation (SciondRetriever) should handle its own timeouts/context
-	newPaths, err := pp.retriever.RetrievePaths(ctx, src, dst)
-	if err != nil {
-		return nil, err
-	}
+	pp.RefreshAsync(src, dst, "cache-miss")
 
-	if len(newPaths) == 0 {
-		return nil, nil
-	}
-
-	// 3. Add new paths to cache (Add handles locking)
-	pp.Add(src, dst, newPaths)
-
-	// 4. Convert and return the new paths
-	// We reconstruct the result here to avoid acquiring the lock again or calling Get recursively
-	result := make([]CachedPath, 0, len(newPaths))
-	for _, p := range newPaths {
-		result = append(result, WrapSnetPath(src, dst, p))
-	}
-
-	return result, nil
+	return nil, ErrPathPending
 }
 
-// Cleanup removes expired or old paths
+// Cleanup removes expired paths from all cache entries.
+// Empty cache entries are deleted to keep the PathPool small.
 func (pp *PathPool) Cleanup() {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
@@ -142,10 +318,12 @@ func (pp *PathPool) Cleanup() {
 	}
 }
 
-// cleanupLoop runs periodically to remove expired paths
+// cleanupLoop periodically runs Cleanup until the PathPool is closed.
+// It only removes expired paths; it does not fetch new paths.
 func (pp *PathPool) cleanupLoop() {
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-pp.closed:
@@ -156,20 +334,27 @@ func (pp *PathPool) cleanupLoop() {
 	}
 }
 
-// Close stops the background cleanup loop
+// Close stops the PathPool background loops.
+// All goroutines watching pp.closed should exit after this is called.
 func (pp *PathPool) Close() {
 	close(pp.closed)
 }
 
-// WrapSnetPath converts snet.Path into a CachedPath wrapper.
+// WrapSnetPath converts an snet.Path into a CachedPath.
+// It extracts metadata needed by the cache and UI, such as expiry,
+// fingerprint, and underlay next hop.
 func WrapSnetPath(src, dst addr.IA, p snet.Path) CachedPath {
 	var expiry time.Time
-	if meta := p.Metadata(); meta != nil {
-		expiry = meta.Expiry
-	}
-	fp := snet.Fingerprint(p).String()
+	var fingerprint string
 
-	// Safety check for UnderlayNextHop
+	meta := p.Metadata()
+	if meta != nil {
+		expiry = meta.Expiry
+		fingerprint = snet.Fingerprint(meta.Interfaces).String()
+	} else {
+		fingerprint = fmt.Sprintf("%s-%s-no-metadata", src, dst)
+	}
+
 	var nextHop *net.UDPAddr
 	if nh := p.UnderlayNextHop(); nh != nil {
 		nextHop = &net.UDPAddr{
@@ -184,12 +369,13 @@ func WrapSnetPath(src, dst addr.IA, p snet.Path) CachedPath {
 		Dst:         dst,
 		Path:        p,
 		NextHop:     nextHop,
-		Fingerprint: fp,
+		Fingerprint: fingerprint,
 		Expiry:      expiry,
 	}
 }
 
-// contains checks if a path fingerprint is already stored
+// contains reports whether a path with the same fingerprint already exists.
+// It is used to avoid storing duplicate paths for the same IA pair.
 func contains(paths []CachedPath, fp string) bool {
 	for _, existing := range paths {
 		if existing.Fingerprint == fp {
@@ -199,14 +385,17 @@ func contains(paths []CachedPath, fp string) bool {
 	return false
 }
 
-// filterValid returns only unexpired paths
+// filterValid returns only paths that are not expired.
+// Paths without an expiry are treated as valid.
 func filterValid(paths []CachedPath) []CachedPath {
 	valid := []CachedPath{}
 	now := time.Now()
+
 	for _, p := range paths {
 		if p.Expiry.IsZero() || p.Expiry.After(now) {
 			valid = append(valid, p)
 		}
 	}
+
 	return valid
 }

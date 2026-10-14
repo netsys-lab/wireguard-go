@@ -1,0 +1,27 @@
+--- # Tiny topology
+ASes:
+  "1-64512":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+  "1-64513":
+    cert_issuer: 1-64512
+    underlay: UDP/IPv4
+    mtu: 1472
+  "1-64514":
+    cert_issuer: 1-64512
+    underlay: UDP/IPv4
+    mtu: 1472
+
+links:
+  # 64512 <-> 64513 (CHILD) two parallel links
+  - {a: "1-64512-br1#1", b: "1-64513-br1#1", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "1-64512-br1#2", b: "1-64513-br1#2", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+
+  # 64512 <-> 64514 (CHILD) two parallel links
+  - {a: "1-64512-br1#3", b: "1-64514-br1#1", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "1-64512-br1#4", b: "1-64514-br1#2", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+

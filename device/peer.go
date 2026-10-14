@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/scionlog"
 )
 
 type Peer struct {
@@ -133,13 +134,22 @@ func (peer *Peer) SendBuffers(buffers [][]byte) error {
 	}
 	peer.endpoint.Unlock()
 
+	// Compute safe metadata for logging before the send
+	var totalLen uint64
+	for _, b := range buffers {
+		totalLen += uint64(len(b))
+	}
+
 	err := peer.device.net.bind.Send(buffers, endpoint)
 	if err == nil {
-		var totalLen uint64
-		for _, b := range buffers {
-			totalLen += uint64(len(b))
-		}
 		peer.txBytes.Add(totalLen)
+		peer.device.scionLog.Tracef(scionlog.ComponentEgressLifecycle,
+			"[SCION-EGRESS] event=socket-write-success peer=%s endpoint=%s buffers=%d totalBytes=%d",
+			peer, endpoint.DstToString(), len(buffers), totalLen)
+	} else {
+		peer.device.scionLog.Errorf(scionlog.ComponentEgressLifecycle,
+			"[SCION-EGRESS] event=socket-write-failed peer=%s endpoint=%s buffers=%d totalBytes=%d err=%v",
+			peer, endpoint.DstToString(), len(buffers), totalLen, err)
 	}
 	return err
 }

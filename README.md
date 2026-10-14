@@ -1,6 +1,61 @@
-# Go Implementation of [WireGuard](https://www.wireguard.com/)
+# SCION-Extended Go Implementation of [WireGuard](https://www.wireguard.com/)
 
-This is an implementation of WireGuard in Go.
+This repository contains a modified version of the official `wireguard-go` implementation, extended with a custom translation layer for the [SCION](https://www.scion.org/) next-generation internet architecture.
+
+Our implementation modifies the standard WireGuard client to act as a translator for SCION networks. It allows WireGuard traffic to be routed over a SCION topology. Specifically, the extended `wg-client` maps traffic (such as mapped IPv6 requests) and handles the translation required to establish secure WireGuard tunnels seamlessly across SCION paths.
+
+## Test Environment & Sandbox
+
+To help build, deploy, and verify our translation layer without invasive system-wide changes, we provide a complete, namespace-isolated test sandbox (`ip netns`). It simulates a full topology including a client, server, and the underlying SCION infrastructure.
+
+ **For prerequisites, startup sequences, and debugging guides, please refer to our [Test Environment README](testenvironment/README.md).**
+
+---
+
+## Usage (SCION)
+
+### **Build the extended binary** (Requires Go >= 1.24):
+```bash
+make
+```
+
+### Start the client with SCION enabled:
+Export the required SCION configuration paths and enable the extension before running wireguard-go.
+```bash
+export WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1
+export SCION_ENABLED=true
+export SCION_CONFIG_DIR="/path/to/scion/etc"
+export SCION_BOOTSTRAP_URL="http://<bootstrap-ip>:<port>"
+export SCION_UNDERLAY_PORT="30041"
+# export SCION_POLICY_FILE="/path/to/policy" # Optional
+export LOG_LEVEL="debug"
+
+./wireguard-go --foreground wg0
+```
+
+### Configure the WireGuard interface:
+Once the UAPI socket is ready, configure your keys and endpoints using standard wg(8) tools. Ensure you allow the SCION-mapped IPv6 range.
+```bash
+wg set wg0 private-key /path/to/client_private \
+           peer <SERVER_PUBLIC_KEY> \
+           endpoint <WG_ENDPOINT> \
+           allowed-ips 0.0.0.0/0, ::/0 \
+           persistent-keepalive 25
+```
+
+### Configure IPs and Routing:
+Assign your tunnel addresses, bring the interface up, and explicitly route the SCION-mapped IPv6 prefix (e.g., fc00::/8) into the wg0 device so the translator can intercept it.
+```bash
+ip addr add <CLIENT_IP>/32 dev wg0
+ip -6 addr add <CLIENT_IPV6>/128 dev wg0
+ip link set wg0 up
+ip -6 route add fc00::/8 dev wg0
+```
+
+
+# Legacy Wireguard-go Standalone
+
+*Note: Our fork preserves all the original functionality of the upstream wireguard-go project. The standard, non-SCION features still work exactly as expected. The following sections contain the official upstream usage instructions for reference.*
 
 ## Usage
 

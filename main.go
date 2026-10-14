@@ -8,9 +8,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 
@@ -222,7 +224,35 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger)
+	//First SCION CONFIG
+	scionConfig := device.ScionDeviceConfigFromEnv()
+	bootstrapURL := os.Getenv("SCION_BOOTSTRAP_URL")
+	scionConfig.InterfaceName = interfaceName
+
+	if os.Getenv("SCION_ENABLED") == "true" {
+		scionConfig.Enabled = true
+		logger.Verbosef("SCION_ENABLED == true")
+	} else {
+		scionConfig.Enabled = false
+		logger.Verbosef("SCION_ENABLED == false")
+	}
+	logger.Verbosef("scionConfig.policyFile: %v", scionConfig.PolicyFile)
+	logger.Verbosef("policyFile: %v", os.Getenv("SCION_POLICY_FILE"))
+
+	if bootstrapURL != "" {
+		if scionConfig.ConfigDir == "" {
+			scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
+		}
+	} else {
+		logger.Verbosef("No SCION_BOOTSTRAP_URL! Set SCION to false")
+		scionConfig.Enabled = false
+	}
+	scionRetryOptions := device.InfiniteSCIONInitRetryOptions()
+	device := device.NewDevice(tdev, conn.NewDefaultBind(), logger, scionConfig)
+	if device == nil {
+		logger.Errorf("Failed to create device")
+		os.Exit(ExitSetupFailed)
+	}
 
 	logger.Verbosef("Device started")
 
@@ -248,6 +278,33 @@ func main() {
 
 	logger.Verbosef("UAPI listener started")
 
+	//Tunnel Setup we fetch Bootstrap
+	// Tunnel Setup: fetch SCION bootstrap data through the tunnel and initialize SCION.
+
+	if bootstrapURL != "" && scionConfig.Enabled {
+		go func() {
+			//scionConfig.Enabled = true
+
+			if scionConfig.ConfigDir == "" {
+				scionConfig.ConfigDir = filepath.Join(os.TempDir(), "wg-scion")
+			}
+
+			err := device.InitSCIONWithBootstrapRetry(
+				context.Background(),
+				scionConfig,
+				bootstrapURL,
+				scionRetryOptions,
+			)
+			if err != nil {
+				logger.Errorf("SCION bootstrap/init worker stopped: %v", err)
+				return
+			}
+
+			logger.Verbosef("SCION bootstrap/init worker finished successfully")
+		}()
+	} else {
+		logger.Verbosef("No SCION_BOOTSTRAP_URL, skipping SCION bootstrap")
+	}
 	// wait for program to terminate
 
 	signal.Notify(term, unix.SIGTERM)

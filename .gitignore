@@ -2,3 +2,11 @@ wireguard-go
 
 *.key
 *.pub
+.git_backup
+wireguard
+testenv/keys/*
+testenv/logs/*
+*.trc
+
+testenvironment/.*
+.vscode/

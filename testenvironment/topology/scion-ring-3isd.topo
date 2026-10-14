@@ -1,0 +1,110 @@
+--- # Three-ISD SCION ring topology for path-policy integration testing
+
+ASes:
+  # ISD 1: source side
+  "1-64512":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+  "1-64513":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+  "1-64514":
+    cert_issuer: "1-64512"
+    underlay: UDP/IPv4
+    mtu: 1472
+  "1-64515":
+    cert_issuer: "1-64513"
+    underlay: UDP/IPv4
+    mtu: 1472
+  "1-64516":
+    cert_issuer: "1-64512"
+    underlay: UDP/IPv4
+    mtu: 1472
+
+  # ISD 2: transit side
+  "2-64520":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+  "2-64521":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+
+  # ISD 3: destination side
+  "3-64530":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+  "3-64531":
+    core: true
+    voting: true
+    authoritative: true
+    issuing: true
+    underlay: UDP/IPv4
+    mtu: 1472
+  "3-64532":
+    cert_issuer: "3-64530"
+    underlay: UDP/IPv4
+    mtu: 1472
+  "3-64533":
+    cert_issuer: "3-64531"
+    underlay: UDP/IPv4
+    mtu: 1472
+  "3-64534":
+    cert_issuer: "3-64530"
+    underlay: UDP/IPv4
+    mtu: 1472
+
+links:
+  # --------------------------------------------------------------------------
+  # Six-core ring
+  # --------------------------------------------------------------------------
+  - {a: "1-64512-A#11", b: "1-64513-A#21", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "1-64513-B#22", b: "2-64520-A#31", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "2-64520-A#32", b: "2-64521-A#41", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "2-64521-C#43", b: "3-64530-A#51", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "3-64530-A#52", b: "3-64531-A#61", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "3-64531-B#62", b: "1-64512-B#12", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1472}
+
+  # Parallel middle-ring link: lower latency, lower bandwidth and lower MTU.
+  - {a: "2-64520-B#33", b: "2-64521-B#42", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1350}
+
+  # Direct core chord: fewer AS hops, but advertised as OPEN_NET.
+  - {a: "1-64513-C#23", b: "3-64530-C#53", linkAtoB: CORE, underlay: UDP/IPv4, mtu: 1400}
+
+  # --------------------------------------------------------------------------
+  # ISD 1 source hierarchy and dual homing
+  # --------------------------------------------------------------------------
+  - {a: "1-64512-C#13", b: "1-64514-A#101", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "1-64513-D#24", b: "1-64515-A#111", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "1-64514-B#102", b: "1-64516-A#121", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "1-64515-B#112", b: "1-64516-B#122", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+
+  # --------------------------------------------------------------------------
+  # ISD 3 destination hierarchy and dual homing
+  # --------------------------------------------------------------------------
+  - {a: "3-64530-D#54", b: "3-64532-A#201", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "3-64531-C#63", b: "3-64533-A#211", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "3-64532-B#202", b: "3-64534-A#221", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+  - {a: "3-64533-B#212", b: "3-64534-B#222", linkAtoB: CHILD, underlay: UDP/IPv4, mtu: 1472}
+
+  # Lowest-latency shortcut, deliberately bandwidth- and MTU-constrained.
+  - {a: "1-64515-C#113", b: "3-64532-C#203", linkAtoB: PEER, underlay: UDP/IPv4, mtu: 1300}
