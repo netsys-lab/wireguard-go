@@ -15,6 +15,12 @@ test_plain_ip() {
 }
 
 test_wireguard() {
+  if [[ -r "$CLIENT_MODE_FILE" ]] && [[ "$(<"$CLIENT_MODE_FILE")" == "scitra" ]]; then
+    log_info "Health test: Client-to-Server veth underlay"
+    ip netns exec "$CLIENT_NS" ping -c2 -W2 "${SERVER_VETH_IP%%/*}" >/dev/null
+    log_success "Client veth connectivity PASS"
+    return
+  fi
     log_info "Health test: basic WireGuard reachability"
     ip netns exec "$CLIENT_NS" ping -c2 -W2 "${WG_SERVER_IP%%/*}" >/dev/null
     log_success "WireGuard connectivity PASS"
@@ -44,6 +50,23 @@ test_end_to_end() {
     log_success "END-TO-END HTTP PASS"
 }
 
+  test_scitra_client() {
+    local ip out
+    ip="$(website_ip)"
+    log_info "Baseline test: Client -> official Scitra-TUN -> SCION -> target Scitra -> HTTP"
+    out="$(ip netns exec "$CLIENT_NS" curl -g -6 -fsS -v --connect-timeout 10 --max-time 30 "http://[$ip]:$SCITRA_PORT/" 2>"$LOGS_DIR/curl-scitra-client.stderr")" || {
+      log_error "Client Scitra baseline FAILED"
+      cat "$LOGS_DIR/curl-scitra-client.stderr" >&2 || true
+      return 1
+    }
+    printf '%s\n' "$out" > "$LOGS_DIR/curl-scitra-client.html"
+    grep -q 'This page was delivered through Scitra-TUN.' <<<"$out" || {
+      log_error "HTTP response did not contain expected SCION marker"
+      return 1
+    }
+    log_success "Client Scitra baseline PASS"
+  }
+
 summary() {
     local ip="<not-ready>"
     [[ -s "$WEBSITE_IP_FILE" ]] && ip="$(cat "$WEBSITE_IP_FILE")"
@@ -68,7 +91,18 @@ SCION website target:
   SCION endpoint: $TARGET_IA,$SCITRA_HOST_IP
   Mapped IPv6:    $ip
   URL:            http://[$ip]:$SCITRA_PORT/
+EOF2
 
+    if [[ -r "$CLIENT_MODE_FILE" ]] && [[ "$(<"$CLIENT_MODE_FILE")" == "scitra" ]]; then
+        cat <<EOF2
+Client baseline request (official Scitra -> SCION -> target Scitra -> HTTP):
+  sudo ip netns exec $CLIENT_NS curl -g -6 -v "http://[$ip]:$SCITRA_PORT/"
+
+Benchmark the Client Scitra baseline with:
+  sudo ./run_benchmarks.sh
+EOF2
+    else
+        cat <<EOF2
 Startup has already verified a reference SCION HTTP/TCP path with official Scitra-TUN on both sides
 BEFORE the custom wg-client was started. The source-side reference Scitra remains running in $SERVER_NS.
 
@@ -81,6 +115,10 @@ Custom translator request (actual system under test):
 The custom translator end-to-end request is NOT run during setup.
 Run it explicitly with:
   sudo ./testenvironment.bash test
+EOF2
+    fi
+
+    cat <<EOF2
 
 Detailed capture/debug commands:
   $TESTENV_DIR/DEBUGGING.md
@@ -92,7 +130,14 @@ EOF2
 }
 
 case "${1:-test}" in
-    test) log_step "Manual end-to-end translator test"; test_end_to_end; summary ;;
+  test)
+    if [[ -r "$CLIENT_MODE_FILE" ]] && [[ "$(<"$CLIENT_MODE_FILE")" == "scitra" ]]; then
+      log_step "Client Scitra baseline test"; test_scitra_client
+    else
+      log_step "Manual end-to-end translator test"; test_end_to_end
+    fi
+    summary
+    ;;
     health) log_step "Local health tests"; test_plain_ip; test_wireguard; test_scitra_local; summary ;;
     plain) test_plain_ip ;;
     scitra-local) test_scitra_local ;;

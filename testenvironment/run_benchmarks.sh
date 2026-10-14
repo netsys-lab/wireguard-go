@@ -15,10 +15,19 @@ IPERF_PORT=5201
 IPERF_DURATION=5
 
 ITERATIONS=10
+CLIENT_MODE_FILE="$SCRIPT_DIR/.runtime/state/client-mode"
+CLIENT_SCITRA_MODE=0
+CLIENT_RESULT_LABEL="Target (Custom Go Translator)"
+CLIENT_IPERF_PREFIX="Go Trans"
+if [[ -r "$CLIENT_MODE_FILE" ]] && [[ "$(<"$CLIENT_MODE_FILE")" == "scitra" ]]; then
+    CLIENT_SCITRA_MODE=1
+    CLIENT_RESULT_LABEL="Baseline B (Scitra-TUN in Client)"
+    CLIENT_IPERF_PREFIX="Client Scitra"
+fi
 
 echo "============================================================"
 echo " UNIFIED SCION TRANSLATOR BENCHMARK & DIAGNOSTIC SUITE"
-echo " Target: Custom Go Translator vs Reference Scitra-TUN"
+echo " Client result: $CLIENT_RESULT_LABEL"
 echo "============================================================"
 
 # --- CLEANUP TRAP ---
@@ -95,8 +104,12 @@ measure_latency() {
 echo ""
 echo "--- [1/4] Connection & Processing Latency (HTTP) ---"
 measure_latency "Server" "$TARGET_IP_URL" "Baseline A (Plain IP)"
-measure_latency "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
-measure_latency "Client" "$SCION_MAPPED_URL" "Target (Custom Go Translator)"
+if [[ "$CLIENT_SCITRA_MODE" == 1 ]]; then
+    measure_latency "Client" "$SCION_MAPPED_URL" "Baseline B (Scitra-TUN in Client)"
+else
+    measure_latency "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
+    measure_latency "Client" "$SCION_MAPPED_URL" "$CLIENT_RESULT_LABEL"
+fi
 
 # --- 2. HTTP 50MB SUSTAINED THROUGHPUT ---
 measure_throughput() {
@@ -135,8 +148,12 @@ measure_throughput() {
 echo ""
 echo "--- [2/4] Sustained HTTP Bulk Throughput (50MB Transfer) ---"
 measure_throughput "Server" "$TARGET_IP_URL" "Baseline A (Plain IP)"
-measure_throughput "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
-measure_throughput "Client" "$SCION_MAPPED_URL" "Target (Custom Go Translator)"
+if [[ "$CLIENT_SCITRA_MODE" == 1 ]]; then
+    measure_throughput "Client" "$SCION_MAPPED_URL" "Baseline B (Scitra-TUN in Client)"
+else
+    measure_throughput "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
+    measure_throughput "Client" "$SCION_MAPPED_URL" "$CLIENT_RESULT_LABEL"
+fi
 
 # --- 3. CONCURRENT LOAD / REQUEST RATE ---
 run_load_test() {
@@ -171,8 +188,12 @@ run_load_test() {
 echo ""
 echo "--- [3/4] Concurrency & Flow Scaling ---"
 run_load_test "Server" "$TARGET_IP_URL" "Baseline A (Plain IP)"
-run_load_test "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
-run_load_test "Client" "$SCION_MAPPED_URL" "Target (Custom Go Translator)"
+if [[ "$CLIENT_SCITRA_MODE" == 1 ]]; then
+    run_load_test "Client" "$SCION_MAPPED_URL" "Baseline B (Scitra-TUN in Client)"
+else
+    run_load_test "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
+    run_load_test "Client" "$SCION_MAPPED_URL" "$CLIENT_RESULT_LABEL"
+fi
 
 # --- 4. L4 TRANSPORT & PACKET LOSS DIAGNOSTICS (iperf3) ---
 echo ""
@@ -266,15 +287,22 @@ run_iperf_tcp "Server" "$TARGET_IP" "download" "false" "Plain IP Download"
 run_iperf_tcp "Server" "$TARGET_IP" "upload"   "false" "Plain IP Upload  "
 run_iperf_udp "Server" "$TARGET_IP" "30M"      "false" "Plain IP Stream  "
 
-echo "2. Baseline B (Reference Scitra-TUN):"
-run_iperf_tcp "Server" "$SCION_MAPPED_IP" "download" "true" "Scitra Download"
-run_iperf_tcp "Server" "$SCION_MAPPED_IP" "upload"   "true" "Scitra Upload  "
-run_iperf_udp "Server" "$SCION_MAPPED_IP" "10M"      "true" "Scitra Stream  "
+if [[ "$CLIENT_SCITRA_MODE" == 1 ]]; then
+    echo "2. Baseline B (Scitra-TUN in Client):"
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "Client Scitra Download"
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "Client Scitra Upload  "
+    run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "Client Scitra Stream  "
+else
+    echo "2. Baseline B (Reference Scitra-TUN):"
+    run_iperf_tcp "Server" "$SCION_MAPPED_IP" "download" "true" "Scitra Download"
+    run_iperf_tcp "Server" "$SCION_MAPPED_IP" "upload"   "true" "Scitra Upload  "
+    run_iperf_udp "Server" "$SCION_MAPPED_IP" "10M"      "true" "Scitra Stream  "
 
-echo "3. Target (Custom Go Translator):"
-run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "Go Trans Download"
-run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "Go Trans Upload  "
-run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "Go Trans Stream  "
+    echo "3. $CLIENT_RESULT_LABEL:"
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "$CLIENT_IPERF_PREFIX Download"
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "$CLIENT_IPERF_PREFIX Upload  "
+    run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "$CLIENT_IPERF_PREFIX Stream  "
+fi
 
 # Restore HTTP server on port 8000
 restore_http_server

@@ -54,7 +54,26 @@ cleanup_reference_scitra() {
     rm -f "$REFERENCE_SCITRA_PID_FILE" "$REFERENCE_SCITRA_IP_FILE"
 }
 
+cleanup_client_scitra() {
+    [[ -f "$(runtime_env_file)" ]] && load_runtime_env || true
+    if [[ -s "$SCITRA_CLIENT_PID_FILE" ]]; then
+        kill "$(cat "$SCITRA_CLIENT_PID_FILE")" 2>/dev/null || true
+    fi
+    if is_namespace_running "$CLIENT_NS"; then
+        ip netns exec "$CLIENT_NS" pkill -f "scitra-tun.*$SCITRA_CLIENT_IP" 2>/dev/null || true
+        ip netns exec "$CLIENT_NS" ip route del "$SOURCE_DAEMON_IP/32" via "${SERVER_VETH_IP%%/*}" dev "$CLIENT_VETH_IFACE" 2>/dev/null || true
+        if declare -p SOURCE_BR_IPS >/dev/null 2>&1; then
+            for addr in "${SOURCE_BR_IPS[@]}"; do
+                ip netns exec "$CLIENT_NS" ip route del "$addr/32" via "${SERVER_VETH_IP%%/*}" dev "$CLIENT_VETH_IFACE" 2>/dev/null || true
+            done
+        fi
+        ip netns exec "$CLIENT_NS" ip route del "$SOURCE_CONTROL_IP/32" via "${SERVER_VETH_IP%%/*}" dev "$CLIENT_VETH_IFACE" 2>/dev/null || true
+    fi
+    rm -f "$SCITRA_CLIENT_PID_FILE" "$SCITRA_CLIENT_IP_FILE"
+}
+
 stop_scitra() {
+    cleanup_client_scitra
     cleanup_reference_scitra
     if is_namespace_running "$SCITRA_NS"; then
         ip netns exec "$SCITRA_NS" pkill -f 'scitra-tun' 2>/dev/null || true
@@ -245,6 +264,52 @@ verify_reference_tcp_path_without_custom_translator() {
     log_success "Reference Scitra-TUN remains running in $SERVER_NS for side-by-side debugging"
 }
 
+start_client_scitra() {
+    load_runtime_env
+    is_namespace_running "$CLIENT_NS" || { log_error "$CLIENT_NS namespace is not running"; return 1; }
+    is_namespace_running "$SERVER_NS" || { log_error "$SERVER_NS namespace is not running"; return 1; }
+    cleanup_client_scitra
+
+    local gateway="${SERVER_VETH_IP%%/*}"
+    ip netns exec "$CLIENT_NS" ip route replace "$SOURCE_DAEMON_IP/32" via "$gateway" dev "$CLIENT_VETH_IFACE"
+    if declare -p SOURCE_BR_IPS >/dev/null 2>&1; then
+        for addr in "${SOURCE_BR_IPS[@]}"; do
+            ip netns exec "$CLIENT_NS" ip route replace "$addr/32" via "$gateway" dev "$CLIENT_VETH_IFACE"
+        done
+    fi
+    ip netns exec "$CLIENT_NS" ip route replace "$SOURCE_CONTROL_IP/32" via "$gateway" dev "$CLIENT_VETH_IFACE"
+
+    wait_for 10 "source SCION daemon from $CLIENT_NS" \
+        "ip netns exec '$CLIENT_NS' bash -c '</dev/tcp/$SOURCE_DAEMON_IP/$SOURCE_DAEMON_PORT'"
+
+    local mapped
+    mapped="$(normalize_ipv6 "$(scion2ip "$SOURCE_IA,$SCITRA_CLIENT_IP")")"
+    echo "$mapped" > "$SCITRA_CLIENT_IP_FILE"
+    : > "$LOGS_DIR/client-scitra.log"
+    ip netns exec "$CLIENT_NS" env "SCION_DAEMON_ADDRESS=$SOURCE_DAEMON_ADDR" \
+        nohup scitra-tun "$CLIENT_VETH_IFACE" "$SCITRA_CLIENT_IP" \
+        -d "$SOURCE_DAEMON_ADDR" \
+        --log-level debug \
+        >"$LOGS_DIR/client-scitra.log" 2>&1 &
+    printf '%s\n' "$!" > "$SCITRA_CLIENT_PID_FILE"
+
+    wait_for 10 "Client Scitra-TUN process" "kill -0 \$(cat '$SCITRA_CLIENT_PID_FILE') 2>/dev/null"
+    wait_for 10 "Client Scitra TUN interface" \
+        "ip netns exec '$CLIENT_NS' ip link show '$SCITRA_TUN_IFACE' >/dev/null 2>&1"
+    wait_for 10 "Client mapped IPv6 on Scitra TUN" \
+        "namespace_has_ipv6 '$CLIENT_NS' '$SCITRA_TUN_IFACE' '$mapped'"
+    ip netns exec "$CLIENT_NS" ip -6 route show | grep -Eq "^fc00::/8 .*dev $SCITRA_TUN_IFACE([[:space:]]|$)" || {
+        log_error "Client Scitra route fc00::/8 via $SCITRA_TUN_IFACE is missing"
+        return 1
+    }
+
+    local target
+    target="$(cat "$WEBSITE_IP_FILE")"
+    wait_for 20 "Client Scitra-to-Scitra HTTP path" \
+        "ip netns exec '$CLIENT_NS' curl -g -6 -fsS --connect-timeout 5 --max-time 10 'http://[$target]:$SCITRA_PORT/' | grep -q 'SCION Test Server'"
+    log_success "Official Scitra-TUN in $CLIENT_NS reaches the target Scitra website over the veth-backed SCION path"
+}
+
 status() {
     local mapped="<not-ready>" ref_mapped="<not-ready>"
     [[ -s "$WEBSITE_IP_FILE" ]] && mapped="$(cat "$WEBSITE_IP_FILE")"
@@ -263,6 +328,10 @@ status() {
     ip netns exec "$SERVER_NS" pgrep -af "scitra-tun.*$REFERENCE_SCITRA_IP" 2>/dev/null || true
     ip netns exec "$SERVER_NS" ip -6 addr show dev "$SCITRA_TUN_IFACE" 2>/dev/null || true
     ip netns exec "$SERVER_NS" ip -6 route show fc00::/8 2>/dev/null || true
+    echo; echo "Client Scitra in $CLIENT_NS:"
+    ip netns exec "$CLIENT_NS" pgrep -af "scitra-tun.*$SCITRA_CLIENT_IP" 2>/dev/null || true
+    ip netns exec "$CLIENT_NS" ip -6 addr show dev "$SCITRA_TUN_IFACE" 2>/dev/null || true
+    ip netns exec "$CLIENT_NS" ip -6 route show fc00::/8 2>/dev/null || true
 
     echo
     echo "Plain-IP website:  http://$SCITRA_HOST_IP:$PLAIN_WEBSITE_PORT/"
@@ -278,11 +347,17 @@ case "${1:-}" in
         start_and_verify_scitra
         start_scion_website
         verify_scion_data_plane_without_custom_translator
-        verify_reference_tcp_path_without_custom_translator
-        log_success "Reference SCION + Scitra + HTTP path is READY and reference Scitra remains running; custom translator has not been tested"
+        if [[ "${SCITRA_CLIENT_MODE:-0}" != 1 ]]; then
+            verify_reference_tcp_path_without_custom_translator
+            log_success "Reference SCION + Scitra + HTTP path is READY and reference Scitra remains running; custom translator has not been tested"
+        else
+            log_info "Skipping Server-side reference Scitra; --scitra-client starts the reference client in Client instead"
+        fi
         ;;
     down) stop_scitra ;;
+    client-up) start_client_scitra ;;
+    client-down) cleanup_client_scitra ;;
     status) status ;;
-    logs) tail -100 "$LOGS_DIR/plain-website.log" "$LOGS_DIR/scion-website.log" "$LOGS_DIR/scitra-tun.log" "$LOGS_DIR/reference-source-scitra.log" "$LOGS_DIR/scion-reference-ping.log" 2>/dev/null || true ;;
+    logs) tail -100 "$LOGS_DIR/plain-website.log" "$LOGS_DIR/scion-website.log" "$LOGS_DIR/scitra-tun.log" "$LOGS_DIR/reference-source-scitra.log" "$LOGS_DIR/client-scitra.log" "$LOGS_DIR/scion-reference-ping.log" 2>/dev/null || true ;;
     *) echo "Usage: $0 {up|down|status|logs}"; exit 2 ;;
 esac
