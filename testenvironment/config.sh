@@ -107,7 +107,8 @@ export DEAMON_CONFIG_FILE="${DEAMON_CONFIG_FILE:-$SCION_CONFIG_DIR/sd.toml}"
 # Source-AS addresses exposed through wg-server. 04-topo_change.sh may add more
 # BR aliases dynamically and writes them to $STATE_DIR/topology-runtime.env.
 export SOURCE_DAEMON_IP="${SOURCE_DAEMON_IP:-10.0.0.3}"
-export SOURCE_DAEMON_ADDR="${SOURCE_DAEMON_ADDR:-$SOURCE_DAEMON_IP:30255}"
+export SOURCE_DAEMON_PORT="${SOURCE_DAEMON_PORT:-30255}"
+export SOURCE_DAEMON_ADDR="${SOURCE_DAEMON_ADDR:-$SOURCE_DAEMON_IP:$SOURCE_DAEMON_PORT}"
 # Source Control/Discovery Service exposed through wg-server. The generated
 # local topology normally uses a namespace-local 127/8 address (e.g.
 # 127.0.0.44:31000). A bootstrapped translator in Client must instead receive
@@ -171,6 +172,10 @@ export WEBSITE_IP_FILE="${WEBSITE_IP_FILE:-$STATE_DIR/website-ip.txt}"
 export REFERENCE_SCITRA_IP="${REFERENCE_SCITRA_IP:-10.0.0.100}"
 export REFERENCE_SCITRA_PID_FILE="${REFERENCE_SCITRA_PID_FILE:-$STATE_DIR/reference-scitra.pid}"
 export REFERENCE_SCITRA_IP_FILE="${REFERENCE_SCITRA_IP_FILE:-$STATE_DIR/reference-scitra-ip.txt}"
+export SCITRA_CLIENT_IP="${SCITRA_CLIENT_IP:-${CLIENT_VETH_IP%%/*}}"
+export SCITRA_CLIENT_PID_FILE="${SCITRA_CLIENT_PID_FILE:-$STATE_DIR/client-scitra.pid}"
+export SCITRA_CLIENT_IP_FILE="${SCITRA_CLIENT_IP_FILE:-$STATE_DIR/client-scitra-ip.txt}"
+export CLIENT_MODE_FILE="${CLIENT_MODE_FILE:-$STATE_DIR/client-mode}"
 
 # -----------------------------------------------------------------------------
 # Dependency management

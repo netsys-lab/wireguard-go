@@ -16,14 +16,18 @@ run_step() {
 }
 
 cmd_up() {
+    local client_mode="${1:-custom}"
+    export SCITRA_CLIENT_MODE=0
+    if [[ "$client_mode" == "scitra" ]]; then SCITRA_CLIENT_MODE=1; fi
+
     create_directories
+    printf '%s\n' "$client_mode" > "$CLIENT_MODE_FILE"
 
     run_step "0/9 Install/check dependencies" bash "$SCRIPT_DIR/00-dependencies.sh"
 
     print_config
 
-    # Build the infrastructure from the outside in. The custom translator client
-    # is intentionally the LAST component started.
+    # Build the infrastructure from the outside in. The selected client is last.
     run_step "1/9 Create namespaces and veth links" bash "$SCRIPT_DIR/01-namespaces.sh" up
     run_step "2/9 Generate SCION ring topology" bash "$SCRIPT_DIR/03-topology.sh" generate
     run_step "3/9 Refresh custom wireguard-go build and keys" bash "$SCRIPT_DIR/02-build.sh" build
@@ -31,8 +35,12 @@ cmd_up() {
     run_step "5/9 Start vanilla WireGuard server" bash "$SCRIPT_DIR/06-wireguard.sh" server-up
     run_step "6/9 Start and verify SCION infrastructure" bash "$SCRIPT_DIR/07-scion.sh" up
     run_step "7/9 Start source-AS bootstrap server" bash "$SCRIPT_DIR/05-bootstrap.sh" up
-    run_step "8/9 Start target Scitra-TUN and verify with reference Scitra" bash "$SCRIPT_DIR/08-scitra-server.sh" up
-    run_step "9/9 Start custom WireGuard / translator client (NO translation test)" bash "$SCRIPT_DIR/06-wireguard.sh" client-up
+    run_step "8/9 Start target Scitra-TUN and verify the reference path" bash "$SCRIPT_DIR/08-scitra-server.sh" up
+    if [[ "$client_mode" == "scitra" ]]; then
+        run_step "9/9 Start reference Scitra-TUN in Client over the veth" bash "$SCRIPT_DIR/08-scitra-server.sh" client-up
+    else
+        run_step "9/9 Start custom WireGuard / translator client (NO translation test)" bash "$SCRIPT_DIR/06-wireguard.sh" client-up
+    fi
 
     echo
     bash "$SCRIPT_DIR/09-test.sh" summary || true
@@ -45,6 +53,7 @@ stop_runtime() {
     bash "$SCRIPT_DIR/05-bootstrap.sh" down 2>/dev/null || true
     bash "$SCRIPT_DIR/06-wireguard.sh" down 2>/dev/null || true
     bash "$SCRIPT_DIR/01-namespaces.sh" down 2>/dev/null || true
+    rm -f "$CLIENT_MODE_FILE"
 }
 
 cmd_down() {
@@ -93,6 +102,8 @@ usage() {
 Usage:
   sudo ./testenvironment.bash           # same as 'up'
   sudo ./testenvironment.bash up        # recreate/start the complete debug environment
+    sudo ./testenvironment.bash --scitra-client # use official Scitra-TUN in Client instead of custom wg-client
+    sudo ./testenvironment.bash up --scitra-client
   sudo ./testenvironment.bash test      # ONLY here: run our translator end-to-end test
   sudo ./testenvironment.bash status
   sudo ./testenvironment.bash down      # stop + remove namespaces; KEEP .deps and logs
@@ -112,7 +123,13 @@ EOF2
 }
 
 case "${1:-up}" in
-    up) cmd_up ;;
+    up)
+        if [[ "${2:-}" == "--scitra-client" ]]; then cmd_up scitra
+        elif [[ -n "${2:-}" ]]; then usage; exit 2
+        else cmd_up custom
+        fi
+        ;;
+    --scitra-client) [[ -z "${2:-}" ]] || { usage; exit 2; }; cmd_up scitra ;;
     down) cmd_down ;;
     clean) cmd_clean ;;
     purge) cmd_purge ;;

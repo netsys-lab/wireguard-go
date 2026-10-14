@@ -68,6 +68,18 @@ sudo SCION_DIR=/path/to/your/scion ./testenvironment.bash
 
 The normal startup builds and verifies the complete infrastructure **without sending a SCION-mapped IPv6 request through our custom translator**.
 
+### Official Scitra client baseline
+
+To replace the custom `wg-client` translator with an official Scitra-TUN client in the `Client` namespace, run:
+
+```bash
+sudo SCION_DIR=/path/to/your/scion ./testenvironment.bash --scitra-client
+```
+
+This keeps `wg-server` and the SCION services running in `Server`, but does not start `wg-client`. The client-side Scitra-TUN uses `veth-client` to reach the source daemon and border routers across the existing `Client`-to-`Server` veth link. The usual target Scitra-TUN remains in `ScitraServer`; the source reference Scitra that normally runs in `Server` is skipped so the baseline has only the target and the client Scitra instances.
+
+The mode records itself in `.runtime/state/client-mode`, makes `test` run the client-side Scitra request, and changes the Client result label in `run_benchmarks.sh`. Run `sudo ./testenvironment.bash down` before switching back to the default custom-translator mode.
+
 ## Startup order
 
 ```text
