@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "feature/integration-tests-and-ci" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "integration" ]
 
 jobs:
   unit-tests:
