@@ -5,9 +5,23 @@ echo "=== 1. Internen Test-Client beenden ==="
 # Den WireGuard-Client stoppen, falls er läuft
 sudo ./06-wireguard.sh client-down 2>/dev/null || true
 
+echo "=== Überprüfe, ob enp0s3 als NAT/Internet-Gateway aktiv ist ===" 
+# Prüfen, ob das Interface existiert und eine IP besitzt
+if ! ip -4 addr show enp0s3 2>/dev/null | grep -q "inet"; then
+    echo "Fehler: Interface enp0s3 hat keine IP-Adresse oder existiert nicht." 
+    exit 1
+fi 
+
+# Prüfen, ob ein Standard-Gateway über enp0s3 erreichbar ist (Routing-Check)
+if ! ip route show default | grep -q "enp0s3"; then
+    echo "Warnung: enp0s3 hat kein Standard-Gateway. Ist es evtl. als rein internes Netzwerk konfiguriert?"
+else
+    echo "enp0s3 ist aktiv und korrekt geroutet."
+fi
+
 echo "=== 2. VM IP-Adresse auslesen ==="
-# Automatisch die IP des Host-Only Adapters (enp0s8) finden
-VM_IP=$(ip -4 addr show enp0s8 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || hostname -I | awk '{print $1}')
+# Automatisch die IP des Host-Only Adapters (enp0s3) finden
+VM_IP=$(ip -4 addr show enp0s3 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || hostname -I | awk '{print $1}')
 if [ -z "$VM_IP" ]; then
     echo "Fehler: Konnte VM-IP nicht ermitteln."
     exit 1
