@@ -1,9 +1,5 @@
 package header_parsing
 
-import (
-	"encoding/binary"
-)
-
 // TrafficClass constants for packet classification.
 // Values mirror flow.ClassPlainIP etc. Use uint8 to avoid import cycle.
 const (
@@ -49,15 +45,15 @@ func IsTranslatedIngressPort(port uint16) bool {
 
 // ClassifyEgress answers: what kind of Flow are we creating on TUN read
 // BEFORE translation. Inner packet is still plain IP.
-// - inner IPv6 dst fc00::/8 + TCP/UDP => ClassMappedSCION
-// - outer IPv4/UDP/SCION or IPv6/UDP/SCION with accepted port+ver0 => ClassNativeSCION
+// - outer IPv4/UDP/SCION or IPv6/UDP/SCION with valid SCION header => ClassNativeSCION
+// - inner IPv6 dst fc00::/8 + TCP/UDP/ICMPv6 => ClassMappedSCION
 // - else ClassPlainIP
 func ClassifyEgress(packet []byte) uint8 {
 	if len(packet) < 1 {
 		return ClassPlainIP
 	}
 	// First check native SCION outer shape (IPv4 or IPv6 UDP+SCION)
-	if isNativeSCIONPacket(packet) {
+	if isValidOuterSCION(packet) {
 		return ClassNativeSCION
 	}
 	// Check mapped IPv6 inner (pre-translation)
@@ -74,129 +70,95 @@ func ClassifyEgress(packet []byte) uint8 {
 }
 
 // ClassifyIngress answers: Plain IP vs SCION transport on the outer
-// packet AFTER WireGuard decryption. For known SCION flows we do NOT
-// decide Native vs Mapped here; Flow.TrafficClass is the source of truth.
+// packet AFTER WireGuard decryption. Both Native and Mapped SCION arrive
+// over outer IP/UDP with a valid SCION header.
+// For known SCION flows we do NOT decide Native vs Mapped here;
+// Flow.TrafficClass in the FlowManager is the source of truth.
 func ClassifyIngress(packet []byte) uint8 {
-	if isNativeSCIONPacket(packet) {
+	if isValidOuterSCION(packet) {
 		return ClassNativeSCION
 	}
-	// Mapped outer transport also looks like native SCION (outer UDP+SCION).
-	// The distinction is not needed on ingress; we treat any SCION transport
-	// as SCION needing reverse lookup. Use isSCIONTransport.
-	if isSCIONTransport(packet) {
-		return ClassMappedSCION
-	}
 	return ClassPlainIP
 }
 
-// ClassifyPacket is the legacy API kept for existing tests.
-// It preserves original broad 30041-32767 and fc00 handling.
-func ClassifyPacket(packet []byte) uint8 {
-	if len(packet) < 40 {
-		return ClassPlainIP
-	}
-	version := packet[0] >> 4
-	if version == 4 {
-		return ClassPlainIP
-	}
-	if version == 6 {
-		if packet[24] == 0xfc {
-			nextHeader := packet[6]
-			if nextHeader != 17 {
-				return ClassMappedSCION
-			}
-			udpPayloadOffset := 40 + 8
-			if len(packet) < udpPayloadOffset+1 {
-				return ClassMappedSCION
-			}
-			if packet[udpPayloadOffset]>>4 == 0 {
-				return ClassMappedSCION
-			}
-			return ClassPlainIP
-		}
-		nextHeader := packet[6]
-		if nextHeader != 17 {
-			return ClassPlainIP
-		}
-		if len(packet) < 44 {
-			return ClassPlainIP
-		}
-		dstPort := binary.BigEndian.Uint16(packet[42:44])
-		if dstPort == DefaultSCIONEndhostPort || (dstPort >= 30041 && dstPort <= 32767) {
-			udpPayloadOffset := 40 + 8
-			if len(packet) < udpPayloadOffset+1 {
-				return ClassNativeSCION
-			}
-			if packet[udpPayloadOffset]>>4 == 0 {
-				return ClassNativeSCION
-			}
-		}
-		return ClassPlainIP
-	}
-	return ClassPlainIP
-}
-
-// isNativeSCIONPacket detects outer IPv4/UDP/SCION or IPv6/UDP/SCION
-// with valid SCION header. For egress native detection, destination port is
-// NOT required to be 30041 – any router port (31002/31004/...) with valid SCION
-// is native. We use authoritative SCION decode to avoid false positives.
-func isNativeSCIONPacket(packet []byte) bool {
-	return isValidOuterSCION(packet)
-}
-
-func isNativeSCIONOverIPv4(packet []byte) bool {
-	return isValidOuterSCION(packet)
-}
-
-func isNativeSCIONOverIPv6(packet []byte) bool {
-	return isValidOuterSCION(packet)
-}
-
-func isSCIONTransport(packet []byte) bool {
-	return isValidOuterSCION(packet)
-}
-
+// isValidOuterSCION prüft autoritativ, ob es sich um ein valides äußeres SCION-Paket
+// über IPv4/UDP oder IPv6/UDP handelt (Port-unabhängig für Endhost-Port 30041 und
+// alle Border-Router Underlay-Ports 31002, 31004 etc.).
+//
+// Ein valides äußeres SCION-Paket erfüllt folgende Kriterien:
+// 1. IP-Version ist 4 oder 6 mit gültiger Header-Länge.
+// 2. Transport-Protokoll ist UDP (Protocol/NextHeader == 17).
+// 3. Das erste Byte der UDP-Payload besitzt die SCION-Version 0 (Bits 0-3 = 0).
 func isValidOuterSCION(packet []byte) bool {
+	// Schritt 1: Mindestlänge für den kleinstmöglichen IP-Header (IPv4 = 20 Bytes)
 	if len(packet) < 20 {
 		return false
 	}
+
+	// Schritt 2: IP-Version aus den oberen 4 Bits (High-Nibble) von Byte 0 extrahieren
 	version := packet[0] >> 4
 	switch version {
 	case 4:
-		if len(packet) < 20 {
-			return false
-		}
+		// --- Fall A: IPv4 ---
+		// Das untere Nibble von Byte 0 (IHL: Internet Header Length) gibt die Länge
+		// des IPv4-Headers in 32-Bit-Wörtern (4 Bytes) an. Normalerweise 5 (5 * 4 = 20 Bytes).
 		ihl := int(packet[0]&0x0f) * 4
+		// Plausibilitätsprüfung: Header muss mindestens 20 Bytes groß sein und darf
+		// nicht größer als das eigentliche Paket sein (verhindert Buffer-Overflow/Panics).
 		if ihl < 20 || ihl > len(packet) {
 			return false
 		}
+
+		// Byte 9 ist das "Protocol"-Feld im IPv4-Header.
+		// SCION wird immer in UDP gekapselt (UDP Protocol Number = 17).
 		if packet[9] != 17 {
 			return false
 		}
+
+		// Ein UDP-Header ist immer exakt 8 Bytes lang.
+		// Prüfen, ob das Paket mindestens den kompletten IPv4-Header + 8 Bytes UDP-Header enthält.
 		if len(packet) < ihl+8 {
 			return false
 		}
+
+		// Offset zur UDP-Payload (wo der SCION-Header beginnt)
 		payloadOff := ihl + 8
+		// Mindestens 1 Byte SCION-Header-Payload muss vorhanden sein, um das Versions-Nibble zu prüfen
 		if len(packet) < payloadOff+1 {
 			return false
 		}
+
+		// SCION Common Header Version-Check:
+		// Die ersten 4 Bits (High-Nibble) des SCION-Headers definieren die SCION-Version.
+		// Laut SCION-Spezifikation MUSS die SCION-Version 0 sein (0b0000).
 		return packet[payloadOff]>>4 == 0
+
 	case 6:
+		// --- Fall B: IPv6 ---
+		// Ein fester IPv6-Header ist immer exakt 40 Bytes lang.
 		if len(packet) < 40 {
 			return false
 		}
+
+		// Byte 6 ist das "Next Header"-Feld im IPv6-Header.
+		// SCION wird in UDP gekapselt (UDP Protocol Number = 17).
 		if packet[6] != 17 {
 			return false
 		}
-		if len(packet) < 44 {
-			return false
-		}
+
+		// Offset zur UDP-Payload: Fester IPv6-Header (40 Bytes) + UDP-Header (8 Bytes) = 48 Bytes.
 		payloadOff := 40 + 8
+		// Mindestens 1 Byte SCION-Header-Payload muss vorhanden sein
 		if len(packet) < payloadOff+1 {
 			return false
 		}
+
+		// SCION Common Header Version-Check:
+		// Oberes Nibble des ersten SCION-Payload-Bytes muss Version 0 sein.
 		return packet[payloadOff]>>4 == 0
+
 	default:
+		// Weder IPv4 noch IPv6
 		return false
 	}
 }
