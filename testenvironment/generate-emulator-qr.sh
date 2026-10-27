@@ -24,7 +24,7 @@ cat <<EOF > scion-emulator.conf
 # TunnelMode = SCION
 # BootstrapURL = http://10.0.0.1:8042
 PrivateKey = $CLIENT_PRIV
-Address = 10.0.0.2/24, 2001:db8:44:25::70/128
+Address = 10.0.0.2/24, fc00:10fc::ffff:10.0.0.2/128
 
 [Peer]
 PublicKey = $SERVER_PUB
