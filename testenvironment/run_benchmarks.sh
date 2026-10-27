@@ -14,8 +14,23 @@ SCION_MAPPED_IP="fc00:30fc:1600::ffff:a1e:2264"
 IPERF_PORT=5201
 IPERF_DURATION=5
 
+DO_PROFILE=0
+for arg in "$@"; do
+    case "$arg" in
+        --profile)
+            DO_PROFILE=1
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--profile]"
+            echo "  --profile    Record CPU (10s) and memory allocs using pprof during benchmark"
+            exit 0
+            ;;
+    esac
+done
+
 ITERATIONS=10
 CLIENT_MODE_FILE="$SCRIPT_DIR/.runtime/state/client-mode"
+LOGS_DIR="$SCRIPT_DIR/.runtime/logs"
 CLIENT_SCITRA_MODE=0
 CLIENT_RESULT_LABEL="Target (Custom Go Translator)"
 CLIENT_IPERF_PREFIX="Go Trans"
@@ -28,13 +43,53 @@ fi
 echo "============================================================"
 echo " UNIFIED SCION TRANSLATOR BENCHMARK & DIAGNOSTIC SUITE"
 echo " Client result: $CLIENT_RESULT_LABEL"
+if [[ "$DO_PROFILE" -eq 1 ]]; then
+    echo " Profiler:     ENABLED (pprof CPU 10s & Memory Allocs)"
+fi
 echo "============================================================"
 
 # --- CLEANUP TRAP ---
+PID_CPU_PROF=""
+PID_ALLOC_PROF=""
 cleanup() {
     sudo ip netns exec ScitraServer pkill -f "iperf3.*${IPERF_PORT}" 2>/dev/null || true
+    if [[ -n "${PID_CPU_PROF:-}" ]]; then kill "$PID_CPU_PROF" 2>/dev/null || true; fi
+    if [[ -n "${PID_ALLOC_PROF:-}" ]]; then kill "$PID_ALLOC_PROF" 2>/dev/null || true; fi
 }
 trap cleanup EXIT INT TERM
+
+# --- PROFILING HELPERS ---
+PROFILE_STARTED=0
+start_profiling() {
+    if [[ "$DO_PROFILE" -eq 1 && "$PROFILE_STARTED" -eq 0 ]]; then
+        PROFILE_STARTED=1
+        echo -e "\n\033[1;36m[PROFILER] Starting background CPU (10s) and memory allocs capture in Client...\033[0m"
+        mkdir -p "$LOGS_DIR"
+        sudo ip netns exec Client curl -s "http://127.0.0.1:6060/debug/pprof/profile?seconds=10" > "$LOGS_DIR/cpu.prof" 2>/dev/null &
+        PID_CPU_PROF=$!
+        sudo ip netns exec Client curl -s "http://127.0.0.1:6060/debug/pprof/allocs" > "$LOGS_DIR/allocs.prof" 2>/dev/null &
+        PID_ALLOC_PROF=$!
+    fi
+}
+
+wait_profiling() {
+    if [[ "$DO_PROFILE" -eq 1 && -n "${PID_CPU_PROF:-}" ]]; then
+        echo -e "\033[1;36m[PROFILER] Waiting for profiling data collection to complete...\033[0m"
+        wait "$PID_CPU_PROF" 2>/dev/null || true
+        wait "$PID_ALLOC_PROF" 2>/dev/null || true
+        PID_CPU_PROF=""
+        PID_ALLOC_PROF=""
+
+        if [ -s "$LOGS_DIR/cpu.prof" ]; then
+            go tool pprof -top "$LOGS_DIR/cpu.prof" > "$LOGS_DIR/cpu_top.txt" 2>/dev/null || true
+            echo -e "\033[1;32m[PROFILER] Top CPU consumers written to: $LOGS_DIR/cpu_top.txt\033[0m"
+        fi
+        if [ -s "$LOGS_DIR/allocs.prof" ]; then
+            go tool pprof -top -alloc_space "$LOGS_DIR/allocs.prof" > "$LOGS_DIR/allocs_top.txt" 2>/dev/null || true
+            echo -e "\033[1;32m[PROFILER] Top memory allocations written to: $LOGS_DIR/allocs_top.txt\033[0m"
+        fi
+    fi
+}
 
 # --- 0. PREPARE 50MB TEST PAYLOADS ---
 prepare_payloads() {
@@ -149,10 +204,14 @@ echo ""
 echo "--- [2/4] Sustained HTTP Bulk Throughput (50MB Transfer) ---"
 measure_throughput "Server" "$TARGET_IP_URL" "Baseline A (Plain IP)"
 if [[ "$CLIENT_SCITRA_MODE" == 1 ]]; then
+    start_profiling
     measure_throughput "Client" "$SCION_MAPPED_URL" "Baseline B (Scitra-TUN in Client)"
+    wait_profiling
 else
     measure_throughput "Server" "$SCION_MAPPED_URL" "Baseline B (Reference Scitra-TUN)"
+    start_profiling
     measure_throughput "Client" "$SCION_MAPPED_URL" "$CLIENT_RESULT_LABEL"
+    wait_profiling
 fi
 
 # --- 3. CONCURRENT LOAD / REQUEST RATE ---
@@ -306,3 +365,22 @@ fi
 
 # Restore HTTP server on port 8000
 restore_http_server
+
+if [[ "$DO_PROFILE" -eq 1 ]]; then
+    wait_profiling
+    echo ""
+    echo -e "\033[1;35m============================================================\033[0m"
+    echo -e "\033[1;35m PROFILING ANALYSIS & FLAMEGRAPH\033[0m"
+    echo -e "\033[1;35m============================================================\033[0m"
+    echo -e "\033[1;32mProfiling-Daten wurden erfolgreich aufgezeichnet:\033[0m"
+    echo -e "  - CPU-Profil:     \033[1;34mtestenvironment/.runtime/logs/cpu.prof\033[0m"
+    echo -e "  - Top Textreport: \033[1;34mtestenvironment/.runtime/logs/cpu_top.txt\033[0m"
+    echo -e "  - Allocs-Profil:  \033[1;34mtestenvironment/.runtime/logs/allocs.prof\033[0m"
+    echo ""
+    echo -e "\033[1;33mInteraktive Flammengrafik (Flamegraph) im Browser ansehen:\033[0m"
+    echo -e "  \033[1;32mgo tool pprof -http=:8085 testenvironment/.runtime/logs/cpu.prof\033[0m"
+    echo ""
+    echo -e "\033[0;37mDieser Befehl startet einen lokalen Webserver (unter http://localhost:8085/ui/flamegraph),\033[0m"
+    echo -e "\033[0;37min dem du millimetergenau die CPU-Verteilung und Funktionsaufrufe analysieren kannst.\033[0m"
+    echo -e "\033[1;35m============================================================\033[0m"
+fi
