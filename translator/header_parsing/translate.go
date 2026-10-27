@@ -25,6 +25,49 @@ import (
 	pathpool "golang.zx2c4.com/wireguard/translator/pathpool"
 )
 
+// --------------------------------- Buffer Pools (sync.Pool) ---------------------------------
+
+var (
+	// serializeBufferPool pools gopacket.SerializeBuffer instances preallocated to 2048 bytes
+	// to eliminate dynamic heap allocations in the packet translation hot-path.
+	serializeBufferPool = sync.Pool{
+		New: func() any {
+			return gopacket.NewSerializeBufferExpectedSize(2048, 0)
+		},
+	}
+
+	// packetBufferPool pools reusable 2048-byte byte buffers for zero-copy packet operations.
+	packetBufferPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 2048)
+			return &b
+		},
+	}
+)
+
+func getSerializeBuffer() gopacket.SerializeBuffer {
+	buf := serializeBufferPool.Get().(gopacket.SerializeBuffer)
+	buf.Clear()
+	return buf
+}
+
+func putSerializeBuffer(buf gopacket.SerializeBuffer) {
+	if buf != nil {
+		buf.Clear()
+		serializeBufferPool.Put(buf)
+	}
+}
+
+func getPacketBuffer() *[]byte {
+	return packetBufferPool.Get().(*[]byte)
+}
+
+func putPacketBuffer(b *[]byte) {
+	if b != nil {
+		packetBufferPool.Put(b)
+	}
+}
+
 //--------------- Helper
 
 func packetSummary(pkt []byte) string {
@@ -592,6 +635,8 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 //   - The same-AS (empty path) outer UDP destination port is the inner L4
 //     destination port for TCP/UDP and DefaultSCIONEndhostPort for SCMP.
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
+	scionBuf := getSerializeBuffer()
+	defer putSerializeBuffer(scionBuf)
 	if len(pktData) < 40 {
 		return nil, nil, errors.New("packet too short for IPv6")
 	}
@@ -713,13 +758,14 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		hasInnerDstPort = true
 		outerSrcPort = uint16(udp.SrcPort)
 
-		// --- FIX: Extract correct payload ---
+		// --- Zero-copy payload extraction ---
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
-			l4Payload = append([]byte(nil), app.Payload()...) // copy
+			l4Payload = app.Payload()
 		}
 
-		scionBytes, err = BuildSCIONPacket(
+		scionBytes, err = BuildSCIONPacketToBuffer(
+			scionBuf,
 			localISD, localASN, dstISD, dstASN,
 			srcHost, dstHost,
 			flowID, tc,
@@ -770,10 +816,10 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
-			l4Payload = append([]byte(nil), app.Payload()...) // copy
+			l4Payload = app.Payload()
 		}
 
-		scionBytes, err = BuildSCIONPacket(localISD, localASN, dstISD, dstASN, srcHost, dstHost, flowID, tc, l4nextHeader, innerTCP, l4Payload, selectedPath, t.log)
+		scionBytes, err = BuildSCIONPacketToBuffer(scionBuf, localISD, localASN, dstISD, dstASN, srcHost, dstHost, flowID, tc, l4nextHeader, innerTCP, l4Payload, selectedPath, t.log)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
 		}
@@ -802,7 +848,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			scmpPayload = buildSCMPEchoPayload(scmpTypeCode.Type(), icmp.Payload, ip6.SrcIP, t.log)
 		}
 
-		scionBytes, err = BuildSCIONPacket(
+		scionBytes, err = BuildSCIONPacketToBuffer(
+			scionBuf,
 			localISD, localASN, dstISD, dstASN,
 			srcHost, dstHost,
 			flowID, tc,
@@ -820,9 +867,9 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 	//scionBytes = [ SCION header | SCION L4 payload ]
 
-	//Wrap Scion Bytes in IP and UDP before returning
-
-	buf := gopacket.NewSerializeBuffer()
+	//Wrap Scion Bytes in IP and UDP before returning using pooled serialize buffer
+	buf := getSerializeBuffer()
+	defer putSerializeBuffer(buf)
 	opts := gopacket.SerializeOptions{
 		FixLengths:       true,
 		ComputeChecksums: true,
@@ -927,11 +974,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	}
 
 	//Outer = [ IPv4 header | UDP header | SCION header | SCION L4 payload ]
-	//We need TCP Out the same
-	outer := buf.Bytes()
+	// Return a copy so the pooled buffer can be safely released and reused
+	outer := make([]byte, len(buf.Bytes()))
+	copy(outer, buf.Bytes())
 
 	return outer, nextHop, nil
-
 }
 
 // SCION -> IPv6
@@ -1481,14 +1528,14 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 			return nil, fmt.Errorf("SCMP not restorable via Flow")
 		case layers.LayerTypeTCP:
 			l4Layer = &tcp
-			l4Payload = append([]byte(nil), tcp.Payload...)
+			l4Payload = tcp.Payload
 		}
 	}
 	if l4Layer == nil && scn.NextHdr == slayers.L4TCP {
 		raw := []byte(pld)
 		if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err == nil {
 			l4Layer = &tcp
-			l4Payload = append([]byte(nil), tcp.Payload...)
+			l4Payload = tcp.Payload
 		}
 	}
 	if l4Layer == nil {
@@ -1526,7 +1573,8 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 		t.log.Infof(scionlog.ComponentPath, "[SCION->IP] flow restore src=%s:%d dst=%s:%d", ipString(srcIP), remotePort, ipString(dstIP), localPort)
 	}
 	// Build inner IPv6 (or IPv4 if both are v4? For now always IPv6 as per current architecture, but support both)
-	buf := gopacket.NewSerializeBuffer()
+	buf := getSerializeBuffer()
+	defer putSerializeBuffer(buf)
 	opts := gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}
 	// Decide IPv4 vs IPv6 inner based on restored addresses
 	isV4 := srcIP != nil && srcIP.To4() != nil && dstIP != nil && dstIP.To4() != nil
@@ -1541,7 +1589,9 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 				return nil, err
 			}
 			_ = l
-			return buf.Bytes(), nil
+			out := make([]byte, len(buf.Bytes()))
+			copy(out, buf.Bytes())
+			return out, nil
 		case *layers.TCP:
 			ip4.Protocol = layers.IPProtocolTCP
 			inner := &layers.TCP{SrcPort: layers.TCPPort(remotePort), DstPort: layers.TCPPort(localPort), Seq: tcp.Seq, Ack: tcp.Ack, SYN: tcp.SYN, ACK: tcp.ACK, FIN: tcp.FIN, RST: tcp.RST, PSH: tcp.PSH, URG: tcp.URG, ECE: tcp.ECE, CWR: tcp.CWR, NS: tcp.NS, Window: tcp.Window, Options: tcp.Options}
@@ -1550,7 +1600,9 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 			if err := gopacket.SerializeLayers(buf, opts, ip4, inner, gopacket.Payload(l4Payload)); err != nil {
 				return nil, err
 			}
-			return buf.Bytes(), nil
+			out := make([]byte, len(buf.Bytes()))
+			copy(out, buf.Bytes())
+			return out, nil
 		}
 	} else {
 		ip6 := &layers.IPv6{Version: 6, SrcIP: srcIP, DstIP: dstIP, HopLimit: 64, FlowLabel: scn.FlowID, TrafficClass: scn.TrafficClass}
@@ -1562,7 +1614,9 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 			if err := gopacket.SerializeLayers(buf, opts, ip6, innerUDP, gopacket.Payload(l4Payload)); err != nil {
 				return nil, err
 			}
-			return buf.Bytes(), nil
+			out := make([]byte, len(buf.Bytes()))
+			copy(out, buf.Bytes())
+			return out, nil
 		case *layers.TCP:
 			ip6.NextHeader = layers.IPProtocolTCP
 			innerTCP := &layers.TCP{SrcPort: layers.TCPPort(remotePort), DstPort: layers.TCPPort(localPort), Seq: tcp.Seq, Ack: tcp.Ack, SYN: tcp.SYN, ACK: tcp.ACK, FIN: tcp.FIN, RST: tcp.RST, PSH: tcp.PSH, URG: tcp.URG, ECE: tcp.ECE, CWR: tcp.CWR, NS: tcp.NS, Window: tcp.Window, Options: tcp.Options}
@@ -1571,7 +1625,9 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 			if err := gopacket.SerializeLayers(buf, opts, ip6, innerTCP, gopacket.Payload(l4Payload)); err != nil {
 				return nil, err
 			}
-			return buf.Bytes(), nil
+			out := make([]byte, len(buf.Bytes()))
+			copy(out, buf.Bytes())
+			return out, nil
 		}
 	}
 	return nil, fmt.Errorf("unsupported L4 for restore")
@@ -1965,8 +2021,10 @@ func UnmapIPv6(ip net.IP, subnetBits uint) (
 	return addr_translation.UnmapIPv6(ip, subnetBits)
 }
 
-// This only return scion bytes
-func BuildSCIONPacket(
+// BuildSCIONPacketToBuffer serializes a SCION packet into the provided gopacket.SerializeBuffer.
+// It avoids dynamic heap allocations in the hot path.
+func BuildSCIONPacketToBuffer(
+	buf gopacket.SerializeBuffer,
 	localISD uint16,
 	localASN uint64,
 	dstISD uint16,
@@ -1997,8 +2055,6 @@ func BuildSCIONPacket(
 			selectedpath,
 		)
 	}
-	//TODO: Handle TCP
-	//	[ SCION header | L4 header (UDP/TCP) | application payload bytes ]
 
 	dstIA, err := addr.IAFrom(addr.ISD(dstISD), addr.AS(dstASN))
 	if err != nil {
@@ -2052,18 +2108,9 @@ func BuildSCIONPacket(
 		pkt.Path = empty.Path{}
 	}
 
-	//pkt.RawSrcAddr = srcHost
-	//pkt.RawDstAddr = dstHost
-	//Need addr.Host to set address of pkt otherwissssssse it does not work
-
-	//pkt.Payload = l4Payload
-	//pkt.PayloadLen = uint16(len(l4Payload))
-
 	if pkt.PathType != 0 && pkt.Path == nil {
 		return nil, fmt.Errorf("SCION header has PathType=%v but Path=nil", pkt.PathType)
 	}
-
-	buf := gopacket.NewSerializeBuffer()
 
 	// --- set L4 checksum using SCION as the network layer ---
 	switch l := l4layer.(type) {
@@ -2072,7 +2119,6 @@ func BuildSCIONPacket(
 			FixLengths:       true,
 			ComputeChecksums: true,
 		}
-		//gopacket can not compute checksum for scion packets
 
 		l.SetNetworkLayerForChecksum(pkt)
 
@@ -2085,43 +2131,44 @@ func BuildSCIONPacket(
 		}
 
 	case *layers.TCP:
-
-		//TODO: Checksum Compute like slayers.UDP check slayers
-		//Optional: Fork Proto, implement directly. <- Preferred (Replace in go.sum) https://go.dev/ref/mod#go-mod-file-replace
-
-		// 1) Header ohne Checksum serialisieren
+		// 1) Serialize TCP header without checksum using pooled serialize buffer
 		l.Checksum = 0
-		hdrbuf := gopacket.NewSerializeBuffer()
-
+		hdrbuf := getSerializeBuffer()
 		if err := l.SerializeTo(hdrbuf, gopacket.SerializeOptions{
-			FixLengths:       true,  // setzt DataOffset korrekt
-			ComputeChecksums: false, // wir rechnen selbst
+			FixLengths:       true,  // sets DataOffset correctly
+			ComputeChecksums: false, // computed via rolling Checksum16 below
 		}); err != nil {
+			putSerializeBuffer(hdrbuf)
 			return nil, fmt.Errorf("serialize TCP for checksum: %w", err)
 		}
 		tcpBytes := hdrbuf.Bytes()
 
 		upperLen := uint16(len(tcpBytes) + len(l4Payload)) // TCP-Header + Payload
 
-		pseudo, err := buildSCIONPseudoHeader(
+		// 2) Write SCION pseudo-header into stack buffer (0 heap allocations)
+		var pseudoBuf [64]byte
+		pseudoLen, err := writeSCIONPseudoHeader(
+			pseudoBuf[:],
 			srcIA, dstIA,
 			srcHost, dstHost,
 			upperLen,
 			nextHeader, // = slayers.L4TCP
 		)
 		if err != nil {
+			putSerializeBuffer(hdrbuf)
 			return nil, fmt.Errorf("build SCION TCP pseudo header: %w", err)
 		}
 
-		bufForCksum := make([]byte, 0, len(pseudo)+len(tcpBytes)+len(l4Payload))
-		bufForCksum = append(bufForCksum, pseudo...)
-		bufForCksum = append(bufForCksum, tcpBytes...)
-		bufForCksum = append(bufForCksum, l4Payload...)
+		// 3) Zero-copy streaming RFC 1071 checksum (0 bytes allocated, no payload copy)
+		var ck Checksum16
+		ck.Write(pseudoBuf[:pseudoLen])
+		ck.Write(tcpBytes)
+		ck.Write(l4Payload)
+		l.Checksum = ck.Sum()
 
-		l.Checksum = checksum16(bufForCksum)
+		putSerializeBuffer(hdrbuf)
 
-		// 4) NOW build the actual SCION packet: [SCION header | TCP | payload]
-		//scionBuf := gopacket.NewSerializeBuffer()
+		// 4) Serialize SCION packet: [SCION header | TCP | payload]
 		if err := gopacket.SerializeLayers(
 			buf,
 			gopacket.SerializeOptions{
@@ -2136,43 +2183,43 @@ func BuildSCIONPacket(
 		}
 
 	case *slayers.SCMP:
-		// gopacket cannot compute the SCMP checksum for SCION packets, so we
-		// serialize the SCMP header (checksum 0) and compute the checksum over
-		// SCMP header + info block + data with the SCION pseudo header
-		// (mirrors the TCP case below). The info block and data are carried in
-		// l4Payload (see buildSCMPEchoPayload).
 		opts := gopacket.SerializeOptions{
 			FixLengths:       true,
 			ComputeChecksums: false,
 		}
 
-		hdrbuf := gopacket.NewSerializeBuffer()
+		hdrbuf := getSerializeBuffer()
 		if err := l.SerializeTo(hdrbuf, gopacket.SerializeOptions{
 			FixLengths:       true,
 			ComputeChecksums: false,
 		}); err != nil {
+			putSerializeBuffer(hdrbuf)
 			return nil, fmt.Errorf("serialize SCMP for checksum: %w", err)
 		}
 		scmpBytes := hdrbuf.Bytes()
 
 		upperLen := uint16(len(scmpBytes) + len(l4Payload))
 
-		pseudo, err := buildSCIONPseudoHeader(
+		var pseudoBuf [64]byte
+		pseudoLen, err := writeSCIONPseudoHeader(
+			pseudoBuf[:],
 			srcIA, dstIA,
 			srcHost, dstHost,
 			upperLen,
 			slayers.L4SCMP,
 		)
 		if err != nil {
+			putSerializeBuffer(hdrbuf)
 			return nil, fmt.Errorf("build SCION SCMP pseudo header: %w", err)
 		}
 
-		bufForCksum := make([]byte, 0, len(pseudo)+len(scmpBytes)+len(l4Payload))
-		bufForCksum = append(bufForCksum, pseudo...)
-		bufForCksum = append(bufForCksum, scmpBytes...)
-		bufForCksum = append(bufForCksum, l4Payload...)
+		var ck Checksum16
+		ck.Write(pseudoBuf[:pseudoLen])
+		ck.Write(scmpBytes)
+		ck.Write(l4Payload)
+		l.Checksum = ck.Sum()
 
-		l.Checksum = checksum16(bufForCksum)
+		putSerializeBuffer(hdrbuf)
 
 		if err := gopacket.SerializeLayers(buf, opts,
 			pkt,
@@ -2183,30 +2230,84 @@ func BuildSCIONPacket(
 		}
 
 	default:
-		// If you ever pass something else, checksums won’t be computed correctly.
 		return nil, fmt.Errorf("unsupported L4 layer type %T; expected *slayers.UDP or *layers.TCP", l4layer)
 	}
 
-	//SetNetworkLayerForChecmsum only accepts *layers.IPv4 or IPv6? Does not work with *slyers.SCION for pkt.
-
-	//---------------------------------------------------------------------------------------------------------
-
 	out := buf.Bytes()
+	return out, nil
+}
+
+// BuildSCIONPacket serializes a SCION packet and returns an independent byte slice.
+func BuildSCIONPacket(
+	localISD uint16,
+	localASN uint64,
+	dstISD uint16,
+	dstASN uint64,
+	srcHost net.IP,
+	dstHost net.IP,
+	flowID uint32,
+	tc uint8,
+	nextHeader slayers.L4ProtocolType,
+	l4layer gopacket.SerializableLayer,
+	l4Payload []byte,
+	selectedpath snet.Path,
+	log *scionlog.Logger,
+) ([]byte, error) {
+	buf := getSerializeBuffer()
+	defer putSerializeBuffer(buf)
+	res, err := BuildSCIONPacketToBuffer(
+		buf,
+		localISD, localASN, dstISD, dstASN,
+		srcHost, dstHost,
+		flowID, tc,
+		nextHeader, l4layer, l4Payload,
+		selectedpath, log,
+	)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, len(res))
+	copy(out, res)
 	return out, nil
 }
 
 // -------------------------------------------- CHECKSUM ----------------------------------------
 //https://datatracker.ietf.org/doc/html/rfc1624
 
-// checksum16 computes the standard 16-bit ones-complement checksum
-// used for IP/UDP/TCP.
-func checksum16(data []byte) uint16 {
-	var sum uint32
-	for i := 0; i+1 < len(data); i += 2 {
-		sum += uint32(binary.BigEndian.Uint16(data[i:]))
+// Checksum16 computes a standard 16-bit ones-complement Internet checksum (RFC 1071)
+// in a rolling / streaming manner across multiple buffer slices with zero heap allocations.
+type Checksum16 struct {
+	sum    uint32
+	odd    byte
+	hasOdd bool
+}
+
+// Write adds a byte slice to the running 16-bit ones' complement sum.
+func (c *Checksum16) Write(data []byte) {
+	if len(data) == 0 {
+		return
 	}
-	if len(data)%2 == 1 {
-		sum += uint32(data[len(data)-1]) << 8
+	if c.hasOdd {
+		word := (uint32(c.odd) << 8) | uint32(data[0])
+		c.sum += word
+		data = data[1:]
+		c.hasOdd = false
+	}
+	for len(data) >= 2 {
+		c.sum += uint32(binary.BigEndian.Uint16(data))
+		data = data[2:]
+	}
+	if len(data) == 1 {
+		c.odd = data[0]
+		c.hasOdd = true
+	}
+}
+
+// Sum finalizes the checksum and returns the inverted 16-bit result.
+func (c *Checksum16) Sum() uint16 {
+	sum := c.sum
+	if c.hasOdd {
+		sum += uint32(c.odd) << 8
 	}
 	for (sum >> 16) != 0 {
 		sum = (sum & 0xffff) + (sum >> 16)
@@ -2214,71 +2315,95 @@ func checksum16(data []byte) uint16 {
 	return ^uint16(sum)
 }
 
-// buildSCIONPseudoHeader builds the SCION pseudo header for IPv4 and IPv6
-// host addresses, according to the spec:
+// checksum16 computes the standard 16-bit ones-complement checksum
+// used for IP/UDP/TCP (RFC 1071).
+func checksum16(data []byte) uint16 {
+	var ck Checksum16
+	ck.Write(data)
+	return ck.Sum()
+}
+
+// writeSCIONPseudoHeader writes the SCION pseudo header directly into out without allocating heap memory:
 //
-//	DstISD(2) | DstAS(4) | SrcISD(2) | SrcAS(4) |
+//	DstISD(2) | DstAS(6) | SrcISD(2) | SrcAS(6) |
 //	DstHost | SrcHost | UpperLen(4) | zero(3) | NextHdr(1)
+func writeSCIONPseudoHeader(
+	out []byte,
+	srcIA, dstIA addr.IA,
+	srcHost, dstHost net.IP,
+	upperLen uint16,
+	nextHdr slayers.L4ProtocolType,
+) (int, error) {
+	src4 := srcHost.To4()
+	dst4 := dstHost.To4()
+
+	var hostLen int
+	isV4 := src4 != nil && dst4 != nil
+	if isV4 {
+		hostLen = 8
+	} else {
+		src16 := srcHost.To16()
+		dst16 := dstHost.To16()
+		if src16 == nil || dst16 == nil {
+			return 0, fmt.Errorf("writeSCIONPseudoHeader: invalid host IPs")
+		}
+		hostLen = 32
+	}
+
+	baseLen := 8 + 8 + hostLen + 4 + 4
+	if len(out) < baseLen {
+		return 0, fmt.Errorf("out buffer too small for pseudo header: %d < %d", len(out), baseLen)
+	}
+
+	off := 0
+
+	binary.BigEndian.PutUint16(out[off:], uint16(dstIA.ISD()))
+	off += 2
+	putAS48(out[off:off+6], dstIA.AS())
+	off += 6
+
+	binary.BigEndian.PutUint16(out[off:], uint16(srcIA.ISD()))
+	off += 2
+	putAS48(out[off:off+6], srcIA.AS())
+	off += 6
+
+	if isV4 {
+		copy(out[off:off+4], dst4)
+		copy(out[off+4:off+8], src4)
+	} else {
+		copy(out[off:off+16], dstHost.To16())
+		copy(out[off+16:off+32], srcHost.To16())
+	}
+	off += hostLen
+
+	binary.BigEndian.PutUint32(out[off:], uint32(upperLen))
+	off += 4
+
+	out[off] = 0
+	out[off+1] = 0
+	out[off+2] = 0
+	out[off+3] = byte(nextHdr)
+	off += 4
+
+	return off, nil
+}
+
+// buildSCIONPseudoHeader builds the SCION pseudo header for IPv4 and IPv6
+// host addresses according to the SCION specification.
 func buildSCIONPseudoHeader(
 	srcIA, dstIA addr.IA,
 	srcHost, dstHost net.IP,
 	upperLen uint16,
 	nextHdr slayers.L4ProtocolType,
 ) ([]byte, error) {
-
-	src4 := srcHost.To4()
-	dst4 := dstHost.To4()
-
-	var hostPart []byte
-	switch {
-	case src4 != nil && dst4 != nil:
-		// IPv4 hosts: 4+4 bytes
-		hostPart = make([]byte, 8)
-		copy(hostPart[0:4], dst4)
-		copy(hostPart[4:8], src4)
-	default:
-		// IPv6 hosts: use full 16-byte addresses
-		src16 := srcHost.To16()
-		dst16 := dstHost.To16()
-		if src16 == nil || dst16 == nil {
-			return nil, fmt.Errorf("buildSCIONUDPPseudoHeader: invalid host IPs")
-		}
-		hostPart = make([]byte, 32)
-		copy(hostPart[0:16], dst16)
-		copy(hostPart[16:32], src16)
+	var buf [64]byte
+	n, err := writeSCIONPseudoHeader(buf[:], srcIA, dstIA, srcHost, dstHost, upperLen, nextHdr)
+	if err != nil {
+		return nil, err
 	}
-
-	/// base: dstIA(8) + srcIA(8) + hostPart + upperLen(4) + zero(3)/nextHdr(1)
-	baseLen := 8 + 8 + len(hostPart) + 4 + 4
-	b := make([]byte, baseLen)
-
-	off := 0
-
-	binary.BigEndian.PutUint16(b[off:], uint16(dstIA.ISD()))
-	off += 2
-	putAS48(b[off:off+6], dstIA.AS())
-	off += 6
-
-	binary.BigEndian.PutUint16(b[off:], uint16(srcIA.ISD()))
-	off += 2
-	putAS48(b[off:off+6], srcIA.AS())
-	off += 6
-
-	// Host addresses
-	copy(b[off:], hostPart)
-	off += len(hostPart)
-
-	// Upper-layer length (UDP header + payload)
-	binary.BigEndian.PutUint32(b[off:], uint32(upperLen))
-	off += 4
-
-	// zero(3) | NextHdr(1)
-	b[off] = 0
-	b[off+1] = 0
-	b[off+2] = 0
-	b[off+3] = byte(nextHdr)
-
-	return b, nil
+	res := make([]byte, n)
+	copy(res, buf[:n])
+	return res, nil
 }
 
 // MaxTCPMSS is the maximum allowable TCP MSS for packets routed over SCION encapsulation.

@@ -2670,3 +2670,131 @@ func TestTranslateIngressUDPNonSCIONDocumentsAmbiguity(t *testing.T) {
 		})
 	}
 }
+
+func TestChecksum16Streaming(t *testing.T) {
+	t.Run("matches legacy checksum16 on single slice", func(t *testing.T) {
+		data := []byte("Hello, SCION internet checksum test payload with RFC 1071 verification!")
+		var ck Checksum16
+		ck.Write(data)
+		got := ck.Sum()
+		expected := checksum16(data)
+		if got != expected {
+			t.Fatalf("expected 0x%04x, got 0x%04x", expected, got)
+		}
+	})
+
+	t.Run("matches legacy checksum16 across multiple disjoint slices", func(t *testing.T) {
+		part1 := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06} // 6 bytes (even)
+		part2 := []byte{0x07, 0x08, 0x09, 0x0a}             // 4 bytes (even)
+		part3 := []byte("arbitrary payload text for testing streaming checksum")
+
+		combined := append(append(part1, part2...), part3...)
+		expected := checksum16(combined)
+
+		var ck Checksum16
+		ck.Write(part1)
+		ck.Write(part2)
+		ck.Write(part3)
+		got := ck.Sum()
+
+		if got != expected {
+			t.Fatalf("streaming checksum failed: expected 0x%04x, got 0x%04x", expected, got)
+		}
+	})
+
+	t.Run("matches legacy checksum16 with odd-length slices", func(t *testing.T) {
+		part1 := []byte{0x11, 0x22, 0x33}             // 3 bytes (odd)
+		part2 := []byte{0x44, 0x55, 0x66, 0x77, 0x88} // 5 bytes (odd)
+		part3 := []byte{0x99}                         // 1 byte (odd)
+
+		combined := append(append(part1, part2...), part3...)
+		expected := checksum16(combined)
+
+		var ck Checksum16
+		ck.Write(part1)
+		ck.Write(part2)
+		ck.Write(part3)
+		got := ck.Sum()
+
+		if got != expected {
+			t.Fatalf("streaming odd-slice checksum failed: expected 0x%04x, got 0x%04x", expected, got)
+		}
+	})
+
+	t.Run("zero allocations in streaming checksum", func(t *testing.T) {
+		part1 := []byte{0x01, 0x02, 0x03, 0x04}
+		part2 := []byte{0x05, 0x06, 0x07, 0x08}
+		part3 := []byte{0x09, 0x0a, 0x0b, 0x0c}
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			var ck Checksum16
+			ck.Write(part1)
+			ck.Write(part2)
+			ck.Write(part3)
+			_ = ck.Sum()
+		})
+
+		if allocs > 0 {
+			t.Fatalf("expected 0 allocations in Checksum16, got %.2f allocs/op", allocs)
+		}
+	})
+}
+
+func TestWriteSCIONPseudoHeader(t *testing.T) {
+	srcIA := mustIA(t, 1, 64496)
+	dstIA := mustIA(t, 2, 64497)
+
+	t.Run("IPv4 host addresses match byte-for-byte", func(t *testing.T) {
+		srcHost := net.ParseIP("10.0.0.1")
+		dstHost := net.ParseIP("10.0.0.2")
+
+		legacy, err := buildSCIONPseudoHeader(srcIA, dstIA, srcHost, dstHost, 1180, slayers.L4TCP)
+		if err != nil {
+			t.Fatalf("buildSCIONPseudoHeader failed: %v", err)
+		}
+
+		var stackBuf [64]byte
+		n, err := writeSCIONPseudoHeader(stackBuf[:], srcIA, dstIA, srcHost, dstHost, 1180, slayers.L4TCP)
+		if err != nil {
+			t.Fatalf("writeSCIONPseudoHeader failed: %v", err)
+		}
+
+		if !bytes.Equal(stackBuf[:n], legacy) {
+			t.Fatalf("pseudo header mismatch for IPv4:\ngot:  %x\nwant: %x", stackBuf[:n], legacy)
+		}
+	})
+
+	t.Run("IPv6 host addresses match byte-for-byte", func(t *testing.T) {
+		srcHost := net.ParseIP("fc00:1:2::1")
+		dstHost := net.ParseIP("fc00:3:4::2")
+
+		legacy, err := buildSCIONPseudoHeader(srcIA, dstIA, srcHost, dstHost, 1180, slayers.L4TCP)
+		if err != nil {
+			t.Fatalf("buildSCIONPseudoHeader failed: %v", err)
+		}
+
+		var stackBuf [64]byte
+		n, err := writeSCIONPseudoHeader(stackBuf[:], srcIA, dstIA, srcHost, dstHost, 1180, slayers.L4TCP)
+		if err != nil {
+			t.Fatalf("writeSCIONPseudoHeader failed: %v", err)
+		}
+
+		if !bytes.Equal(stackBuf[:n], legacy) {
+			t.Fatalf("pseudo header mismatch for IPv6:\ngot:  %x\nwant: %x", stackBuf[:n], legacy)
+		}
+	})
+
+	t.Run("zero allocations in writeSCIONPseudoHeader", func(t *testing.T) {
+		srcHost := net.ParseIP("10.0.0.1")
+		dstHost := net.ParseIP("10.0.0.2")
+		var stackBuf [64]byte
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			_, _ = writeSCIONPseudoHeader(stackBuf[:], srcIA, dstIA, srcHost, dstHost, 1180, slayers.L4TCP)
+		})
+
+		if allocs > 0 {
+			t.Fatalf("expected 0 allocations in writeSCIONPseudoHeader, got %.2f allocs/op", allocs)
+		}
+	})
+}
