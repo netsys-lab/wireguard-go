@@ -110,6 +110,7 @@ start_client() {
         export SCION_CONFIG_DIR='$SCION_CONFIG_DIR'
         export SCION_BOOTSTRAP_URL='$SCION_BOOTSTRAP_URL'
         export SCION_UNDERLAY_PORT='$SCION_UNDERLAY_PORT'
+        export WG_PPROF_ADDR='${WG_PPROF_ADDR:-127.0.0.1:6060}'
         $policy_export
         exec '$BIN_DIR/wireguard-go' --foreground '$WG_CLIENT_IFACE' >> '$LOGS_DIR/wg-client.log' 2>&1
     " &

@@ -74,33 +74,12 @@ func (l *Logger) shouldLog(level LogLevel, comp Component) bool {
 	return cfg.shouldComponentLog(comp)
 }
 
-func (l *Logger) Tracef(comp Component, format string, args ...any) {
-	if l.shouldLog(LogTrace, comp) {
-		l.verbosef(format, args...)
-	}
-}
-
-func (l *Logger) Debugf(comp Component, format string, args ...any) {
-	if l.shouldLog(LogDebug, comp) {
-		l.verbosef(format, args...)
-	}
-}
-
-func (l *Logger) Infof(comp Component, format string, args ...any) {
-	if l.shouldLog(LogInfo, comp) {
-		l.verbosef(format, args...)
-	}
-}
-
-func (l *Logger) Warnf(comp Component, format string, args ...any) {
-	if l.shouldLog(LogWarn, comp) {
-		l.verbosef(format, args...)
-	}
-}
-
 func (l *Logger) Errorf(comp Component, format string, args ...any) {
-	l.errorf(format, args...)
+	if l != nil && l.errorf != nil {
+		l.errorf(format, args...)
+	}
 }
+
 
 func LogEffectiveConfig(l *Logger, source string, debugBuild bool) {
 	cfg := l.Config()

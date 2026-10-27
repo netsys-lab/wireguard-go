@@ -16,6 +16,9 @@ import (
 	"runtime"
 	"strconv"
 
+	"net/http"
+	_ "net/http/pprof"
+
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -255,6 +258,15 @@ func main() {
 	}
 
 	logger.Verbosef("Device started")
+
+	if pprofAddr := os.Getenv("WG_PPROF_ADDR"); pprofAddr != "" {
+		go func() {
+			logger.Verbosef("Starting pprof HTTP server on %s", pprofAddr)
+			if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+				logger.Errorf("Failed to start pprof HTTP server: %v", err)
+			}
+		}()
+	}
 
 	errs := make(chan error)
 	term := make(chan os.Signal, 1)

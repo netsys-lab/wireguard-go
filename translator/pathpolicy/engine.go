@@ -5,8 +5,10 @@ import (
 	"log"
 	"os"
 
+	"golang.zx2c4.com/wireguard/scionlog"
 	pathpool "golang.zx2c4.com/wireguard/translator/pathpool"
 )
+
 
 // Engine is the top-level path policy engine. It holds a parsed and resolved
 // policy file and provides the SelectPaths entry point for the translator.
@@ -85,8 +87,10 @@ func (e *Engine) SelectPaths(info PacketInfo, paths []pathpool.CachedPath) []pat
 	// Step 1: Match packet to policy.
 	policyName := MatchPacket(e.file.Matchers, info)
 
-	log.Printf("[PATHPOLICY] packet matched policy=%q (src=%s dst=%s proto=%s dscp=%d)",
-		policyName, info.SrcIA, info.DstIA, info.Protocol, info.DSCP)
+	if scionlog.IsDebug() {
+		log.Printf("[PATHPOLICY] packet matched policy=%q (src=%s dst=%s proto=%s dscp=%d)",
+			policyName, info.SrcIA, info.DstIA, info.Protocol, info.DSCP)
+	}
 
 	// Step 2-4: Apply policy with failover chain.
 	return e.applyPolicyChain(policyName, paths)
@@ -100,22 +104,28 @@ func (e *Engine) applyPolicyChain(policyName string, paths []pathpool.CachedPath
 
 	for {
 		if visited[currentPolicy] {
-			log.Printf("[PATHPOLICY] failover loop detected at policy=%q, returning all paths", currentPolicy)
+			if scionlog.IsDebug() {
+				log.Printf("[PATHPOLICY] failover loop detected at policy=%q, returning all paths", currentPolicy)
+			}
 			return paths
 		}
 		visited[currentPolicy] = true
 
 		rp, ok := e.resolved[currentPolicy]
 		if !ok {
-			log.Printf("[PATHPOLICY] policy %q not found, returning all paths", currentPolicy)
+			if scionlog.IsDebug() {
+				log.Printf("[PATHPOLICY] policy %q not found, returning all paths", currentPolicy)
+			}
 			return paths
 		}
 
 		// Apply filters.
 		filtered := FilterPaths(rp, paths)
 
-		log.Printf("[PATHPOLICY] policy=%q filtered: %d -> %d paths",
-			currentPolicy, len(paths), len(filtered))
+		if scionlog.IsDebug() {
+			log.Printf("[PATHPOLICY] policy=%q filtered: %d -> %d paths",
+				currentPolicy, len(paths), len(filtered))
+		}
 
 		if len(filtered) > 0 {
 			// Apply ordering.
@@ -125,12 +135,16 @@ func (e *Engine) applyPolicyChain(policyName string, paths []pathpool.CachedPath
 
 		// No paths survived. Try failover.
 		if rp.Failover == "" {
-			log.Printf("[PATHPOLICY] policy=%q yielded 0 paths, no failover", currentPolicy)
+			if scionlog.IsDebug() {
+				log.Printf("[PATHPOLICY] policy=%q yielded 0 paths, no failover", currentPolicy)
+			}
 			return filtered // empty
 		}
 
-		log.Printf("[PATHPOLICY] policy=%q yielded 0 paths, failover to %q",
-			currentPolicy, rp.Failover)
+		if scionlog.IsDebug() {
+			log.Printf("[PATHPOLICY] policy=%q yielded 0 paths, failover to %q",
+				currentPolicy, rp.Failover)
+		}
 		currentPolicy = rp.Failover
 	}
 }

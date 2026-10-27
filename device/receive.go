@@ -520,7 +520,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 			if device.translator != nil {
 				ingressClass := header_parsing.ClassifyIngress(elem.packet)
 				if ingressClass == header_parsing.ClassPlainIP {
-					device.log.Verbosef("[CLASSIFY-INGRESS] plain IP, skipping SCION handling")
+					device.scionLog.Verbosef("[CLASSIFY-INGRESS] plain IP, skipping SCION handling")
 				} else {
 					// SCION transport: try SCMP first (informational and errors), then TCP/UDP
 					if scmpInfo, err := header_parsing.ExtractSCMPInfo(elem.packet); err == nil {
@@ -558,7 +558,9 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 										}
 										copy(elem.buffer[MessageTransportOffsetContent:], translated)
 										elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(translated)]
-										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION->IP] flow=%d SCMP-error restored dst=%s", snap.ID, snap.LocalEndpoint.Addr.String())
+										if device.scionLog.IsDebug() {
+											device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION->IP] flow=%d SCMP-error restored dst=%s", snap.ID, snap.LocalEndpoint.Addr.String())
+										}
 									} else {
 										oldLen := len(elem.packet)
 										translated, err := device.translator.TranslateIngress(elem.packet, nil)
@@ -651,7 +653,9 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 									}
 									copy(elem.buffer[MessageTransportOffsetContent:], restored)
 									elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(restored)]
-									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCMP->ICMP6] flow=%d type=%v restored dst=%s id=%d", snap.ID, scmpInfo.Type, snap.LocalEndpoint.Addr.String(), snap.LocalEndpoint.Port)
+									if device.scionLog.IsDebug() {
+										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCMP->ICMP6] flow=%d type=%v restored dst=%s id=%d", snap.ID, scmpInfo.Type, snap.LocalEndpoint.Addr.String(), snap.LocalEndpoint.Port)
+									}
 								}
 							case SCIONLookupMiss:
 								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=no-flow protocol=SCMP type=%v id=%d seq=%d", scmpInfo.Type, scmpInfo.Identifier, scmpInfo.Sequence)
@@ -693,7 +697,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] hit flow=%d class=mapped", snap.ID)
 									restored, err := device.translator.TranslateIngressWithFlow(elem.packet, snap.LocalEndpoint.Addr, snap.LocalEndpoint.Port, snap.RemoteEndpoint.Addr, snap.RemoteEndpoint.Port)
 									if err != nil {
-										device.log.Verbosef("[SCION->IP] restore failed flow=%d err=%v", snap.ID, err)
+										device.scionLog.Verbosef("[SCION->IP] restore failed flow=%d err=%v", snap.ID, err)
 										continue
 									}
 									if len(restored) > MaxMessageSize-MessageTransportOffsetContent {
@@ -702,7 +706,9 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 									}
 									copy(elem.buffer[MessageTransportOffsetContent:], restored)
 									elem.packet = elem.buffer[MessageTransportOffsetContent : MessageTransportOffsetContent+len(restored)]
-									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION->IP] flow=%d restored %s:%d -> %s:%d", snap.ID, snap.RemoteEndpoint.Addr.String(), snap.RemoteEndpoint.Port, snap.LocalEndpoint.Addr.String(), snap.LocalEndpoint.Port)
+									if device.scionLog.IsDebug() {
+										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION->IP] flow=%d restored %s:%d -> %s:%d", snap.ID, snap.RemoteEndpoint.Addr.String(), snap.RemoteEndpoint.Port, snap.LocalEndpoint.Addr.String(), snap.LocalEndpoint.Port)
+									}
 								} else {
 									// Unclassified: fallback stateless
 									oldLen := len(elem.packet)

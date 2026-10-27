@@ -350,60 +350,75 @@ type PathPool interface {
 }
 
 func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, hostPort int, isIPv6 bool) ([]byte, error) {
-	t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] enter pkt=%s srcIP=%s dstIP=%s hostPort=%d isIPv6=%v localIA=%s brAddr=%s",
-		packetSummary(pkt),
-		ipString(srcIP),
-		ipString(dstIP),
-		hostPort,
-		isIPv6,
-		t.localIA,
-		udpAddrString(t.brAddr),
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] enter pkt=%s srcIP=%s dstIP=%s hostPort=%d isIPv6=%v localIA=%s brAddr=%s",
+			packetSummary(pkt),
+			ipString(srcIP),
+			ipString(dstIP),
+			hostPort,
+			isIPv6,
+			t.localIA,
+			udpAddrString(t.brAddr),
+		)
+	}
 
 	if !isIPv6 {
-		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] bypass normal IPv4 packet dstIP=%s pktLen=%d",
-			ipString(dstIP),
-			len(pkt),
-		)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] bypass normal IPv4 packet dstIP=%s pktLen=%d",
+				ipString(dstIP),
+				len(pkt),
+			)
+		}
 		return pkt, nil
 	}
 
 	if !IsSCIONMapped(dstIP) {
-		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] bypass: dstIP is not SCION-mapped dstIP=%s pktLen=%d",
-			ipString(dstIP),
-			len(pkt),
-		)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] bypass: dstIP is not SCION-mapped dstIP=%s pktLen=%d",
+				ipString(dstIP),
+				len(pkt),
+			)
+		}
 		return pkt, nil
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] SCION-mapped destination detected dstIP=%s", ipString(dstIP))
-
-	t.log.Infof(scionlog.ComponentPath, "HIER mussen wir eigentlich schon als srcIP die IP des WG Interface ubergeben.")
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] SCION-mapped destination detected dstIP=%s", ipString(dstIP))
+		t.log.Infof(scionlog.ComponentPath, "HIER mussen wir eigentlich schon als srcIP die IP des WG Interface ubergeben.")
+	}
 	newpkt, nextHop, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
 	if err != nil {
-		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] TranslateEgress failed srcIP=%s dstIP=%s hostPort=%d err=%v",
-			ipString(srcIP),
-			ipString(dstIP),
-			hostPort,
-			err,
-		)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] TranslateEgress failed srcIP=%s dstIP=%s hostPort=%d err=%v",
+				ipString(srcIP),
+				ipString(dstIP),
+				hostPort,
+				err,
+			)
+		}
 		return pkt, fmt.Errorf("TranslateEgress failed: %w", err)
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] translated successfully originalLen=%d translatedLen=%d nextHop=%s",
-		len(pkt),
-		len(newpkt),
-		udpAddrString(nextHop),
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] translated successfully originalLen=%d translatedLen=%d nextHop=%s",
+			len(pkt),
+			len(newpkt),
+			udpAddrString(nextHop),
+		)
+	}
 
 	return newpkt, nil
 }
 
 func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
-	t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] enter srcIA=%s dstIA=%s", srcIA, dstIA)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] enter srcIA=%s dstIA=%s", srcIA, dstIA)
+	}
 
 	if srcIA == dstIA {
-		t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] same-AS traffic detected srcIA=%s dstIA=%s using empty path", srcIA, dstIA)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] same-AS traffic detected srcIA=%s dstIA=%s using empty path", srcIA, dstIA)
+		}
 		return path.Path{}, nil
 	}
 
@@ -411,35 +426,85 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	defer cancel()
 
 	start := time.Now()
-	t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] cache.Get start srcIA=%s dstIA=%s timeout=2s", srcIA, dstIA)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] cache.Get start srcIA=%s dstIA=%s timeout=2s", srcIA, dstIA)
+	}
 
 	CachedPaths, err := t.cache.Get(ctx, srcIA, dstIA)
 	elapsed := time.Since(start)
 
 	if err != nil {
-		t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] cache.Get failed srcIA=%s dstIA=%s elapsed=%s err=%v",
-			srcIA,
-			dstIA,
-			elapsed,
-			err,
-		)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] cache.Get failed srcIA=%s dstIA=%s elapsed=%s err=%v",
+				srcIA,
+				dstIA,
+				elapsed,
+				err,
+			)
+		}
 		return path.Path{}, fmt.Errorf("path cache error for %s -> %s: %w", srcIA, dstIA, err)
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] cache.Get returned srcIA=%s dstIA=%s elapsed=%s count=%d",
-		srcIA,
-		dstIA,
-		elapsed,
-		len(CachedPaths),
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] cache.Get returned srcIA=%s dstIA=%s elapsed=%s count=%d",
+			srcIA,
+			dstIA,
+			elapsed,
+			len(CachedPaths),
+		)
+	}
 
 	if len(CachedPaths) == 0 {
-		t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] no paths available srcIA=%s dstIA=%s", srcIA, dstIA)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] no paths available srcIA=%s dstIA=%s", srcIA, dstIA)
+		}
 		return path.Path{}, fmt.Errorf("no paths for %s -> %s", srcIA, dstIA)
 	}
 
-	for i, cp := range CachedPaths {
-		meta := cp.Path.Metadata()
+	if t.log.IsDebug() {
+		for i, cp := range CachedPaths {
+			meta := cp.Path.Metadata()
+
+			var expiry time.Time
+			var mtu uint16
+			var interfaces any
+
+			if meta != nil {
+				expiry = meta.Expiry
+				mtu = meta.MTU
+				interfaces = meta.Interfaces
+			}
+
+			t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] candidate path[%d]: src=%s dst=%s fp=%s nextHop=%v expiry=%s mtu=%d interfaces=%v",
+				i,
+				srcIA,
+				dstIA,
+				cp.Fingerprint,
+				cp.NextHop,
+				expiry.Format(time.RFC3339Nano),
+				mtu,
+				interfaces,
+			)
+		}
+	}
+
+	//Path Selection Criteria
+	//Use policy engine if available, otherwise select first path.
+	var selectedcachedpath pathpool.CachedPath
+	if t.policyEngine != nil {
+		selectedcachedpath = t.selectPathWithPolicy(CachedPaths, srcIA, dstIA)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] using path policy")
+		}
+	} else {
+		selectedcachedpath = selectPath(CachedPaths)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] NOT using path policy")
+		}
+	}
+
+	if t.log.IsDebug() {
+		meta := selectedcachedpath.Path.Metadata()
 
 		var expiry time.Time
 		var mtu uint16
@@ -451,54 +516,20 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 			interfaces = meta.Interfaces
 		}
 
-		t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] candidate path[%d]: src=%s dst=%s fp=%s nextHop=%v expiry=%s mtu=%d interfaces=%v",
-			i,
+		t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] selection strategy=first-valid src=%s dst=%s selectedFingerprint=%s nextHop=%v expiry=%s mtu=%d interfaces=%v available=%d",
 			srcIA,
 			dstIA,
-			cp.Fingerprint,
-			cp.NextHop,
+			selectedcachedpath.Fingerprint,
+			selectedcachedpath.NextHop,
 			expiry.Format(time.RFC3339Nano),
 			mtu,
 			interfaces,
+			len(CachedPaths),
 		)
+
+		t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] selected cached path: srcIA=%s dstIA=%s fp=%s nextHop=%v",
+			srcIA, dstIA, selectedcachedpath.Fingerprint, selectedcachedpath.NextHop)
 	}
-
-	//Path Selection Criteria
-	//Use policy engine if available, otherwise select first path.
-	var selectedcachedpath pathpool.CachedPath
-	if t.policyEngine != nil {
-		selectedcachedpath = t.selectPathWithPolicy(CachedPaths, srcIA, dstIA)
-		log.Print("[PATHPOOL] using path policy")
-	} else {
-		selectedcachedpath = selectPath(CachedPaths)
-		log.Print("[PATHPOOL] NOT using path policy")
-	}
-
-	meta := selectedcachedpath.Path.Metadata()
-
-	var expiry time.Time
-	var mtu uint16
-	var interfaces any
-
-	if meta != nil {
-		expiry = meta.Expiry
-		mtu = meta.MTU
-		interfaces = meta.Interfaces
-	}
-
-	t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] selection strategy=first-valid src=%s dst=%s selectedFingerprint=%s nextHop=%v expiry=%s mtu=%d interfaces=%v available=%d",
-		srcIA,
-		dstIA,
-		selectedcachedpath.Fingerprint,
-		selectedcachedpath.NextHop,
-		expiry.Format(time.RFC3339Nano),
-		mtu,
-		interfaces,
-		len(CachedPaths),
-	)
-
-	t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] selected cached path: srcIA=%s dstIA=%s fp=%s nextHop=%v",
-		srcIA, dstIA, selectedcachedpath.Fingerprint, selectedcachedpath.NextHop)
 
 	//Extract snet path.Path including type assertion
 	selectedPath, ok := selectedcachedpath.Path.(path.Path)
@@ -529,7 +560,9 @@ func (t *Translator) selectPathWithPolicy(paths []pathpool.CachedPath, srcIA, ds
 	}
 
 	// Fallback: if policy yields nothing, use first available.
-	log.Printf("[PATHPOLICY] policy yielded 0 paths, falling back to first-valid")
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[PATHPOLICY] policy yielded 0 paths, falling back to first-valid")
+	}
 	return paths[0]
 }
 
@@ -815,14 +848,16 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 				Port: int(port),
 			}
 
-			t.log.Infof(
-				scionlog.ComponentPath, "[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v outerSrcPort=%d",
-				nextHop.String(),
-				port,
-				innerDstPort,
-				hasInnerDstPort,
-				outerSrcPort,
-			)
+			if t.log.IsDebug() {
+				t.log.Infof(
+					scionlog.ComponentPath, "[TRANSLATE-EGRESS] same-AS empty path, using direct dst host nextHop=%s selectedPort=%d innerDstPort=%d hasInnerDstPort=%v outerSrcPort=%d",
+					nextHop.String(),
+					port,
+					innerDstPort,
+					hasInnerDstPort,
+					outerSrcPort,
+				)
+			}
 		} else {
 			return nil, nil, fmt.Errorf("no nextHop for non-local path srcIA=%s dstIA=%s", srcIA, dstIA)
 		}
@@ -957,11 +992,13 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	udpOuter := udpLayer.(*layers.UDP)
 
-	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] outer UDP srcPort=%d dstPort=%d payloadLen=%d",
-		udpOuter.SrcPort,
-		udpOuter.DstPort,
-		len(udpOuter.Payload),
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] outer UDP srcPort=%d dstPort=%d payloadLen=%d",
+			udpOuter.SrcPort,
+			udpOuter.DstPort,
+			len(udpOuter.Payload),
+		)
+	}
 
 	scionPayload := udpOuter.Payload
 	if len(scionPayload) == 0 {
@@ -987,21 +1024,25 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	parser.IgnoreUnsupported = true
 	var decoded []gopacket.LayerType
 	if err := parser.DecodeLayers(scionPayload, &decoded); err != nil {
-		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] SCION decode failed or unsupported sublayer srcPort=%d dstPort=%d payloadLen=%d decoded=%v err=%v",
-			udpOuter.SrcPort,
-			udpOuter.DstPort,
-			len(scionPayload),
-			decoded,
-			err,
-		)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] SCION decode failed or unsupported sublayer srcPort=%d dstPort=%d payloadLen=%d decoded=%v err=%v",
+				udpOuter.SrcPort,
+				udpOuter.DstPort,
+				len(scionPayload),
+				decoded,
+				err,
+			)
+		}
 		return pktData, nil
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] SCION decoded srcIA=%s dstIA=%s nextHdr=%v",
-		scn.SrcIA,
-		scn.DstIA,
-		scn.NextHdr,
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] SCION decoded srcIA=%s dstIA=%s nextHdr=%v",
+			scn.SrcIA,
+			scn.DstIA,
+			scn.NextHdr,
+		)
+	}
 
 	var l4Layer gopacket.SerializableLayer
 	var l4Payload []byte
@@ -1029,10 +1070,12 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				scmpPayload = append([]byte(nil), []byte(pld)...)
 			}
 
-			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] SCMP typeCode=%v payloadLen=%d",
-				scmp.TypeCode,
-				len(scmpPayload),
-			)
+			if t.log.IsDebug() {
+				t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] SCMP typeCode=%v payloadLen=%d",
+					scmp.TypeCode,
+					len(scmpPayload),
+				)
+			}
 
 			icmpTypeCode := translateSCMPTypeCodeToICMPv6(scmp.TypeCode, t.log)
 
@@ -1067,7 +1110,9 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	if l4Layer == nil && scn.NextHdr == slayers.L4TCP {
 		raw := []byte(pld)
 
-		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] fallback TCP decode rawLen=%d", len(raw))
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] fallback TCP decode rawLen=%d", len(raw))
+		}
 
 		if err := tcp.DecodeFromBytes(raw, gopacket.NilDecodeFeedback); err != nil {
 			return nil, fmt.Errorf("failed to decode fallback inner TCP: %w", err)
@@ -1097,14 +1142,18 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 	dst = mappedDst
 
 	if restoredDstIP != nil {
-		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] overriding stateless dst=%s with restored client IP=%s", ipString(dst), ipString(restoredDstIP))
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] overriding stateless dst=%s with restored client IP=%s", ipString(dst), ipString(restoredDstIP))
+		}
 		dst = restoredDstIP
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] reconstructed IPv6 addresses src=%s dst=%s",
-		ipString(src),
-		ipString(dst),
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] reconstructed IPv6 addresses src=%s dst=%s",
+			ipString(src),
+			ipString(dst),
+		)
+	}
 
 	// ---- Build IP Packet ----
 
@@ -1234,14 +1283,16 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 
 	} else {
 
-		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] rebuilding inner IPv6 packet src=%s dst=%s l4Type=%T payloadLen=%d flowID=%d trafficClass=%d",
-			ipString(src),
-			ipString(dst),
-			l4Layer,
-			len(l4Payload),
-			scn.FlowID,
-			scn.TrafficClass,
-		)
+		if t.log.IsDebug() {
+			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] rebuilding inner IPv6 packet src=%s dst=%s l4Type=%T payloadLen=%d flowID=%d trafficClass=%d",
+				ipString(src),
+				ipString(dst),
+				l4Layer,
+				len(l4Payload),
+				scn.FlowID,
+				scn.TrafficClass,
+			)
+		}
 		// ---- Build IPv6 ----
 		ip6 := &layers.IPv6{
 			Version: 6,
@@ -1329,12 +1380,14 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			innerICMP := l4Layer.(*layers.ICMPv6)
 			innerICMP.SetNetworkLayerForChecksum(ip6)
 
-			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] serializing IPv6/ICMPv6 src=%s dst=%s typeCode=%v payloadLen=%d",
-				ipString(ip6.SrcIP),
-				ipString(ip6.DstIP),
-				innerICMP.TypeCode,
-				len(l4Payload),
-			)
+			if t.log.IsDebug() {
+				t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] serializing IPv6/ICMPv6 src=%s dst=%s typeCode=%v payloadLen=%d",
+					ipString(ip6.SrcIP),
+					ipString(ip6.DstIP),
+					innerICMP.TypeCode,
+					len(l4Payload),
+				)
+			}
 
 			if err := gopacket.SerializeLayers(
 				buf,
@@ -1347,7 +1400,9 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 			}
 
 			out := buf.Bytes()
-			t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] IPv6/ICMPv6 serialization success len=%d", len(out))
+			if t.log.IsDebug() {
+				t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] IPv6/ICMPv6 serialization success len=%d", len(out))
+			}
 			return out, nil
 		}
 
@@ -1357,12 +1412,14 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 		return nil, fmt.Errorf("no packet serialized for l4Type=%T src=%s dst=%s", l4Layer, src, dst)
 	}
 
-	t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] exit success rebuiltLen=%d src=%s dst=%s l4Type=%T",
-		len(out),
-		ipString(src),
-		ipString(dst),
-		l4Layer,
-	)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[TRANSLATE-INGRESS] exit success rebuiltLen=%d src=%s dst=%s l4Type=%T",
+			len(out),
+			ipString(src),
+			ipString(dst),
+			l4Layer,
+		)
+	}
 	return out, nil
 
 }
@@ -1479,7 +1536,9 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 	if dstIP != nil && dstIP.To4() == nil {
 		dstIP = dstIP.To16()
 	}
-	t.log.Infof(scionlog.ComponentPath, "[SCION->IP] flow restore src=%s:%d dst=%s:%d", ipString(srcIP), remotePort, ipString(dstIP), localPort)
+	if t.log.IsDebug() {
+		t.log.Infof(scionlog.ComponentPath, "[SCION->IP] flow restore src=%s:%d dst=%s:%d", ipString(srcIP), remotePort, ipString(dstIP), localPort)
+	}
 	// Build inner IPv6 (or IPv4 if both are v4? For now always IPv6 as per current architecture, but support both)
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}
@@ -1941,20 +2000,22 @@ func BuildSCIONPacket(
 	selectedpath snet.Path,
 	log *scionlog.Logger,
 ) ([]byte, error) {
-	log.Infof(scionlog.ComponentPath, "[BUILD-SCION] enter srcIA=%d-%d dstIA=%d-%d srcHost=%s dstHost=%s flowID=%d trafficClass=%d nextHeader=%v l4Type=%T payloadLen=%d selectedPathType=%T",
-		localISD,
-		localASN,
-		dstISD,
-		dstASN,
-		ipString(srcHost),
-		ipString(dstHost),
-		flowID,
-		tc,
-		nextHeader,
-		l4layer,
-		len(l4Payload),
-		selectedpath,
-	)
+	if log.IsDebug() {
+		log.Infof(scionlog.ComponentPath, "[BUILD-SCION] enter srcIA=%d-%d dstIA=%d-%d srcHost=%s dstHost=%s flowID=%d trafficClass=%d nextHeader=%v l4Type=%T payloadLen=%d selectedPathType=%T",
+			localISD,
+			localASN,
+			dstISD,
+			dstASN,
+			ipString(srcHost),
+			ipString(dstHost),
+			flowID,
+			tc,
+			nextHeader,
+			l4layer,
+			len(l4Payload),
+			selectedpath,
+		)
+	}
 	//TODO: Handle TCP
 	//	[ SCION header | L4 header (UDP/TCP) | application payload bytes ]
 
@@ -1973,7 +2034,9 @@ func BuildSCIONPacket(
 		DstIA:        dstIA,
 	}
 
-	log.Infof(scionlog.ComponentPath, "[BUILD-SCION] SrcIA=%v DstIA=%v", srcIA, dstIA)
+	if log.IsDebug() {
+		log.Infof(scionlog.ComponentPath, "[BUILD-SCION] SrcIA=%v DstIA=%v", srcIA, dstIA)
+	}
 
 	// Convert net.IP to netip.Addr
 	srcAddr, err := ipToNetip(srcHost)
@@ -1989,12 +2052,14 @@ func BuildSCIONPacket(
 	pkt.SetSrcAddr(addr.HostIP(srcAddr))
 	pkt.SetDstAddr(addr.HostIP(dstAddr))
 
-	log.Infof(scionlog.ComponentPath, "[BUILD-SCION] host addresses set srcHost=%s dstHost=%s srcAddrType=%v dstAddrType=%v",
-		ipString(srcHost),
-		ipString(dstHost),
-		pkt.SrcAddrType,
-		pkt.DstAddrType,
-	)
+	if log.IsDebug() {
+		log.Infof(scionlog.ComponentPath, "[BUILD-SCION] host addresses set srcHost=%s dstHost=%s srcAddrType=%v dstAddrType=%v",
+			ipString(srcHost),
+			ipString(dstHost),
+			pkt.SrcAddrType,
+			pkt.DstAddrType,
+		)
+	}
 
 	dp := selectedpath.Dataplane()
 	if dp != nil {
