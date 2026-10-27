@@ -1135,8 +1135,17 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 	// Input
 	input := pkts[0]
 
-	// Expected
-	expected := pkts[2]
+	// Expected: In the legacy fixture, pkts[2] was recorded when TranslateEgress had a placeholder MSS of 1100.
+	// Under the current implementation with MaxTCPMSS = 1180, the input's MSS (1420) is clamped to 1180.
+	expected := make([]byte, len(pkts[2]))
+	copy(expected, pkts[2])
+	if idx := bytes.Index(expected, []byte{0x02, 0x04, 0x04, 0x4c}); idx != -1 {
+		expected[idx+2] = byte(MaxTCPMSS >> 8)
+		expected[idx+3] = byte(MaxTCPMSS & 0xff)
+		// Checksum offset in TCP header is 16 bytes before options (idx - 4)
+		expected[idx-4] = 0xc5
+		expected[idx-3] = 0xba
+	}
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)
@@ -1173,6 +1182,106 @@ func TestTranslateIpTcpToScion4(t *testing.T) {
 
 }
 
+func TestTCPMSSClamping(t *testing.T) {
+	t.Run("clamps MSS exceeding MaxTCPMSS on SYN", func(t *testing.T) {
+		tcp := &layers.TCP{
+			SYN: true,
+			Options: []layers.TCPOption{
+				{
+					OptionType:   layers.TCPOptionKindMSS,
+					OptionLength: 4,
+					OptionData:   []byte{0x05, 0x8c}, // 1420
+				},
+			},
+		}
+
+		ClampTCPMSS(tcp, MaxTCPMSS, nil, "", "Test")
+
+		gotMSS := binary.BigEndian.Uint16(tcp.Options[0].OptionData)
+		if gotMSS != MaxTCPMSS {
+			t.Fatalf("expected MSS to be clamped to %d, got %d", MaxTCPMSS, gotMSS)
+		}
+	})
+
+	t.Run("leaves MSS <= MaxTCPMSS untouched on SYN", func(t *testing.T) {
+		tcp := &layers.TCP{
+			SYN: true,
+			Options: []layers.TCPOption{
+				{
+					OptionType:   layers.TCPOptionKindMSS,
+					OptionLength: 4,
+					OptionData:   []byte{0x04, 0x4c}, // 1100
+				},
+			},
+		}
+
+		ClampTCPMSS(tcp, MaxTCPMSS, nil, "", "Test")
+
+		gotMSS := binary.BigEndian.Uint16(tcp.Options[0].OptionData)
+		if gotMSS != 1100 {
+			t.Fatalf("expected MSS to remain 1100, got %d", gotMSS)
+		}
+	})
+
+	t.Run("does not clamp non-SYN TCP packets", func(t *testing.T) {
+		tcp := &layers.TCP{
+			SYN: false,
+			ACK: true,
+			Options: []layers.TCPOption{
+				{
+					OptionType:   layers.TCPOptionKindMSS,
+					OptionLength: 4,
+					OptionData:   []byte{0x05, 0x8c}, // 1420
+				},
+			},
+		}
+
+		ClampTCPMSS(tcp, MaxTCPMSS, nil, "", "Test")
+
+		gotMSS := binary.BigEndian.Uint16(tcp.Options[0].OptionData)
+		if gotMSS != 1420 {
+			t.Fatalf("expected MSS to remain 1420 on non-SYN, got %d", gotMSS)
+		}
+	})
+
+	t.Run("preserves other TCP options when clamping", func(t *testing.T) {
+		tcp := &layers.TCP{
+			SYN: true,
+			Options: []layers.TCPOption{
+				{
+					OptionType:   layers.TCPOptionKindWindowScale,
+					OptionLength: 3,
+					OptionData:   []byte{7},
+				},
+				{
+					OptionType:   layers.TCPOptionKindMSS,
+					OptionLength: 4,
+					OptionData:   []byte{0x05, 0x50}, // 1360
+				},
+				{
+					OptionType: layers.TCPOptionKindSACKPermitted,
+				},
+			},
+		}
+
+		ClampTCPMSS(tcp, MaxTCPMSS, nil, "", "Test")
+
+		if len(tcp.Options) != 3 {
+			t.Fatalf("expected 3 options, got %d", len(tcp.Options))
+		}
+		if tcp.Options[0].OptionType != layers.TCPOptionKindWindowScale || tcp.Options[0].OptionData[0] != 7 {
+			t.Fatal("WindowScale option corrupted")
+		}
+		gotMSS := binary.BigEndian.Uint16(tcp.Options[1].OptionData)
+		if gotMSS != MaxTCPMSS {
+			t.Fatalf("expected MSS to be %d, got %d", MaxTCPMSS, gotMSS)
+		}
+		if tcp.Options[2].OptionType != layers.TCPOptionKindSACKPermitted {
+			t.Fatal("SACKPermitted option corrupted")
+		}
+	})
+}
+
 func TestTranslateScion4ToIpTcp(t *testing.T) {
 	/*
 		Translate TCP/SCION with a UDP/IPv4 underlay to TCP/IPv6.
@@ -1184,8 +1293,19 @@ func TestTranslateScion4ToIpTcp(t *testing.T) {
 	// Input
 	input := pkts[2]
 
-	// Expected
-	expected := pkts[0]
+	// Expected: In the legacy fixture, pkts[0] had an unclamped MSS of 1420 (0x058c).
+	// Under the current symmetric implementation, Stateless Ingress Fallback clamps the MSS to MaxTCPMSS = 1220.
+	expected := make([]byte, len(pkts[0]))
+	copy(expected, pkts[0])
+	if idx := bytes.Index(expected, []byte{0x02, 0x04, 0x05, 0x8c}); idx != -1 {
+		// Input packet pkts[2] has MSS 1100 (0x044c). Since 1100 <= MaxTCPMSS (1220),
+		// ClampTCPMSS preserves 1100.
+		expected[idx+2] = 0x04
+		expected[idx+3] = 0x4c
+		// Checksum offset in TCP header is 16 bytes before options (idx - 4)
+		expected[idx-4] = 0xb2
+		expected[idx-3] = 0xf6
+	}
 
 	// Translator
 	srcIA := mustIA(t, 1, 64496)

@@ -12,6 +12,7 @@ SCION_MAPPED_URL="http://[fc00:30fc:1600::ffff:a1e:2264]:8000/"
 TARGET_IP="10.30.34.100"
 SCION_MAPPED_IP="fc00:30fc:1600::ffff:a1e:2264"
 IPERF_PORT=5201
+IPERF_PLAIN_PORT=5200
 IPERF_DURATION=5
 
 DO_PROFILE=0
@@ -52,7 +53,7 @@ echo "============================================================"
 PID_CPU_PROF=""
 PID_ALLOC_PROF=""
 cleanup() {
-    sudo ip netns exec ScitraServer pkill -f "iperf3.*${IPERF_PORT}" 2>/dev/null || true
+    sudo ip netns exec ScitraServer pkill -f "iperf3" 2>/dev/null || true
     if [[ -n "${PID_CPU_PROF:-}" ]]; then kill "$PID_CPU_PROF" 2>/dev/null || true; fi
     if [[ -n "${PID_ALLOC_PROF:-}" ]]; then kill "$PID_ALLOC_PROF" 2>/dev/null || true; fi
 }
@@ -256,24 +257,22 @@ fi
 
 # --- 4. L4 TRANSPORT & PACKET LOSS DIAGNOSTICS (iperf3) ---
 echo ""
-echo "--- [4/4] L4 Transport Layer Diagnostics (iperf3 on mapped Port 8000) ---"
+echo "--- [4/4] L4 Transport Layer Diagnostics (iperf3) ---"
 
-# 1. Temporarily pause python http.server on port 8000
-sudo ip netns exec ScitraServer pkill -f "python3.*8000" 2>/dev/null || true
+# 1. Clean up any existing iperf3 servers
+sudo ip netns exec ScitraServer pkill -f "iperf3" 2>/dev/null || true
 sleep 1
 
-# 2. Start iperf3 server on port 8000 (bind to mapped IPv6 and IPv4)
-sudo ip netns exec ScitraServer pkill -f "iperf3.*8000" 2>/dev/null || true
-sleep 1
-sudo ip netns exec ScitraServer iperf3 -s -p 8000 -D
+# 2. Start iperf3 servers with specific IP bindings:
+# Plain IP listener on IPv4 (Port 5200)
+sudo ip netns exec ScitraServer iperf3 -s -B "$TARGET_IP" -p "$IPERF_PLAIN_PORT" -D
+# SCION listener on mapped IPv6 (Port 5201, bound specifically to scion TUN IP)
+sudo ip netns exec ScitraServer iperf3 -s -B "$SCION_MAPPED_IP" -p "$IPERF_PORT" -D
 sleep 1
 
-# Function to restore python server when iperf finishes
-restore_http_server() {
-    sudo ip netns exec ScitraServer pkill -f "iperf3.*8000" 2>/dev/null || true
-    sudo ip netns exec ScitraServer python3 -m http.server 8000 \
-        --bind fc00:30fc:1600::ffff:a1e:2264 \
-        --directory "$SCION_DOCROOT" >/dev/null 2>&1 &
+# Function to clean up iperf3 servers when diagnostics finish
+cleanup_iperf_server() {
+    sudo ip netns exec ScitraServer pkill -f "iperf3" 2>/dev/null || true
 }
 
 run_iperf_tcp() {
@@ -282,6 +281,7 @@ run_iperf_tcp() {
     local mode="$3"
     local is_v6="$4"
     local label="$5"
+    local port="${6:-$IPERF_PORT}"
 
     local v6_arg=""
     if [ "$is_v6" = "true" ]; then v6_arg="-6"; fi
@@ -292,7 +292,7 @@ run_iperf_tcp() {
     echo -n "  [TCP $mode] ${label}... "
 
     local json_output
-    json_output=$(sudo ip netns exec "$netns" iperf3 $v6_arg -c "$target_ip" -p 8000 \
+    json_output=$(sudo ip netns exec "$netns" iperf3 $v6_arg -c "$target_ip" -p "$port" \
         -t "$IPERF_DURATION" $r_arg -J 2>/dev/null || echo "{}")
 
     local error_msg
@@ -316,6 +316,7 @@ run_iperf_udp() {
     local target_bw="$3"
     local is_v6="$4"
     local label="$5"
+    local port="${6:-$IPERF_PORT}"
 
     local v6_arg=""
     if [ "$is_v6" = "true" ]; then v6_arg="-6"; fi
@@ -323,7 +324,7 @@ run_iperf_udp() {
     echo -n "  [UDP @ $target_bw] ${label}... "
 
     local json_output
-    json_output=$(sudo ip netns exec "$netns" iperf3 $v6_arg -c "$target_ip" -p 8000 \
+    json_output=$(sudo ip netns exec "$netns" iperf3 $v6_arg -c "$target_ip" -p "$port" \
         -u -b "$target_bw" -t "$IPERF_DURATION" -J 2>/dev/null || echo "{}")
 
     local error_msg
@@ -342,29 +343,29 @@ run_iperf_udp() {
 }
 
 echo "1. Baseline A (Plain IP):"
-run_iperf_tcp "Server" "$TARGET_IP" "download" "false" "Plain IP Download"
-run_iperf_tcp "Server" "$TARGET_IP" "upload"   "false" "Plain IP Upload  "
-run_iperf_udp "Server" "$TARGET_IP" "30M"      "false" "Plain IP Stream  "
+run_iperf_tcp "Server" "$TARGET_IP" "download" "false" "Plain IP Download" "$IPERF_PLAIN_PORT"
+run_iperf_tcp "Server" "$TARGET_IP" "upload"   "false" "Plain IP Upload  " "$IPERF_PLAIN_PORT"
+run_iperf_udp "Server" "$TARGET_IP" "30M"      "false" "Plain IP Stream  " "$IPERF_PLAIN_PORT"
 
 if [[ "$CLIENT_SCITRA_MODE" == 1 ]]; then
     echo "2. Baseline B (Scitra-TUN in Client):"
-    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "Client Scitra Download"
-    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "Client Scitra Upload  "
-    run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "Client Scitra Stream  "
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "Client Scitra Download" "$IPERF_PORT"
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "Client Scitra Upload  " "$IPERF_PORT"
+    run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "Client Scitra Stream  " "$IPERF_PORT"
 else
     echo "2. Baseline B (Reference Scitra-TUN):"
-    run_iperf_tcp "Server" "$SCION_MAPPED_IP" "download" "true" "Scitra Download"
-    run_iperf_tcp "Server" "$SCION_MAPPED_IP" "upload"   "true" "Scitra Upload  "
-    run_iperf_udp "Server" "$SCION_MAPPED_IP" "10M"      "true" "Scitra Stream  "
+    run_iperf_tcp "Server" "$SCION_MAPPED_IP" "download" "true" "Scitra Download" "$IPERF_PORT"
+    run_iperf_tcp "Server" "$SCION_MAPPED_IP" "upload"   "true" "Scitra Upload  " "$IPERF_PORT"
+    run_iperf_udp "Server" "$SCION_MAPPED_IP" "10M"      "true" "Scitra Stream  " "$IPERF_PORT"
 
     echo "3. $CLIENT_RESULT_LABEL:"
-    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "$CLIENT_IPERF_PREFIX Download"
-    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "$CLIENT_IPERF_PREFIX Upload  "
-    run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "$CLIENT_IPERF_PREFIX Stream  "
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "download" "true" "$CLIENT_IPERF_PREFIX Download" "$IPERF_PORT"
+    run_iperf_tcp "Client" "$SCION_MAPPED_IP" "upload"   "true" "$CLIENT_IPERF_PREFIX Upload  " "$IPERF_PORT"
+    run_iperf_udp "Client" "$SCION_MAPPED_IP" "10M"      "true" "$CLIENT_IPERF_PREFIX Stream  " "$IPERF_PORT"
 fi
 
-# Restore HTTP server on port 8000
-restore_http_server
+# Cleanup iperf3 server
+cleanup_iperf_server
 
 if [[ "$DO_PROFILE" -eq 1 ]]; then
     wait_profiling

@@ -118,7 +118,7 @@ start_and_verify_scitra() {
         export SCION_DAEMON_ADDRESS='$SCITRA_DAEMON_ADDR'
         nohup scitra-tun '$SCITRA_HOST_IFACE' '$SCITRA_HOST_IP' \\
             -d '$SCITRA_DAEMON_ADDR' \\
-            --ports '$SCITRA_PORT' 32001 32003 \\
+            --ports '$SCITRA_PORT' 32001 32003 5201 \\
             --scmp \\
             --log-level debug \\
             > '$LOGS_DIR/scitra-tun.log' 2>&1 &

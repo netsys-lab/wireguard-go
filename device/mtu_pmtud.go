@@ -6,8 +6,8 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
-// SCIONEffectiveMTU is the safe payload MTU for SCION (1280 is IPv6 minimum, leaving room for SCION headers).
-const SCIONEffectiveMTU = 1280
+// SCIONEffectiveMTU is the maximum MTU allowed for SCION packets over the WireGuard tunnel (1420 MTU).
+const SCIONEffectiveMTU = 1420
 
 // checkAndGeneratePTB checks if the packet exceeds the MTU or is fragmented.
 // If it is, it generates a synthetic ICMP/ICMPv6 Packet Too Big message and returns it.

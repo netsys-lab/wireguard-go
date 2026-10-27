@@ -765,16 +765,8 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 			//other flags/options
 			Options: tcp.Options,
 		}
-		//Clamp MSS
-		//Todo: Get outer MTU from Interface maybe?
-		newMSS := 1100
-		for i, opt := range innerTCP.Options {
-			if opt.OptionType == layers.TCPOptionKindMSS && len(opt.OptionData) >= 2 {
-				opt.OptionData[0] = byte(newMSS >> 8)
-				opt.OptionData[1] = byte(newMSS & 0xff)
-				innerTCP.Options[i] = opt
-			}
-		}
+		// Clamp MSS on TCP SYN packets if exceeding 1280 to prevent MTU blackholes over SCION encapsulation
+		ClampTCPMSS(innerTCP, MaxTCPMSS, t.log, scionlog.ComponentTranslateEgress, "Egress")
 
 		var l4Payload []byte
 		if app := packet.ApplicationLayer(); app != nil {
@@ -1351,14 +1343,8 @@ func (t *Translator) TranslateIngress(pktData []byte, tunIP net.IP) ([]byte, err
 				Options: tcp.Options,
 			}
 
-			//Compute and Modify MSS
-			for i, opt := range innerTCP.Options {
-				if opt.OptionType == layers.TCPOptionKindMSS {
-					newMSS := computeMSS(1480) // or device MTU
-					opt.OptionData = []byte{byte(newMSS >> 8), byte(newMSS)}
-					innerTCP.Options[i] = opt
-				}
-			}
+			// Clamp MSS on TCP SYN packets to MaxTCPMSS (1220) for Stateless Ingress Fallback
+			ClampTCPMSS(innerTCP, MaxTCPMSS, t.log, scionlog.ComponentPath, "Stateless Ingress Fallback")
 
 			// Tell UDP which network layer to use for checksum
 			innerTCP.SetNetworkLayerForChecksum(ip6)
@@ -1559,6 +1545,7 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 		case *layers.TCP:
 			ip4.Protocol = layers.IPProtocolTCP
 			inner := &layers.TCP{SrcPort: layers.TCPPort(remotePort), DstPort: layers.TCPPort(localPort), Seq: tcp.Seq, Ack: tcp.Ack, SYN: tcp.SYN, ACK: tcp.ACK, FIN: tcp.FIN, RST: tcp.RST, PSH: tcp.PSH, URG: tcp.URG, ECE: tcp.ECE, CWR: tcp.CWR, NS: tcp.NS, Window: tcp.Window, Options: tcp.Options}
+			ClampTCPMSS(inner, MaxTCPMSS, t.log, scionlog.ComponentPath, "Ingress Flow IPv4")
 			inner.SetNetworkLayerForChecksum(ip4)
 			if err := gopacket.SerializeLayers(buf, opts, ip4, inner, gopacket.Payload(l4Payload)); err != nil {
 				return nil, err
@@ -1579,13 +1566,7 @@ func (t *Translator) TranslateIngressWithFlow(pktData []byte, localAddr netip.Ad
 		case *layers.TCP:
 			ip6.NextHeader = layers.IPProtocolTCP
 			innerTCP := &layers.TCP{SrcPort: layers.TCPPort(remotePort), DstPort: layers.TCPPort(localPort), Seq: tcp.Seq, Ack: tcp.Ack, SYN: tcp.SYN, ACK: tcp.ACK, FIN: tcp.FIN, RST: tcp.RST, PSH: tcp.PSH, URG: tcp.URG, ECE: tcp.ECE, CWR: tcp.CWR, NS: tcp.NS, Window: tcp.Window, Options: tcp.Options}
-			for i, opt := range innerTCP.Options {
-				if opt.OptionType == layers.TCPOptionKindMSS {
-					newMSS := computeMSS(1480)
-					opt.OptionData = []byte{byte(newMSS >> 8), byte(newMSS)}
-					innerTCP.Options[i] = opt
-				}
-			}
+			ClampTCPMSS(innerTCP, MaxTCPMSS, t.log, scionlog.ComponentPath, "Ingress Flow")
 			innerTCP.SetNetworkLayerForChecksum(ip6)
 			if err := gopacket.SerializeLayers(buf, opts, ip6, innerTCP, gopacket.Payload(l4Payload)); err != nil {
 				return nil, err
@@ -2298,6 +2279,34 @@ func buildSCIONPseudoHeader(
 	b[off+3] = byte(nextHdr)
 
 	return b, nil
+}
+
+// MaxTCPMSS is the maximum allowable TCP MSS for packets routed over SCION encapsulation.
+// Any MSS exceeding this value is clamped to avoid PMTU blackholes and packet fragmentation.
+// WireGuard tunnel MTU is 1420. Outer IPv4/UDP is 28B, SCION encapsulation is ~116B, inner IPv6+TCP is 72B.
+// Total overhead is ~216B, leaving 1204B. Clamping to 1180 guarantees packets never exceed 1420 bytes.
+const MaxTCPMSS uint16 = 1180
+
+// ClampTCPMSS checks if the packet is a TCP SYN packet and clamps any MSS option exceeding maxMSS to maxMSS.
+func ClampTCPMSS(tcp *layers.TCP, maxMSS uint16, log *scionlog.Logger, component scionlog.Component, direction string) {
+	if !tcp.SYN {
+		return
+	}
+	for i, opt := range tcp.Options {
+		if opt.OptionType == layers.TCPOptionKindMSS && len(opt.OptionData) >= 2 {
+			currentMSS := binary.BigEndian.Uint16(opt.OptionData[:2])
+			if currentMSS > maxMSS {
+				if log != nil && log.IsDebug() {
+					log.Infof(component, "[TCP-MSS-CLAMP] %s SYN MSS clamped from %d to %d", direction, currentMSS, maxMSS)
+				}
+				newData := make([]byte, len(opt.OptionData))
+				copy(newData, opt.OptionData)
+				binary.BigEndian.PutUint16(newData[:2], maxMSS)
+				opt.OptionData = newData
+				tcp.Options[i] = opt
+			}
+		}
+	}
 }
 
 func computeMSS(ipMTU int) uint16 {
