@@ -680,29 +680,20 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
 	scionBuf := getSerializeBuffer()
 	defer putSerializeBuffer(scionBuf)
-	if len(pktData) < 40 {
-		return nil, nil, errors.New("packet too short for IPv6")
+	fastPkt, err := ParseEgressPacket(pktData)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	packet := gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
-	ip6Layer := packet.Layer(layers.LayerTypeIPv6)
-	if ip6Layer == nil {
-		return nil, nil, errors.New("not an IPv6 packet")
-	}
-	ip6 := ip6Layer.(*layers.IPv6)
+	defer fastPkt.Release()
 
 	var innerDstPort uint16
 	var hasInnerDstPort bool
 
 	// Preserve the IPv6 Flow Label as SCION FlowID
-	flowID := uint32(ip6.FlowLabel)
+	flowID := fastPkt.IPv6.FlowLabel
 
-	//Dummy FlowID for now
-	//flowID := uint32(0x86c8b) // Für IPv4
-	//flowID := uint32(0x71d6d) // Für IPv6
-
-	//Preserve Traffic Class
-	tc := ip6.TrafficClass
+	// Preserve Traffic Class
+	tc := fastPkt.IPv6.TrafficClass
 
 	// Init Port variable
 	var DstPort int
@@ -715,11 +706,11 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	// TCP/UDP) port pair.
 	outerSrcPort := DefaultSCIONEndhostPort
 
-	if !IsSCIONMapped(ip6.DstIP) {
+	if !IsSCIONMapped(fastPkt.IPv6.DstIP) {
 		return nil, nil, errors.New("dst not in SCION-mapped network")
 	}
 
-	isd, asn, _, _, host, hostIsIPv4, err := UnmapIPv6(ip6.DstIP, 8) // subnetBits = 8
+	isd, asn, _, _, host, hostIsIPv4, err := UnmapIPv6(fastPkt.IPv6.DstIP, 8) // subnetBits = 8
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("unmap IPv6 failed: %w", err)
@@ -745,7 +736,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	if getPath != nil {
 		selectedPath, err = getPath(srcIA, dstIA)
 	} else if t.flowCache != nil {
-		if k, ok := ExtractFlowKey(pktData); ok {
+		if k, ok := fastPkt.FlowKey(pktData); ok {
 			flowKey = k
 			haveFlowKey = true
 			if entry, hit, needsRefresh := t.flowCache.Get(flowKey); hit {
@@ -790,7 +781,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		// The reference fixtures carry the full SCION-mapped IPv6 as the T16Ip
 		// host, not the bare low-64 interface identifier, so keep the original
 		// destination address instead of the unmapped host.
-		dstHost = ip6.DstIP.To16()
+		dstHost = fastPkt.IPv6.DstIP.To16()
 		if dstHost == nil {
 			return nil, nil, fmt.Errorf("decoded IPv6/interface host is invalid: %s", host)
 		}
@@ -801,139 +792,172 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	dstISD := uint16(dstIA.ISD())
 	dstASN := uint64(dstIA.AS())
 
-	// extract L4 layer and ensure supported protocols (UDP, TCP)
-	nextHeader := ip6.NextHeader
 	var l4nextHeader slayers.L4ProtocolType
-
 	var scionBytes []byte
 
-	switch nextHeader {
-	case layers.IPProtocolUDP:
-		udpLayer := packet.Layer(layers.LayerTypeUDP)
-		if udpLayer == nil {
-			return nil, nil, errors.New("udp layer missing")
+	if fastPkt.IsFastPath {
+		switch fastPkt.L4Protocol {
+		case layers.IPProtocolUDP:
+			l4nextHeader = slayers.L4UDP
+			innerDstPort = fastPkt.DstPort
+			hasInnerDstPort = true
+			outerSrcPort = fastPkt.SrcPort
+			DstPort = int(fastPkt.DstPort)
+
+			scionBytes, err = BuildSCIONPacketToBuffer(
+				scionBuf,
+				localISD, localASN, dstISD, dstASN,
+				srcHost, dstHost,
+				flowID, tc,
+				l4nextHeader, fastPkt.UDP, fastPkt.Payload,
+				selectedPath,
+				t.log,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+			}
+
+		case layers.IPProtocolTCP:
+			l4nextHeader = slayers.L4TCP
+			innerDstPort = fastPkt.DstPort
+			hasInnerDstPort = true
+			outerSrcPort = fastPkt.SrcPort
+			DstPort = int(fastPkt.DstPort)
+
+			// Clamp MSS on TCP SYN packets if exceeding MaxTCPMSS to prevent MTU blackholes
+			ClampTCPMSS(fastPkt.TCP, MaxTCPMSS, t.log, scionlog.ComponentTranslateEgress, "Egress")
+
+			scionBytes, err = BuildSCIONPacketToBuffer(
+				scionBuf,
+				localISD, localASN, dstISD, dstASN,
+				srcHost, dstHost,
+				flowID, tc,
+				l4nextHeader, fastPkt.TCP, fastPkt.Payload,
+				selectedPath,
+				t.log,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+			}
+
+		default:
+			return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", fastPkt.L4Protocol)
 		}
-		udp := udpLayer.(*layers.UDP)
-		l4nextHeader = slayers.L4UDP
-
-		// Build a *fresh* UDP for the inner packet (to avoid sharing state)
-		innerUDP := &slayers.UDP{
-			SrcPort: uint16(udp.SrcPort),
-			DstPort: uint16(udp.DstPort),
-		}
-
-		//SrcPort = int(udp.SrcPort)
-		DstPort = int(udp.DstPort)
-
-		innerDstPort = uint16(udp.DstPort)
-		hasInnerDstPort = true
-		outerSrcPort = uint16(udp.SrcPort)
-
-		// --- Zero-copy payload extraction ---
-		var l4Payload []byte
-		if app := packet.ApplicationLayer(); app != nil {
-			l4Payload = app.Payload()
-		}
-
-		scionBytes, err = BuildSCIONPacketToBuffer(
-			scionBuf,
-			localISD, localASN, dstISD, dstASN,
-			srcHost, dstHost,
-			flowID, tc,
-			l4nextHeader, innerUDP, l4Payload,
-			selectedPath,
-			t.log,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
-		}
-
-	case layers.IPProtocolTCP:
-		tcpLayer := packet.Layer(layers.LayerTypeTCP)
-		if tcpLayer == nil {
-			return nil, nil, errors.New("tcp layer missing")
-		}
-
-		tcp := tcpLayer.(*layers.TCP)
-		l4nextHeader = slayers.L4TCP
-
-		//SrcPort = int(tcp.SrcPort)
-		DstPort = int(tcp.DstPort)
-
-		innerDstPort = uint16(tcp.DstPort)
-		hasInnerDstPort = true
-		outerSrcPort = uint16(tcp.SrcPort)
-
-		innerTCP := &layers.TCP{
-			SrcPort: tcp.SrcPort,
-			DstPort: tcp.DstPort,
-			Seq:     tcp.Seq,
-			Ack:     tcp.Ack,
-			SYN:     tcp.SYN,
-			ACK:     tcp.ACK,
-			FIN:     tcp.FIN,
-			RST:     tcp.RST,
-			PSH:     tcp.PSH,
-			URG:     tcp.URG,
-			ECE:     tcp.ECE,
-			CWR:     tcp.CWR,
-			NS:      tcp.NS,
-			Window:  tcp.Window,
-			//other flags/options
-			Options: tcp.Options,
-		}
-		// Clamp MSS on TCP SYN packets if exceeding 1280 to prevent MTU blackholes over SCION encapsulation
-		ClampTCPMSS(innerTCP, MaxTCPMSS, t.log, scionlog.ComponentTranslateEgress, "Egress")
-
-		var l4Payload []byte
-		if app := packet.ApplicationLayer(); app != nil {
-			l4Payload = app.Payload()
+	} else {
+		// Fallback for IPv6 Extension Headers, ICMPv6, or unhandled protocols using gopacket
+		fallbackPacket := fastPkt.FallbackPacket
+		if fallbackPacket == nil {
+			fallbackPacket = gopacket.NewPacket(pktData, layers.LayerTypeIPv6, gopacket.Default)
 		}
 
-		scionBytes, err = BuildSCIONPacketToBuffer(scionBuf, localISD, localASN, dstISD, dstASN, srcHost, dstHost, flowID, tc, l4nextHeader, innerTCP, l4Payload, selectedPath, t.log)
-		if err != nil {
-			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+		if udpLayer := fallbackPacket.Layer(layers.LayerTypeUDP); udpLayer != nil {
+			udp := udpLayer.(*layers.UDP)
+			l4nextHeader = slayers.L4UDP
+
+			innerUDP := &slayers.UDP{
+				SrcPort: uint16(udp.SrcPort),
+				DstPort: uint16(udp.DstPort),
+			}
+
+			DstPort = int(udp.DstPort)
+			innerDstPort = uint16(udp.DstPort)
+			hasInnerDstPort = true
+			outerSrcPort = uint16(udp.SrcPort)
+
+			var l4Payload []byte
+			if app := fallbackPacket.ApplicationLayer(); app != nil {
+				l4Payload = app.Payload()
+			}
+
+			scionBytes, err = BuildSCIONPacketToBuffer(
+				scionBuf,
+				localISD, localASN, dstISD, dstASN,
+				srcHost, dstHost,
+				flowID, tc,
+				l4nextHeader, innerUDP, l4Payload,
+				selectedPath,
+				t.log,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+			}
+
+		} else if tcpLayer := fallbackPacket.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+			tcp := tcpLayer.(*layers.TCP)
+			l4nextHeader = slayers.L4TCP
+
+			DstPort = int(tcp.DstPort)
+			innerDstPort = uint16(tcp.DstPort)
+			hasInnerDstPort = true
+			outerSrcPort = uint16(tcp.SrcPort)
+
+			innerTCP := &layers.TCP{
+				SrcPort: tcp.SrcPort,
+				DstPort: tcp.DstPort,
+				Seq:     tcp.Seq,
+				Ack:     tcp.Ack,
+				SYN:     tcp.SYN,
+				ACK:     tcp.ACK,
+				FIN:     tcp.FIN,
+				RST:     tcp.RST,
+				PSH:     tcp.PSH,
+				URG:     tcp.URG,
+				ECE:     tcp.ECE,
+				CWR:     tcp.CWR,
+				NS:      tcp.NS,
+				Window:  tcp.Window,
+				Options: tcp.Options,
+			}
+			ClampTCPMSS(innerTCP, MaxTCPMSS, t.log, scionlog.ComponentTranslateEgress, "Egress")
+
+			var l4Payload []byte
+			if app := fallbackPacket.ApplicationLayer(); app != nil {
+				l4Payload = app.Payload()
+			}
+
+			scionBytes, err = BuildSCIONPacketToBuffer(
+				scionBuf, localISD, localASN, dstISD, dstASN,
+				srcHost, dstHost,
+				flowID, tc,
+				l4nextHeader, innerTCP, l4Payload,
+				selectedPath,
+				t.log,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+			}
+
+		} else if icmpLayer := fallbackPacket.Layer(layers.LayerTypeICMPv6); icmpLayer != nil {
+			icmp := icmpLayer.(*layers.ICMPv6)
+			l4nextHeader = slayers.L4SCMP
+
+			scmpTypeCode := translateICMPv6ToSCMPTypeCode(icmp.TypeCode, t.log)
+
+			scmp := &slayers.SCMP{
+				TypeCode: scmpTypeCode,
+			}
+
+			scmpPayload := append([]byte(nil), icmp.Payload...)
+			if isICMPv6Echo(icmp.TypeCode) {
+				scmpPayload = buildSCMPEchoPayload(scmpTypeCode.Type(), icmp.Payload, fastPkt.IPv6.SrcIP, t.log)
+			}
+
+			scionBytes, err = BuildSCIONPacketToBuffer(
+				scionBuf,
+				localISD, localASN, dstISD, dstASN,
+				srcHost, dstHost,
+				flowID, tc,
+				l4nextHeader, scmp, scmpPayload,
+				selectedPath,
+				t.log,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
+			}
+
+		} else {
+			return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", fastPkt.IPv6.NextHeader)
 		}
-
-	case layers.IPProtocolICMPv6: // 58
-		icmpLayer := packet.Layer(layers.LayerTypeICMPv6)
-		if icmpLayer == nil {
-			return nil, nil, errors.New("ICMPv6 layer missing")
-		}
-		icmp := icmpLayer.(*layers.ICMPv6)
-		l4nextHeader = slayers.L4SCMP
-
-		scmpTypeCode := translateICMPv6ToSCMPTypeCode(icmp.TypeCode, t.log)
-
-		scmp := &slayers.SCMP{
-			TypeCode: scmpTypeCode,
-		}
-
-		// The ICMPv6 payload (everything after the 4-byte type/code/checksum)
-		// is the echo info block + data for Echo messages and type-specific
-		// data otherwise. For Echo messages we build the SCMPEcho info block
-		// and carry the original ICMPv6 identifier inside the data block; for
-		// all other ICMPv6 types the payload is passed through unchanged.
-		scmpPayload := append([]byte(nil), icmp.Payload...)
-		if isICMPv6Echo(icmp.TypeCode) {
-			scmpPayload = buildSCMPEchoPayload(scmpTypeCode.Type(), icmp.Payload, ip6.SrcIP, t.log)
-		}
-
-		scionBytes, err = BuildSCIONPacketToBuffer(
-			scionBuf,
-			localISD, localASN, dstISD, dstASN,
-			srcHost, dstHost,
-			flowID, tc,
-			l4nextHeader, scmp, scmpPayload,
-			selectedPath,
-			t.log,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("build scion packet failed: %w", err)
-		}
-
-	default:
-		return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", nextHeader)
 	}
 
 	// Store freshly resolved path in the flow cache for subsequent packets
@@ -941,7 +965,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		srcNetip, _ := ipToNetip(srcHost)
 		dstNetip, _ := ipToNetip(dstHost)
 		wireTuple := SCIONTuple{
-			Protocol: uint8(nextHeader),
+			Protocol: uint8(fastPkt.IPv6.NextHeader),
 			SrcIA:    srcIA,
 			DstIA:    dstIA,
 			SrcHost:  srcNetip,
@@ -1036,7 +1060,7 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		ip6Under := &layers.IPv6{
 			Version:      6,
 			TrafficClass: tc,
-			FlowLabel:    ip6.FlowLabel,
+			FlowLabel:    fastPkt.IPv6.FlowLabel,
 			HopLimit:     64,
 			NextHeader:   layers.IPProtocolUDP,
 			SrcIP:        srcIP,
