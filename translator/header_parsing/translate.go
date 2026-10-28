@@ -308,6 +308,7 @@ func ipToNetip(ip net.IP) (netip.Addr, error) {
 
 type Translator struct {
 	cache        PathPool
+	flowCache    *FlowPathCache
 	localIA      addr.IA
 	brAddr       *net.UDPAddr // BR address for same-AS fallback
 	policyEngine *pathpolicy.Engine
@@ -367,10 +368,52 @@ func NewTranslator(cache PathPool, localIA addr.IA, brAddr *net.UDPAddr, ifaceNa
 
 	return &Translator{
 		cache:     cache,
+		flowCache: NewFlowPathCache(log),
 		localIA:   localIA,
 		brAddr:    brAddr,
 		ifaceName: ifaceName,
 		log:       log,
+	}
+}
+
+// FlowCache returns the active FlowPathCache, or nil if none.
+func (t *Translator) FlowCache() *FlowPathCache {
+	return t.flowCache
+}
+
+// SetFlowCache sets or overrides the FlowPathCache (primarily for testing).
+func (t *Translator) SetFlowCache(fc *FlowPathCache) {
+	t.flowCache = fc
+}
+
+// InvalidateFlowPath invalidates a cached path by its inner 5-tuple.
+func (t *Translator) InvalidateFlowPath(key FlowKey) bool {
+	if t.flowCache != nil {
+		return t.flowCache.Invalidate(key)
+	}
+	return false
+}
+
+// InvalidateFlowPathBySCIONTuple invalidates cached paths matching an SCMP quoted wire tuple.
+func (t *Translator) InvalidateFlowPathBySCIONTuple(qt *SCIONTuple) int {
+	if t.flowCache != nil {
+		return t.flowCache.InvalidateBySCIONTuple(qt)
+	}
+	return 0
+}
+
+// InvalidateFlowPathsByIA invalidates all cached paths for the specified ISD-AS pair.
+func (t *Translator) InvalidateFlowPathsByIA(srcIA, dstIA addr.IA) int {
+	if t.flowCache != nil {
+		return t.flowCache.InvalidateByIA(srcIA, dstIA)
+	}
+	return 0
+}
+
+// Close releases resources associated with the translator, including background cache workers.
+func (t *Translator) Close() {
+	if t.flowCache != nil {
+		t.flowCache.Close()
 	}
 }
 
@@ -695,9 +738,37 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 	}
 
 	var selectedPath path.Path
+	var flowKey FlowKey
+	var haveFlowKey bool
+	var cachedEntry *CachedFlowPath
+
 	if getPath != nil {
 		selectedPath, err = getPath(srcIA, dstIA)
-	} else {
+	} else if t.flowCache != nil {
+		if k, ok := ExtractFlowKey(pktData); ok {
+			flowKey = k
+			haveFlowKey = true
+			if entry, hit, needsRefresh := t.flowCache.Get(flowKey); hit {
+				if needsRefresh {
+					// Soft-refresh: Pfad läuft in Kürze ab (<30s). Versuche frischen Pfad aus dem Pool zu holen.
+					freshPath, freshErr := t.getPathFromCache(srcIA, dstIA)
+					if freshErr == nil {
+						selectedPath = freshPath
+						// cachedEntry bleibt nil, damit der frische Pfad am Ende im Cache aktualisiert wird
+					} else {
+						// Fallback: Aktueller Pfad ist kryptografisch noch gültig, nahtlos weiterverwenden
+						selectedPath = entry.Path
+						cachedEntry = entry
+					}
+				} else {
+					selectedPath = entry.Path
+					cachedEntry = entry
+				}
+			}
+		}
+	}
+
+	if cachedEntry == nil && getPath == nil {
 		selectedPath, err = t.getPathFromCache(srcIA, dstIA)
 	}
 
@@ -863,6 +934,22 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported upper-layer protocol: %d", nextHeader)
+	}
+
+	// Store freshly resolved path in the flow cache for subsequent packets
+	if cachedEntry == nil && haveFlowKey && t.flowCache != nil && getPath == nil {
+		srcNetip, _ := ipToNetip(srcHost)
+		dstNetip, _ := ipToNetip(dstHost)
+		wireTuple := SCIONTuple{
+			Protocol: uint8(nextHeader),
+			SrcIA:    srcIA,
+			DstIA:    dstIA,
+			SrcHost:  srcNetip,
+			DstHost:  dstNetip,
+			SrcPort:  outerSrcPort,
+			DstPort:  innerDstPort,
+		}
+		t.flowCache.Put(flowKey, selectedPath, srcIA, dstIA, wireTuple)
 	}
 
 	//scionBytes = [ SCION header | SCION L4 payload ]

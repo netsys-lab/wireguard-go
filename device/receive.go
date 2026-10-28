@@ -528,9 +528,30 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 							// SCMP error: correlate via quoted packet
 							if scmpInfo.QuotedTuple != nil {
 								qt := scmpInfo.QuotedTuple
+								// Failover Hook: Invalidate cached flow path for immediate failover
+								if device.translator != nil {
+									invCount := device.translator.InvalidateFlowPathBySCIONTuple(qt)
+									if invCount > 0 && device.scionLog != nil {
+										device.scionLog.Infof(scionlog.ComponentFlow,
+											"[SCMP-FAILOVER] invalidated %d cached flow paths via SCMP error type=%v quote=%+v",
+											invCount, scmpInfo.Type, *qt)
+									}
+								}
+								if device.pathPool != nil && qt.SrcIA != 0 && qt.DstIA != 0 {
+									device.pathPool.RefreshAsync(qt.SrcIA, qt.DstIA, "scmp-error")
+								}
 								snap, res := device.lookupSCIONFlow(qt.Protocol, qt.SrcIA, qt.DstIA, qt.SrcHost, qt.DstHost, qt.SrcPort, qt.DstPort)
 								switch res {
 								case SCIONLookupHit:
+									if device.translator != nil && snap.LocalEndpoint.Addr.IsValid() && snap.RemoteEndpoint.Addr.IsValid() {
+										device.translator.InvalidateFlowPath(header_parsing.FlowKey{
+											SrcAddr: snap.LocalEndpoint.Addr,
+											DstAddr: snap.RemoteEndpoint.Addr,
+											SrcPort: snap.LocalEndpoint.Port,
+											DstPort: snap.RemoteEndpoint.Port,
+											Proto:   snap.Protocol,
+										})
+									}
 									if snap.TrafficClass == flow.ClassNativeSCION {
 										device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] flow=%d class=native protocol=SCMP action=pass-unchanged", snap.ID)
 										// pass original decrypted packet unchanged to TUN
@@ -589,6 +610,20 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 									continue
 								}
 							} else {
+								// Edge case: Router offline or SCMP error without parseable quote.
+								// Invalidate cached flows toward the error's source IA and trigger async path refresh to avoid blackholes.
+								if device.translator != nil && scmpInfo.SrcIA != 0 {
+									localIA := device.translator.LocalIA()
+									invCount := device.translator.InvalidateFlowPathsByIA(localIA, scmpInfo.SrcIA)
+									if device.pathPool != nil {
+										device.pathPool.RefreshAsync(localIA, scmpInfo.SrcIA, "scmp-router-error")
+									}
+									if invCount > 0 && device.scionLog != nil {
+										device.scionLog.Infof(scionlog.ComponentFlow,
+											"[SCMP-FAILOVER] invalidated %d cached flows via unquoted router SCMP error type=%v routerIA=%s",
+											invCount, scmpInfo.Type, scmpInfo.SrcIA)
+									}
+								}
 								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-IN] drop reason=no-quoted protocol=SCMP type=%v", scmpInfo.Type)
 								continue
 							}
