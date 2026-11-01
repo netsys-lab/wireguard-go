@@ -8,6 +8,7 @@ package device
 import (
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -797,9 +798,14 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 
 	// Apply policy engine to filter and sort paths.
 	selectedPaths := paths
-	if device.translator.policyEngine != nil {
+	var policyEngine *pathpolicy.Engine
+	if device.translator != nil {
+		policyEngine = device.translator.PolicyEngine()
+	}
+
+	if policyEngine != nil {
 		info := buildPacketInfo(snap, state)
-		selectedPaths = device.translator.policyEngine.SelectPaths(info, paths)
+		selectedPaths = policyEngine.SelectPaths(info, paths)
 		device.scionLog.Debugf(scionlog.ComponentPath,
 			"Policy applied for flow %d: paths=%d->%d",
 			flowID, len(paths), len(selectedPaths))
@@ -814,7 +820,7 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 	var policyMode PolicyMode = PolicyNone
 	var policyName string
 	var policyFallback bool
-	if device.translator.policyEngine != nil {
+	if policyEngine != nil {
 		policyMode = PolicyDefault
 	}
 
@@ -913,6 +919,86 @@ func (device *Device) ClearFlowPathOverride(flowID flow.ID) {
 		device.scionLog.Debugf(scionlog.ComponentPath,
 			"[OVERRIDE] cleared flowID=%d", flowID)
 	}
+}
+
+// ReloadPathPolicy reads a policy file from disk and delegates to
+// ReloadPathPolicyFromJSON to validate and atomically update the Translator's
+// policy engine at runtime. Passing an empty policyFilePath clears the policy engine.
+func (device *Device) ReloadPathPolicy(policyFilePath string) error {
+	if policyFilePath == "" {
+		return device.ReloadPathPolicyFromJSON(nil)
+	}
+	data, err := os.ReadFile(policyFilePath)
+	if err != nil {
+		return fmt.Errorf("read path policy file %s: %w", policyFilePath, err)
+	}
+	return device.ReloadPathPolicyFromJSON(data)
+}
+
+// ReloadPathPolicyFromJSON parses and validates raw scitra-policy.json bytes
+// and atomically updates the Translator's policy engine at runtime.
+// Passing an empty slice clears the policy engine (falls back to first-valid).
+func (device *Device) ReloadPathPolicyFromJSON(policyJSON []byte) error {
+	var newEngine *pathpolicy.Engine
+	if len(policyJSON) > 0 {
+		pf, err := pathpolicy.ParsePolicyFile(policyJSON)
+		if err != nil {
+			return fmt.Errorf("parse path policy JSON: %w", err)
+		}
+		eng, err := pathpolicy.NewEngine(pf)
+		if err != nil {
+			return fmt.Errorf("create path policy engine: %w", err)
+		}
+		newEngine = eng
+	}
+
+	device.ipcMutex.RLock()
+	defer device.ipcMutex.RUnlock()
+
+	if device.isClosed() {
+		return fmt.Errorf("device is closed")
+	}
+	if device.translator == nil {
+		return fmt.Errorf("SCION translator not initialized")
+	}
+
+	device.translator.SetPolicyEngine(newEngine)
+	device.scionLog.Infof(scionlog.ComponentInit, "[PATHPOLICY] dynamically reloaded policy engine (enabled=%v)", newEngine != nil)
+	return nil
+}
+
+// RefreshActivePaths triggers an immediate control-plane refresh for all
+// known/active SCION IA pairs in the PathPool.
+func (device *Device) RefreshActivePaths() error {
+	device.ipcMutex.RLock()
+	if device.isClosed() {
+		device.ipcMutex.RUnlock()
+		return fmt.Errorf("device is closed")
+	}
+	pathPool := device.pathPool
+	device.ipcMutex.RUnlock()
+
+	if pathPool == nil {
+		return fmt.Errorf("SCION pathPool not initialized")
+	}
+
+	// Ensure all active flows in scionFlowStates are registered in PathPool
+	// and trigger non-blocking control-plane refreshes for all known IA pairs.
+	device.scionFlowMu.RLock()
+	states := make([]SCIONEgressState, 0, len(device.scionFlowStates))
+	for _, st := range device.scionFlowStates {
+		states = append(states, st)
+	}
+	device.scionFlowMu.RUnlock()
+
+	for _, st := range states {
+		if st.SrcIA != 0 && st.DstIA != 0 && st.SrcIA != st.DstIA {
+			pathPool.RefreshAsync(st.SrcIA, st.DstIA, "manual-frontend-refresh")
+		}
+	}
+
+	pathPool.RefreshKnownPairs("manual-frontend-refresh")
+	return nil
 }
 
 // currentPathIndex returns the index of the current path within the given slice.

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gopacket/gopacket"
@@ -267,7 +268,7 @@ type Translator struct {
 	cache        PathPool
 	localIA      addr.IA
 	brAddr       *net.UDPAddr // BR address for same-AS fallback
-	policyEngine *pathpolicy.Engine
+	policyEngine atomic.Pointer[pathpolicy.Engine]
 
 	ifaceName string
 
@@ -331,13 +332,23 @@ func NewTranslator(cache PathPool, localIA addr.IA, brAddr *net.UDPAddr, ifaceNa
 	}
 }
 
-// SetPolicyEngine sets the path policy engine for policy-based path selection.
+// SetPolicyEngine atomically sets the path policy engine for policy-based path selection.
 // If nil, the translator falls back to first-valid path selection.
 func (t *Translator) SetPolicyEngine(engine *pathpolicy.Engine) {
-	t.policyEngine = engine
+	t.policyEngine.Store(engine)
 	if engine != nil {
 		log.Printf("[TRANSLATE] path policy engine configured")
+	} else {
+		log.Printf("[TRANSLATE] path policy engine cleared (falling back to first-valid)")
 	}
+}
+
+// PolicyEngine atomically loads and returns the current path policy engine (or nil).
+func (t *Translator) PolicyEngine() *pathpolicy.Engine {
+	if t == nil {
+		return nil
+	}
+	return t.policyEngine.Load()
 }
 
 const (
@@ -466,7 +477,7 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	//Path Selection Criteria
 	//Use policy engine if available, otherwise select first path.
 	var selectedcachedpath pathpool.CachedPath
-	if t.policyEngine != nil {
+	if t.policyEngine.Load() != nil {
 		selectedcachedpath = t.selectPathWithPolicy(CachedPaths, srcIA, dstIA)
 		log.Print("[PATHPOOL] using path policy")
 	} else {
@@ -518,12 +529,17 @@ func selectPath(paths []pathpool.CachedPath) pathpool.CachedPath {
 // matching (protocol, ports, DSCP) happens in selectPathsWithFullInfo which
 // is called from TranslateEgress where the parsed packet is available.
 func (t *Translator) selectPathWithPolicy(paths []pathpool.CachedPath, srcIA, dstIA addr.IA) pathpool.CachedPath {
+	engine := t.policyEngine.Load()
+	if engine == nil {
+		return paths[0]
+	}
+
 	info := pathpolicy.PacketInfo{
 		SrcIA: srcIA,
 		DstIA: dstIA,
 	}
 
-	selected := t.policyEngine.SelectPaths(info, paths)
+	selected := engine.SelectPaths(info, paths)
 	if len(selected) > 0 {
 		return selected[0]
 	}
@@ -537,10 +553,11 @@ func (t *Translator) selectPathWithPolicy(paths []pathpool.CachedPath, srcIA, ds
 // for fine-grained matcher evaluation. Called from TranslateEgress after
 // the packet has been parsed so protocol, ports, and DSCP are known.
 func (t *Translator) SelectPathsWithFullInfo(paths []pathpool.CachedPath, info pathpolicy.PacketInfo) []pathpool.CachedPath {
-	if t.policyEngine == nil {
+	engine := t.policyEngine.Load()
+	if engine == nil {
 		return paths
 	}
-	return t.policyEngine.SelectPaths(info, paths)
+	return engine.SelectPaths(info, paths)
 }
 
 type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
