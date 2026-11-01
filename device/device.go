@@ -113,7 +113,6 @@ type Device struct {
 	scmpInfoIndex   map[SCMPInfoKey]map[flow.ID]struct{}
 	flowOverrideMu  sync.RWMutex
 	flowOverrides   map[flow.ID]string
-	policyEngine    *pathpolicy.Engine
 
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
 	// It is assigned only to SCION-mapped egress packets accepted from TUN
@@ -496,7 +495,6 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 		// Non-fatal: translator will use first-valid path selection.
 	} else if policyEngine != nil {
 		translator.SetPolicyEngine(policyEngine)
-		device.policyEngine = policyEngine
 	}
 
 	device.translator = translator
@@ -799,9 +797,9 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 
 	// Apply policy engine to filter and sort paths.
 	selectedPaths := paths
-	if device.policyEngine != nil {
+	if device.translator.policyEngine != nil {
 		info := buildPacketInfo(snap, state)
-		selectedPaths = device.policyEngine.SelectPaths(info, paths)
+		selectedPaths = device.translator.policyEngine.SelectPaths(info, paths)
 		device.scionLog.Debugf(scionlog.ComponentPath,
 			"Policy applied for flow %d: paths=%d->%d",
 			flowID, len(paths), len(selectedPaths))
@@ -816,7 +814,7 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 	var policyMode PolicyMode = PolicyNone
 	var policyName string
 	var policyFallback bool
-	if device.policyEngine != nil {
+	if device.translator.policyEngine != nil {
 		policyMode = PolicyDefault
 	}
 
