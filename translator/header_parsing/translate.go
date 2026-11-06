@@ -282,7 +282,14 @@ type Translator struct {
 
 	dispatchedPorts DispatchPortRange
 
+	overrideResolver func(pkt []byte, srcIA, dstIA addr.IA) string
+
 	log *scionlog.Logger
+}
+
+// SetPathOverrideResolver sets an optional callback to resolve a manual path override fingerprint.
+func (t *Translator) SetPathOverrideResolver(fn func(pkt []byte, srcIA, dstIA addr.IA) string) {
+	t.overrideResolver = fn
 }
 
 func (t *Translator) SetDispatchedPorts(r DispatchPortRange) {
@@ -361,7 +368,11 @@ type PathPool interface {
 }
 
 func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, hostPort int, isIPv6 bool) ([]byte, error) {
-	t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] enter pkt=%s srcIP=%s dstIP=%s hostPort=%d isIPv6=%v localIA=%s brAddr=%s",
+	return t.ReadOutboundPacketWithOverride(pkt, dstIP, srcIP, hostPort, isIPv6, "")
+}
+
+func (t *Translator) ReadOutboundPacketWithOverride(pkt []byte, dstIP net.IP, srcIP net.IP, hostPort int, isIPv6 bool, overrideFP string) ([]byte, error) {
+	t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] enter pkt=%s srcIP=%s dstIP=%s hostPort=%d isIPv6=%v localIA=%s brAddr=%s overrideFP=%s",
 		packetSummary(pkt),
 		ipString(srcIP),
 		ipString(dstIP),
@@ -369,6 +380,7 @@ func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, 
 		isIPv6,
 		t.localIA,
 		udpAddrString(t.brAddr),
+		overrideFP,
 	)
 
 	if !isIPv6 {
@@ -390,7 +402,7 @@ func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, 
 	t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] SCION-mapped destination detected dstIP=%s", ipString(dstIP))
 
 	t.log.Infof(scionlog.ComponentPath, "HIER mussen wir eigentlich schon als srcIP die IP des WG Interface ubergeben.")
-	newpkt, nextHop, err := t.TranslateEgress(pkt, srcIP, hostPort, nil)
+	newpkt, nextHop, err := t.TranslateEgressWithOverride(pkt, srcIP, hostPort, nil, overrideFP)
 	if err != nil {
 		t.log.Infof(scionlog.ComponentPath, "[READ-OUTBOUND] TranslateEgress failed srcIP=%s dstIP=%s hostPort=%d err=%v",
 			ipString(srcIP),
@@ -411,6 +423,10 @@ func (t *Translator) ReadOutboundPacket(pkt []byte, dstIP net.IP, srcIP net.IP, 
 }
 
 func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
+	return t.getPathFromCacheWithOverride(srcIA, dstIA, "")
+}
+
+func (t *Translator) getPathFromCacheWithOverride(srcIA, dstIA addr.IA, overrideFP string) (path.Path, error) {
 	t.log.Infof(scionlog.ComponentPath, "[PATHLOOKUP] enter srcIA=%s dstIA=%s", srcIA, dstIA)
 
 	if srcIA == dstIA {
@@ -475,14 +491,32 @@ func (t *Translator) getPathFromCache(srcIA, dstIA addr.IA) (path.Path, error) {
 	}
 
 	//Path Selection Criteria
-	//Use policy engine if available, otherwise select first path.
+	//1. If manual override is specified, look for matching fingerprint in CachedPaths.
+	//2. Otherwise use policy engine if available, or select first valid path.
 	var selectedcachedpath pathpool.CachedPath
-	if t.policyEngine.Load() != nil {
-		selectedcachedpath = t.selectPathWithPolicy(CachedPaths, srcIA, dstIA)
-		log.Print("[PATHPOOL] using path policy")
-	} else {
-		selectedcachedpath = selectPath(CachedPaths)
-		log.Print("[PATHPOOL] NOT using path policy")
+	var overrideFound bool
+	if overrideFP != "" {
+		for _, cp := range CachedPaths {
+			if cp.Fingerprint == overrideFP {
+				selectedcachedpath = cp
+				overrideFound = true
+				t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] using manual flow path override fp=%s nextHop=%v", cp.Fingerprint, cp.NextHop)
+				break
+			}
+		}
+		if !overrideFound {
+			t.log.Infof(scionlog.ComponentPath, "[PATHPOOL] manual path override fp=%s not found among %d cached paths; falling back to policy/default", overrideFP, len(CachedPaths))
+		}
+	}
+
+	if !overrideFound {
+		if t.policyEngine.Load() != nil {
+			selectedcachedpath = t.selectPathWithPolicy(CachedPaths, srcIA, dstIA)
+			log.Print("[PATHPOOL] using path policy")
+		} else {
+			selectedcachedpath = selectPath(CachedPaths)
+			log.Print("[PATHPOOL] NOT using path policy")
+		}
 	}
 
 	meta := selectedcachedpath.Path.Metadata()
@@ -576,6 +610,10 @@ type GetPathFunc func(srcIA, dstIA addr.IA) (path.Path, error)
 //   - The same-AS (empty path) outer UDP destination port is the inner L4
 //     destination port for TCP/UDP and DefaultSCIONEndhostPort for SCMP.
 func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc) ([]byte, *net.UDPAddr, error) {
+	return t.TranslateEgressWithOverride(pktData, hostIP, hostPort, getPath, "")
+}
+
+func (t *Translator) TranslateEgressWithOverride(pktData []byte, hostIP net.IP, hostPort int, getPath GetPathFunc, overrideFP string) ([]byte, *net.UDPAddr, error) {
 	if len(pktData) < 40 {
 		return nil, nil, errors.New("packet too short for IPv6")
 	}
@@ -633,11 +671,15 @@ func (t *Translator) TranslateEgress(pktData []byte, hostIP net.IP, hostPort int
 		return nil, nil, fmt.Errorf("localIA not configured (t.localIA=%v)", t.localIA)
 	}
 
+	if overrideFP == "" && t.overrideResolver != nil {
+		overrideFP = t.overrideResolver(pktData, srcIA, dstIA)
+	}
+
 	var selectedPath path.Path
 	if getPath != nil {
 		selectedPath, err = getPath(srcIA, dstIA)
 	} else {
-		selectedPath, err = t.getPathFromCache(srcIA, dstIA)
+		selectedPath, err = t.getPathFromCacheWithOverride(srcIA, dstIA, overrideFP)
 	}
 
 	if err != nil {

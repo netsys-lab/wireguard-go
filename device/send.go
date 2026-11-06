@@ -500,6 +500,15 @@ func (device *Device) RoutineReadFromTUN() {
 						}
 					}
 
+					var overrideFP string
+					if mappedFlowID != 0 {
+						device.flowOverrideMu.RLock()
+						if device.flowOverrides != nil {
+							overrideFP = device.flowOverrides[mappedFlowID]
+						}
+						device.flowOverrideMu.RUnlock()
+					}
+
 					srcIP := net.IP(pkt[IPv6offsetSrc : IPv6offsetSrc+net.IPv6len])
 					// SCION endhost/control port. Kept for call-site
 					// compatibility; the translator derives the outer UDP
@@ -507,7 +516,7 @@ func (device *Device) RoutineReadFromTUN() {
 					// data flows, DefaultSCIONEndhostPort for SCMP/ICMPv6).
 					hostPort := int(header_parsing.DefaultSCIONEndhostPort)
 					start := time.Now()
-					newpkt, err := device.translator.ReadOutboundPacket(pkt, dstIP, srcIP, hostPort, true)
+					newpkt, err := device.translator.ReadOutboundPacketWithOverride(pkt, dstIP, srcIP, hostPort, true, overrideFP)
 					translateDur := time.Since(start)
 					if err != nil {
 						if errors.Is(err, pathpool.ErrPathPending) {

@@ -499,6 +499,25 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	}
 
 	device.translator = translator
+	translator.SetPathOverrideResolver(func(pkt []byte, srcIA, dstIA addr.IA) string {
+		if device.flowManager == nil {
+			return ""
+		}
+		md, err := flow.ParsePacketMetadata(pkt)
+		if err != nil {
+			return ""
+		}
+		snap, ok := device.flowManager.GetByTuple(md)
+		if !ok {
+			return ""
+		}
+		device.flowOverrideMu.RLock()
+		defer device.flowOverrideMu.RUnlock()
+		if device.flowOverrides == nil {
+			return ""
+		}
+		return device.flowOverrides[snap.ID]
+	})
 
 	device.scionLog.Infof(scionlog.ComponentInit,
 		"SCION init success: configDir=%s localIA=%s brAddr=%s",
@@ -811,6 +830,30 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 			flowID, len(paths), len(selectedPaths))
 	}
 
+	device.flowOverrideMu.RLock()
+	ofp, hasOverride := device.flowOverrides[flowID]
+	device.flowOverrideMu.RUnlock()
+
+	// If manual override is active, ensure the overridden path is present in selectedPaths
+	// so the user sees it selected and it is not falsely marked as stale if filtered by policy.
+	if hasOverride && ofp != "" {
+		found := false
+		for _, p := range selectedPaths {
+			if p.Fingerprint == ofp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, p := range paths {
+			if p.Fingerprint == ofp {
+				selectedPaths = append([]pathcache.CachedPath{p}, selectedPaths...)
+				break
+			}
+			}
+		}
+	}
+
 	currentIdx := device.currentPathIndex(flowID, selectedPaths)
 	dtos := make([]FlowPathDTO, 0, len(selectedPaths))
 	for _, p := range selectedPaths {
@@ -835,9 +878,6 @@ func (device *Device) SCIONPathsForFlow(flowID flow.ID) FlowPathsResult {
 
 	overrideState := OverrideInactive
 	var overrideFingerprint string
-	device.flowOverrideMu.RLock()
-	ofp, hasOverride := device.flowOverrides[flowID]
-	device.flowOverrideMu.RUnlock()
 	if hasOverride {
 		overrideFingerprint = ofp
 		overrideState = OverrideActive
