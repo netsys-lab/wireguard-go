@@ -186,6 +186,21 @@ func (m *Manager) GetByID(id ID) (Snapshot, bool) {
 	return flow.snapshot(), true
 }
 
+func (m *Manager) GetByMetadata(metadata PacketMetadata) (Snapshot, bool) {
+	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	flow, ok := m.flowsByKey[key]
+	if !ok {
+		return Snapshot{}, false
+	}
+	return flow.snapshot(), true
+}
+
+func (m *Manager) GetByTuple(metadata PacketMetadata) (Snapshot, bool) {
+	return m.GetByMetadata(metadata)
+}
+
 func (m *Manager) Snapshot() []Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -507,7 +507,7 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 		if err != nil {
 			return ""
 		}
-		snap, ok := device.flowManager.GetByTuple(md)
+		snap, ok := device.flowManager.GetByMetadata(md)
 		if !ok {
 			return ""
 		}

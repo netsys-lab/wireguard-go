@@ -7,6 +7,39 @@ import (
 	"time"
 )
 
+func TestGetByMetadataAndGetByTuple(t *testing.T) {
+	m := NewManager()
+	md := PacketMetadata{
+		IPVersion:   4,
+		Protocol:    ProtocolTCP,
+		Source:      Endpoint{Addr: netip.MustParseAddr("10.0.0.2"), Port: 49152},
+		Destination: Endpoint{Addr: netip.MustParseAddr("10.0.0.3"), Port: 443},
+	}
+
+	// Not found initially
+	if _, ok := m.GetByMetadata(md); ok {
+		t.Fatal("expected GetByMetadata to return false before flow exists")
+	}
+	if _, ok := m.GetByTuple(md); ok {
+		t.Fatal("expected GetByTuple to return false before flow exists")
+	}
+
+	snap, created := m.ObserveTx(md, 100, EgressIP)
+	if !created {
+		t.Fatal("expected flow to be created")
+	}
+
+	snapFound, ok := m.GetByMetadata(md)
+	if !ok || snapFound.ID != snap.ID {
+		t.Fatalf("expected GetByMetadata to find flow %d, got %v (ok=%v)", snap.ID, snapFound.ID, ok)
+	}
+
+	snapTuple, ok := m.GetByTuple(md)
+	if !ok || snapTuple.ID != snap.ID {
+		t.Fatalf("expected GetByTuple to find flow %d, got %v (ok=%v)", snap.ID, snapTuple.ID, ok)
+	}
+}
+
 func TestFirstPacketCreatesFlowID1(t *testing.T) {
 	m := NewManager()
 	md := PacketMetadata{
