@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"log"
 	"net/netip"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,9 @@ func (f *Flow) enrichSCIONMetadata(metadata PacketMetadata) {
 // It does not silently overwrite a non-unknown kind with a different non-unknown kind.
 func (f *Flow) setEgressKind(kind EgressKind) {
 	if f.egressKind == EgressUnknown || f.egressKind == "" {
+		if kind != EgressUnknown && kind != "" {
+			log.Printf("[FLOW-DEBUG] [Flow] Flow id=%d promoted egressKind: '%s' -> '%s'", f.id, f.egressKind, kind)
+		}
 		f.egressKind = kind
 	}
 }

@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -106,6 +107,9 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 	m.flowsByKey[key] = flow
 	m.flowsByID[id] = flow
 
+	log.Printf("[FLOW-DEBUG] [FlowManager] ObserveTx: NEW FLOW CREATED: id=%d egressKind='%s' class=%d proto=%d src=%s dst=%s scionDstIP=%s dstIA='%s'",
+		id, egressKind, tc, metadata.Protocol, metadata.Source, metadata.Destination, metadata.SCIONDstIP, metadata.DstIA)
+
 	return flow.snapshot(), true
 }
 
@@ -172,6 +176,9 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 
 	m.flowsByKey[key] = flow
 	m.flowsByID[id] = flow
+
+	log.Printf("[FLOW-DEBUG] [FlowManager] ObserveRx: NEW FLOW CREATED: id=%d egressKind='%s' class=%d proto=%d src=%s dst=%s scionDstIP=%s dstIA='%s'",
+		id, egressKind, tc, metadata.Protocol, metadata.Source, metadata.Destination, metadata.SCIONDstIP, metadata.DstIA)
 
 	return flow.snapshot(), true
 }
