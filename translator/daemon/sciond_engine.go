@@ -7,8 +7,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/scionproto/scion/pkg/addr"
 	"github.com/scionproto/scion/pkg/daemon"
 	"github.com/scionproto/scion/pkg/daemon/types"
@@ -20,6 +22,49 @@ import (
 type SciondRetriever struct {
 	connector daemon.Connector
 	log       *scionlog.Logger
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// promRegistryMu serializes withIsolatedPromRegistry, which temporarily
+// replaces the process-wide prometheus.DefaultRegisterer.
+var promRegistryMu sync.Mutex
+
+// withIsolatedPromRegistry runs fn with a fresh prometheus.DefaultRegisterer
+// and restores the previous one afterwards.
+//
+// daemon.NewStandaloneConnector registers Prometheus collectors with
+// prometheus.MustRegister on every call (e.g. "trustengine_db_queries_total",
+// independent of daemon.WithMetrics). On Android the app process survives
+// tunnel restarts, so the second connector in the same process panicked with
+// "duplicate metrics collector registration attempted" and killed the app.
+// Giving every connector its own registry avoids the collision. Nothing in
+// this process scrapes these metrics, so they are not lost in practice.
+func withIsolatedPromRegistry[T any](fn func() (T, error)) (T, error) {
+	promRegistryMu.Lock()
+	defer promRegistryMu.Unlock()
+
+	prev := prometheus.DefaultRegisterer
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	defer func() { prometheus.DefaultRegisterer = prev }()
+
+	return fn()
+}
+
+// Close releases the standalone connector (path/trust storage, revocation
+// cache and the periodic TRC loader). It is safe to call more than once and
+// on a nil receiver. The connector field is kept, so a PathPool refresh that
+// is still running gets an error from the closed connector instead of a nil
+// dereference.
+func (r *SciondRetriever) Close() error {
+	if r == nil || r.connector == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		r.closeErr = r.connector.Close()
+	})
+	return r.closeErr
 }
 
 func (r *SciondRetriever) logDialCheck(network, address string) {
@@ -161,11 +206,13 @@ func NewSciondRetriever(configDir string, log *scionlog.Logger) (*SciondRetrieve
 
 	r.log.Infof(scionlog.ComponentInit, "[PATHSRV-CONNECT] creating standalone connector")
 
-	conn, err := daemon.NewStandaloneConnector(
-		ctx,
-		asInfo,
-		daemon.WithCertsDir(certsDir),
-	)
+	conn, err := withIsolatedPromRegistry(func() (daemon.Connector, error) {
+		return daemon.NewStandaloneConnector(
+			ctx,
+			asInfo,
+			daemon.WithCertsDir(certsDir),
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize standalone SCION connector: %w", err)
 	}

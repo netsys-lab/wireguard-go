@@ -82,6 +82,10 @@ type Device struct {
 	pathPool   *pathcache.PathPool
 	translator *header_parsing.Translator
 
+	// scionRetriever owns the standalone SCION connector behind pathPool.
+	// It is closed in Close() so a tunnel restart does not leak it.
+	scionRetriever *daemon.SciondRetriever
+
 	pool struct {
 		inboundElementsContainer  *WaitPool
 		outboundElementsContainer *WaitPool
@@ -471,15 +475,18 @@ func (device *Device) InitSCION(scionConfig ScionDeviceConfig) error {
 	defer device.ipcMutex.Unlock()
 
 	if device.isClosed() {
+		_ = retriever.Close()
 		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: device is closed")
 		return fmt.Errorf("SCION init failed: device is closed")
 	}
 
 	if device.translator != nil {
+		_ = retriever.Close()
 		device.scionLog.Errorf(scionlog.ComponentInit, "SCION init failed: translator already initialized")
 		return fmt.Errorf("SCION init failed: translator already initialized")
 	}
 
+	device.scionRetriever = retriever
 	device.pathPool = pathPool
 	device.pendingSCION = pendingSCION
 	pathPool.SetRefreshCallback(device.OnPathReady)
@@ -602,6 +609,13 @@ func (device *Device) Close() {
 	device.state.stopping.Wait()
 
 	device.rate.limiter.Close()
+
+	if device.scionRetriever != nil {
+		if err := device.scionRetriever.Close(); err != nil {
+			device.log.Verbosef("SCION connector close failed: %v", err)
+		}
+		device.scionRetriever = nil
+	}
 
 	device.log.Verbosef("Device closed")
 	close(device.closed)
