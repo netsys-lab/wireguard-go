@@ -30,6 +30,8 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+// ipToNetipAddr converts a net.IP to netip.Addr, unmapping IPv4-in-IPv6 so IPv4
+// addresses compare equal to their 4-byte form. Invalid input yields the zero Addr.
 func ipToNetipAddr(ip net.IP) netip.Addr {
 	if ip4 := ip.To4(); ip4 != nil {
 		var b [4]byte
@@ -233,6 +235,15 @@ func (peer *Peer) keepKeyFreshSending() {
 	}
 }
 
+// RoutineReadFromTUN reads outgoing packets from the TUN device (egress).
+// For every packet it
+//  1. classifies it (plain IP, mapped SCION fc00::/8, native SCION),
+//  2. records/updates the flow via flowManager.ObserveTx and, for SCION,
+//     registers the IA pair and wire tuple for later ingress matching,
+//  3. translates mapped SCION packets (or queues them while paths are pending),
+//  4. looks up the WireGuard peer and hands the packet to the encryption queue.
+//
+// This is the only place where flows are created in production.
 func (device *Device) RoutineReadFromTUN() {
 	defer func() {
 		device.log.Verbosef("Routine: TUN reader - stopped")

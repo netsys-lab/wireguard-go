@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+// Snapshot is an immutable, point-in-time copy of a Flow. It is safe to pass
+// around without locking and is converted to a FlowDTO for the frontend.
 type Snapshot struct {
 	ID ID
 
@@ -33,6 +35,7 @@ type Snapshot struct {
 	LastSeen  time.Time
 }
 
+// ProtocolName returns a human-readable name for the L4 protocol (used in logs).
 func (s Snapshot) ProtocolName() string {
 	switch s.Protocol {
 	case ProtocolTCP:

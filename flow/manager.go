@@ -7,14 +7,22 @@ import (
 	"time"
 )
 
+// ID is the monotonically increasing flow identifier (starting at 1). IDs are
+// never reused during the lifetime of a Manager; the frontend uses them to
+// address a flow (details view, path override).
 type ID uint64
 
+// Status is the lifecycle state of a flow. Currently only StatusActive exists;
+// flows are never marked idle or removed.
 type Status string
 
 const (
 	StatusActive Status = "active"
 )
 
+// EgressKind is the coarse transport of a flow as shown in the UI:
+// "ip" (plain IP through WireGuard), "scion" (mapped or native SCION) or
+// "unknown". It does NOT describe the packet direction.
 type EgressKind string
 
 const (
@@ -23,6 +31,10 @@ const (
 	EgressSCION   EgressKind = "scion"
 )
 
+// Manager tracks all flows of one Device. flowsByKey resolves a packet tuple to
+// its flow, flowsByID serves lookups from the frontend. mu protects both maps;
+// per-flow counters are atomics and are updated under the read lock.
+// There is currently no expiry: entries live until the Device is closed.
 type Manager struct {
 	mu         sync.RWMutex
 	nextID     ID
@@ -30,6 +42,7 @@ type Manager struct {
 	flowsByID  map[ID]*Flow
 }
 
+// NewManager creates an empty Manager whose first flow gets ID 1.
 func NewManager() *Manager {
 	return &Manager{
 		nextID:     1,
@@ -38,6 +51,13 @@ func NewManager() *Manager {
 	}
 }
 
+// ObserveTx records one outgoing packet (read from the TUN device).
+// It looks the flow up by its canonical Key and, if found, increments the tx
+// counters, refreshes lastSeen and fills still-empty metadata (egress kind,
+// traffic class, SCION IA / destination). If no flow exists yet, a new one is
+// created (double-checked under the write lock) with local=Source and
+// remote=Destination of this packet. It returns a snapshot and whether the
+// flow was newly created. Called from RoutineReadFromTUN in device/send.go.
 func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKind EgressKind) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 
@@ -113,6 +133,11 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 	return flow.snapshot(), true
 }
 
+// ObserveRx is the receive-side counterpart of ObserveTx: it increments the rx
+// counters of the matching flow or creates a new flow with local=Destination and
+// remote=Source (the packet came from the remote side).
+// NOTE: this function is currently not called from the production receive path
+// (device/receive.go), therefore RxPackets/RxBytes stay 0 in the UI.
 func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKind EgressKind) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 
@@ -183,6 +208,7 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 	return flow.snapshot(), true
 }
 
+// GetByID returns a snapshot of the flow with the given ID, or false if unknown.
 func (m *Manager) GetByID(id ID) (Snapshot, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -193,6 +219,11 @@ func (m *Manager) GetByID(id ID) (Snapshot, bool) {
 	return flow.snapshot(), true
 }
 
+// GetByMetadata looks up an existing flow by the canonical Key of a parsed
+// packet (IP version, protocol and both endpoints, direction-independent).
+// It never creates or updates a flow. Used by the translator's path override
+// resolver (registered in Device.InitSCION via SetPathOverrideResolver) to find the
+// manual override fingerprint for an outgoing packet.
 func (m *Manager) GetByMetadata(metadata PacketMetadata) (Snapshot, bool) {
 	key := newKey(metadata.IPVersion, metadata.Protocol, metadata.Source, metadata.Destination)
 	m.mu.RLock()
@@ -204,10 +235,13 @@ func (m *Manager) GetByMetadata(metadata PacketMetadata) (Snapshot, bool) {
 	return flow.snapshot(), true
 }
 
+// GetByTuple is an alias for GetByMetadata.
 func (m *Manager) GetByTuple(metadata PacketMetadata) (Snapshot, bool) {
 	return m.GetByMetadata(metadata)
 }
 
+// Snapshot returns copies of all tracked flows sorted by ID. It is the data
+// source for Device.FlowSnapshots and therefore for wgGetFlows / the flow list.
 func (m *Manager) Snapshot() []Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

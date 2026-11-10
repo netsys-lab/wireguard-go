@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+// DefaultConfig returns the fallback logging configuration: level info and
+// Components == nil, which means "all components enabled".
 func DefaultConfig() LogConfig {
 	return LogConfig{
 		Level:      LogInfo,
@@ -13,6 +15,10 @@ func DefaultConfig() LogConfig {
 	}
 }
 
+// ConfigFromEnv builds a LogConfig from the environment variables
+// SCION_LOG_LEVEL and SCION_LOG_COMPONENTS (used by non-Android builds).
+// "" or "none" disables all components, "all" enables all of them. Unlike
+// ParseConfig, unknown component names are not validated here.
 func ConfigFromEnv() LogConfig {
 	cfg := DefaultConfig()
 
@@ -55,6 +61,11 @@ func ConfigFromEnv() LogConfig {
 	return cfg
 }
 
+// ParseConfig builds a LogConfig from the strings passed in from Android
+// (BuildConfig.SCION_LOG_LEVEL / SCION_LOG_COMPONENTS via JNI).
+// Level: trace|debug|info|warn|warning|error, anything else falls back to info.
+// Components: "all" = every component, "" or "none" = no component logs,
+// otherwise a comma-separated list; unknown names are ignored and logged.
 func ParseConfig(levelStr, componentsStr string) LogConfig {
 	cfg := DefaultConfig()
 

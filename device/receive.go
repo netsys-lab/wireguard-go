@@ -434,6 +434,12 @@ func (device *Device) RoutineHandshake(id int) {
 	}
 }
 
+// RoutineSequentialReceiver processes decrypted inbound packets of one peer in
+// order (ingress). After replay and allowed-IPs checks, SCION packets are matched
+// against existing flows (lookupSCIONFlow / lookupSCMPInfo) to restore mapped
+// packets to their original IPv6 form; native SCION passes unchanged, plain IP
+// skips SCION handling. Packets are finally written to the TUN device.
+// No flow is created or counted here (flowManager.ObserveRx is not called).
 func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 	device := peer.device
 	defer func() {

@@ -1064,6 +1064,9 @@ func (device *Device) currentPathIndex(flowID flow.ID, paths []pathcache.CachedP
 	return 0
 }
 
+// pathToDTO converts a cached SCION path into the FlowPathDTO shown in the UI
+// (fingerprint, next hop, expiry, MTU, interfaces and optional metadata such as
+// latency, bandwidth and geo information).
 func pathToDTO(p pathcache.CachedPath) FlowPathDTO {
 	dto := FlowPathDTO{
 		Fingerprint: p.Fingerprint,

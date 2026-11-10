@@ -14,6 +14,8 @@ var nativeSCIONPorts = []uint16{
 	DefaultSCIONEndhostPort,
 }
 
+// isNativeSCIONPort reports whether port is in nativeSCIONPorts.
+// NOTE: currently not used by the classifier itself.
 func isNativeSCIONPort(port uint16) bool {
 	for _, p := range nativeSCIONPorts {
 		if p == port {
@@ -29,6 +31,8 @@ var translatedIngressPorts = []uint16{
 	8000,
 }
 
+// isTranslatedIngressPort reports whether an inbound SCION TCP/UDP packet without
+// a matching flow may still be translated statelessly (allow-list, port 8000).
 func isTranslatedIngressPort(port uint16) bool {
 	for _, p := range translatedIngressPorts {
 		if p == port {
@@ -39,6 +43,8 @@ func isTranslatedIngressPort(port uint16) bool {
 }
 
 // IsTranslatedIngressPort is exported for device/policy use.
+//
+// Used by device/receive.go on a flow lookup miss.
 func IsTranslatedIngressPort(port uint16) bool {
 	return isTranslatedIngressPort(port)
 }
@@ -89,6 +95,11 @@ func ClassifyIngress(packet []byte) uint8 {
 // 1. IP-Version ist 4 oder 6 mit gültiger Header-Länge.
 // 2. Transport-Protokoll ist UDP (Protocol/NextHeader == 17).
 // 3. Das erste Byte der UDP-Payload besitzt die SCION-Version 0 (Bits 0-3 = 0).
+//
+// NOTE: Despite the name this is a heuristic. It only checks IP version, UDP
+// and the SCION version nibble (= 0) of the first payload byte. Any UDP payload
+// starting with a byte < 0x10 (e.g. ~1/16 of DNS messages, STUN, WireGuard
+// handshake/data messages) therefore also matches.
 func isValidOuterSCION(packet []byte) bool {
 	// Schritt 1: Mindestlänge für den kleinstmöglichen IP-Header (IPv4 = 20 Bytes)
 	if len(packet) < 20 {

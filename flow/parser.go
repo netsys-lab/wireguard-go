@@ -22,6 +22,10 @@ var (
 	ErrUnsupportedProto = errors.New("unsupported transport protocol")
 )
 
+// PacketMetadata is the parsed identity of one packet that is fed into the
+// Manager. Source/Destination come from the IP/L4 headers (or from the inner
+// SCION header for native SCION); the SCION fields and TrafficClass are filled
+// in by the caller in device/send.go.
 type PacketMetadata struct {
 	IPVersion    uint8
 	Protocol     uint8
@@ -33,6 +37,11 @@ type PacketMetadata struct {
 	TrafficClass TrafficClass
 }
 
+// ParsePacketMetadata extracts IP version, protocol and the two endpoints from a
+// plain IPv4/IPv6 packet. Supported: IPv4 TCP/UDP (non-fragmented), IPv6
+// TCP/UDP and IPv6 ICMPv6 (echo identifier used as port). Everything else
+// (ICMPv4, IPv6 extension headers, fragments) returns an error and no flow is
+// recorded for that packet.
 func ParsePacketMetadata(packet []byte) (PacketMetadata, error) {
 	if len(packet) < 1 {
 		return PacketMetadata{}, ErrTruncated
@@ -49,6 +58,9 @@ func ParsePacketMetadata(packet []byte) (PacketMetadata, error) {
 	}
 }
 
+// parseIPv4 parses an IPv4 header plus the first 4 bytes of the TCP/UDP header
+// (source and destination port). Non-initial fragments and protocols other
+// than TCP/UDP are rejected.
 func parseIPv4(packet []byte) (PacketMetadata, error) {
 	if len(packet) < 20 {
 		return PacketMetadata{}, ErrTruncated
@@ -93,6 +105,9 @@ func parseIPv4(packet []byte) (PacketMetadata, error) {
 	}, nil
 }
 
+// parseIPv6 parses the fixed IPv6 header plus TCP/UDP ports or, for ICMPv6, the
+// echo identifier (stored as both ports so request and reply share one flow).
+// Extension headers are not walked and lead to ErrIPv6ExtensionHdr.
 func parseIPv6(packet []byte) (PacketMetadata, error) {
 	if len(packet) < 40 {
 		return PacketMetadata{}, ErrTruncated

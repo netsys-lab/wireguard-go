@@ -8,6 +8,10 @@ import (
 )
 
 // TrafficClass identifies the packet classification for fast-path routing
+//
+// TrafficClass identifies how a flow is carried: plain IP, mapped SCION
+// (fc00::/8 IPv6 translated by the translator) or native SCION (app already
+// sends SCION/UDP). The values mirror header_parsing.Class* constants.
 type TrafficClass uint8
 
 const (
@@ -17,6 +21,9 @@ const (
 	ClassUnclassified TrafficClass = 255
 )
 
+// Flow is the mutable, internal state of one tracked connection. Identity fields
+// are written once at creation; counters and lastSeen are updated lock-free via
+// atomics. Callers outside the package only ever see a Snapshot copy.
 type Flow struct {
 	id        ID
 	ipVersion uint8
@@ -45,6 +52,8 @@ type Flow struct {
 	lastSeenNano atomic.Int64
 }
 
+// snapshot returns an immutable copy of the flow, loading all atomic counters.
+// It is the only way flow state leaves the Manager.
 func (f *Flow) snapshot() Snapshot {
 	return Snapshot{
 		ID:             f.id,
@@ -105,6 +114,8 @@ func (f *Flow) setTrafficClass(class TrafficClass) {
 }
 
 // getTrafficClass returns the traffic class for this flow
+//
+// getTrafficClass returns the traffic class stored on the flow.
 func (f *Flow) getTrafficClass() TrafficClass {
 	return f.trafficClass
 }
