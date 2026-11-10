@@ -354,6 +354,7 @@ func (device *Device) RoutineReadFromTUN() {
 								TrafficClass: flow.ClassNativeSCION,
 							}
 							// EgressKind scion for native
+							md = withOuterSocketTuple(md, pkt)
 							snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
 							if created {
 								device.log.Verbosef("Flow created: id=%d egress=%s class=native protocol=%s", snap.ID, snap.EgressKind, snap.ProtocolName())
@@ -388,6 +389,7 @@ func (device *Device) RoutineReadFromTUN() {
 									DstIA:        scmpInfo.DstIA.String(),
 									TrafficClass: flow.ClassNativeSCION,
 								}
+								md = withOuterSocketTuple(md, pkt)
 								snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
 								// Checkpoint C — Flow after ObserveTx
 								device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] flow=%d class=native egress=scion protocol=SCMP", snap.ID)
@@ -599,6 +601,7 @@ func (device *Device) RoutineReadFromTUN() {
 									DstIA:        tup.DstIA.String(),
 									TrafficClass: flow.ClassNativeSCION,
 								}
+								md = withOuterSocketTuple(md, pkt)
 								snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
 								if created {
 									device.log.Verbosef("Flow created: id=%d egress=%s class=native", snap.ID, snap.EgressKind)
@@ -630,6 +633,7 @@ func (device *Device) RoutineReadFromTUN() {
 										DstIA:        scmpInfo.DstIA.String(),
 										TrafficClass: flow.ClassNativeSCION,
 									}
+									md = withOuterSocketTuple(md, pkt)
 									snap, created := device.flowManager.ObserveTx(md, len(pkt), "scion")
 									device.scionLog.Debugf(scionlog.ComponentFlow, "[SCION-FLOW] flow=%d class=native egress=scion protocol=SCMP", snap.ID)
 									if created {

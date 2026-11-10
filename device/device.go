@@ -115,6 +115,9 @@ type Device struct {
 	flowOverrideMu  sync.RWMutex
 	flowOverrides   map[flow.ID]string
 
+	// flowEvents reports new flows to the Android side (see flow_events.go).
+	flowEvents flowEventState
+
 	// packetIDCounter is a monotonic counter for SCION packet correlation.
 	// It is assigned only to SCION-mapped egress packets accepted from TUN
 	// and is preserved through pending queue, flush, and WireGuard outbound.
@@ -323,6 +326,7 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, scionConfig
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.flowManager = flow.NewManager()
+	device.initFlowEvents()
 	device.net.bind = bind
 	device.tun.device = tunDevice
 

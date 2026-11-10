@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// TrafficClass identifies the packet classification for fast-path routing
-//
 // TrafficClass identifies how a flow is carried: plain IP, mapped SCION
 // (fc00::/8 IPv6 translated by the translator) or native SCION (app already
 // sends SCION/UDP). The values mirror header_parsing.Class* constants.
@@ -41,6 +39,14 @@ type Flow struct {
 	srcIA        string
 	dstIA        string
 	createdAt    time.Time
+
+	// Socket tuple as seen by the app on the phone (reported in NewFlowEvent so
+	// the Android side can look up the owning app). Equals local/remote for
+	// plain IP and mapped SCION; for native SCION it is the outer UDP tuple
+	// towards the border router. Immutable after creation.
+	socketProtocol uint8
+	socketLocal    Endpoint
+	socketRemote   Endpoint
 
 	// Atomic counters for lock-free updates
 	txPackets atomic.Uint64
@@ -75,7 +81,19 @@ func (f *Flow) snapshot() Snapshot {
 		RxBytes:        f.rxBytes.Load(),
 		CreatedAt:      f.createdAt,
 		LastSeen:       time.Unix(0, f.lastSeenNano.Load()),
+		SocketProtocol: f.socketProtocol,
+		SocketLocal:    f.socketLocal,
+		SocketRemote:   f.socketRemote,
 	}
+}
+
+// initSocket sets the socket tuple of a newly created flow. local/remote are
+// the endpoints from the app's point of view. Must be called before the flow
+// is published in the Manager maps.
+func (f *Flow) initSocket(protocol uint8, local, remote Endpoint) {
+	f.socketProtocol = protocol
+	f.socketLocal = local
+	f.socketRemote = remote
 }
 
 // enrichSCIONMetadata copies SCION-specific metadata from a packet into the
@@ -113,8 +131,6 @@ func (f *Flow) setTrafficClass(class TrafficClass) {
 	}
 }
 
-// getTrafficClass returns the traffic class for this flow
-//
 // getTrafficClass returns the traffic class stored on the flow.
 func (f *Flow) getTrafficClass() TrafficClass {
 	return f.trafficClass

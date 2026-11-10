@@ -33,6 +33,12 @@ type Snapshot struct {
 
 	CreatedAt time.Time
 	LastSeen  time.Time
+
+	// Socket tuple of the sending app (see Flow.socketLocal and NewFlowEvent).
+	// Internal only; not part of FlowDTO.
+	SocketProtocol uint8
+	SocketLocal    Endpoint
+	SocketRemote   Endpoint
 }
 
 // ProtocolName returns a human-readable name for the L4 protocol (used in logs).

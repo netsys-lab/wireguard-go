@@ -40,6 +40,29 @@ type Manager struct {
 	nextID     ID
 	flowsByKey map[Key]*Flow
 	flowsByID  map[ID]*Flow
+
+	// onFlowCreated is called (outside of mu) for every newly created flow.
+	onFlowCreated func(Snapshot)
+}
+
+// SetOnFlowCreated registers a callback that is invoked once for every newly
+// created flow, after the Manager lock has been released. The callback runs on
+// the packet path and must not block (e.g. use a non-blocking channel send).
+func (m *Manager) SetOnFlowCreated(fn func(Snapshot)) {
+	m.mu.Lock()
+	m.onFlowCreated = fn
+	m.mu.Unlock()
+}
+
+// notifyCreated invokes the creation callback, if any. Must be called without
+// holding m.mu.
+func (m *Manager) notifyCreated(s Snapshot) {
+	m.mu.RLock()
+	fn := m.onFlowCreated
+	m.mu.RUnlock()
+	if fn != nil {
+		fn(s)
+	}
 }
 
 // NewManager creates an empty Manager whose first flow gets ID 1.
@@ -76,7 +99,15 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 	}
 	m.mu.RUnlock()
 
-	// Phase 2: Flow not found; acquire exclusive lock to create it
+	// Phase 2: Flow not found; acquire exclusive lock to create it.
+	// The creation callback must run after the lock is released; deferred
+	// functions run in reverse order, so this one runs after m.mu.Unlock.
+	var created *Snapshot
+	defer func() {
+		if created != nil {
+			m.notifyCreated(*created)
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -124,13 +155,19 @@ func (m *Manager) ObserveTx(metadata PacketMetadata, packetLength int, egressKin
 	flow.txBytes.Store(uint64(packetLength))
 	flow.lastSeenNano.Store(now.UnixNano())
 
+	// Outgoing packet: the socket's local side is the packet source.
+	sockProto, sockSrc, sockDst := metadata.socketTuple()
+	flow.initSocket(sockProto, sockSrc, sockDst)
+
 	m.flowsByKey[key] = flow
 	m.flowsByID[id] = flow
 
 	log.Printf("[FLOW-DEBUG] [FlowManager] ObserveTx: NEW FLOW CREATED: id=%d egressKind='%s' class=%d proto=%d src=%s dst=%s scionDstIP=%s dstIA='%s'",
 		id, egressKind, tc, metadata.Protocol, metadata.Source, metadata.Destination, metadata.SCIONDstIP, metadata.DstIA)
 
-	return flow.snapshot(), true
+	snap := flow.snapshot()
+	created = &snap
+	return snap, true
 }
 
 // ObserveRx is the receive-side counterpart of ObserveTx: it increments the rx
@@ -156,7 +193,15 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 	}
 	m.mu.RUnlock()
 
-	// Phase 2: Flow not found; acquire exclusive lock to create it
+	// Phase 2: Flow not found; acquire exclusive lock to create it.
+	// The creation callback must run after the lock is released; deferred
+	// functions run in reverse order, so this one runs after m.mu.Unlock.
+	var created *Snapshot
+	defer func() {
+		if created != nil {
+			m.notifyCreated(*created)
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -199,13 +244,19 @@ func (m *Manager) ObserveRx(metadata PacketMetadata, packetLength int, egressKin
 	flow.rxBytes.Store(uint64(packetLength))
 	flow.lastSeenNano.Store(now.UnixNano())
 
+	// Incoming packet: the socket's local side is the packet destination.
+	sockProto, sockSrc, sockDst := metadata.socketTuple()
+	flow.initSocket(sockProto, sockDst, sockSrc)
+
 	m.flowsByKey[key] = flow
 	m.flowsByID[id] = flow
 
 	log.Printf("[FLOW-DEBUG] [FlowManager] ObserveRx: NEW FLOW CREATED: id=%d egressKind='%s' class=%d proto=%d src=%s dst=%s scionDstIP=%s dstIA='%s'",
 		id, egressKind, tc, metadata.Protocol, metadata.Source, metadata.Destination, metadata.SCIONDstIP, metadata.DstIA)
 
-	return flow.snapshot(), true
+	snap := flow.snapshot()
+	created = &snap
+	return snap, true
 }
 
 // GetByID returns a snapshot of the flow with the given ID, or false if unknown.

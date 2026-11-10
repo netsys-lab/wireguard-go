@@ -35,6 +35,22 @@ type PacketMetadata struct {
 	DstIA        string     // remote SCION dst AS; empty for IP; set by caller
 	SCIONDstIP   netip.Addr // authoritative SCION dst IPv4; zero for IP; set by caller
 	TrafficClass TrafficClass
+
+	// Optional socket tuple of the sending app, used for the Android owner
+	// lookup. Only needed when it differs from Protocol/Source/Destination,
+	// i.e. for native SCION (outer UDP tuple). Zero values mean "same as above".
+	SocketProtocol    uint8
+	SocketSource      Endpoint
+	SocketDestination Endpoint
+}
+
+// socketTuple returns the protocol and endpoints of the sending socket,
+// falling back to the packet tuple when no explicit socket tuple was set.
+func (m PacketMetadata) socketTuple() (uint8, Endpoint, Endpoint) {
+	if m.SocketProtocol != 0 && m.SocketSource.Addr.IsValid() && m.SocketDestination.Addr.IsValid() {
+		return m.SocketProtocol, m.SocketSource, m.SocketDestination
+	}
+	return m.Protocol, m.Source, m.Destination
 }
 
 // ParsePacketMetadata extracts IP version, protocol and the two endpoints from a
